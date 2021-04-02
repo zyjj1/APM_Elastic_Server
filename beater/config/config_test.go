@@ -77,6 +77,10 @@ func TestUnpackConfig(t *testing.T) {
 				"shutdown_timeout":      9 * time.Second,
 				"capture_personal_data": true,
 				"secret_token":          "1234random",
+				"output": map[string]interface{}{
+					"backoff.init": time.Second,
+					"backoff.max":  time.Minute,
+				},
 				"ssl": map[string]interface{}{
 					"enabled":                 true,
 					"key":                     "../../testdata/tls/key.pem",
@@ -94,8 +98,9 @@ func TestUnpackConfig(t *testing.T) {
 						"limit":    7200,
 						"lru_size": 2000,
 					},
-					"allow_origins": []string{"example*"},
-					"allow_headers": []string{"Authorization"},
+					"allow_service_names": []string{"opbeans-rum"},
+					"allow_origins":       []string{"example*"},
+					"allow_headers":       []string{"Authorization"},
 					"source_mapping": map[string]interface{}{
 						"cache": map[string]interface{}{
 							"expiration": 8 * time.Minute,
@@ -158,21 +163,28 @@ func TestUnpackConfig(t *testing.T) {
 					Enabled: &truthy,
 					URL:     "/debug/vars",
 				},
+				Pprof: &PprofConfig{
+					Enabled: false,
+				},
 				RumConfig: &RumConfig{
 					Enabled: &truthy,
 					EventRate: &EventRate{
 						Limit:   7200,
 						LruSize: 2000,
 					},
-					AllowOrigins: []string{"example*"},
-					AllowHeaders: []string{"Authorization"},
+					AllowServiceNames: []string{"opbeans-rum"},
+					AllowOrigins:      []string{"example*"},
+					AllowHeaders:      []string{"Authorization"},
 					SourceMapping: &SourceMapping{
 						Cache:        &Cache{Expiration: 8 * time.Minute},
 						IndexPattern: "apm-test*",
 						ESConfig: &elasticsearch.Config{
-							Hosts:    elasticsearch.Hosts{"localhost:9201", "localhost:9202"},
-							Protocol: "http",
-							Timeout:  5 * time.Second},
+							Hosts:      elasticsearch.Hosts{"localhost:9201", "localhost:9202"},
+							Protocol:   "http",
+							Timeout:    5 * time.Second,
+							MaxRetries: 3,
+							Backoff:    elasticsearch.DefaultBackoffConfig,
+						},
 						esConfigured: true,
 					},
 					LibraryPattern:      "^custom",
@@ -216,9 +228,12 @@ func TestUnpackConfig(t *testing.T) {
 					Enabled:     true,
 					LimitPerMin: 200,
 					ESConfig: &elasticsearch.Config{
-						Hosts:    elasticsearch.Hosts{"localhost:9201", "localhost:9202"},
-						Protocol: "http",
-						Timeout:  5 * time.Second},
+						Hosts:      elasticsearch.Hosts{"localhost:9201", "localhost:9202"},
+						Protocol:   "http",
+						Timeout:    5 * time.Second,
+						MaxRetries: 3,
+						Backoff:    elasticsearch.DefaultBackoffConfig,
+					},
 					esConfigured: true,
 				},
 				Aggregation: AggregationConfig{
@@ -261,6 +276,9 @@ func TestUnpackConfig(t *testing.T) {
 				"expvar": map[string]interface{}{
 					"enabled": true,
 					"url":     "/debug/vars",
+				},
+				"pprof": map[string]interface{}{
+					"enabled": true,
 				},
 				"rum": map[string]interface{}{
 					"enabled": true,
@@ -308,6 +326,9 @@ func TestUnpackConfig(t *testing.T) {
 				Expvar: &ExpvarConfig{
 					Enabled: &truthy,
 					URL:     "/debug/vars",
+				},
+				Pprof: &PprofConfig{
+					Enabled: true,
 				},
 				RumConfig: &RumConfig{
 					Enabled: &truthy,
