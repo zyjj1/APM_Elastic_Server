@@ -18,7 +18,10 @@
 package systemtest
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,22 +31,29 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/elastic/apm-server/systemtest/apmservertest"
 	"github.com/elastic/apm-server/systemtest/estest"
 	"github.com/elastic/go-elasticsearch/v7"
 )
 
-const startContainersTimeout = 5 * time.Minute
+const (
+	startContainersTimeout = 5 * time.Minute
+
+	fleetServerPort = "8220"
+)
 
 // StartStackContainers starts Docker containers for Elasticsearch and Kibana.
 //
@@ -52,7 +62,7 @@ const startContainersTimeout = 5 * time.Minute
 func StartStackContainers() error {
 	cmd := exec.Command(
 		"docker-compose", "-f", "../docker-compose.yml",
-		"up", "-d", "elasticsearch", "kibana",
+		"up", "-d", "elasticsearch", "kibana", "fleet-server",
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -60,11 +70,14 @@ func StartStackContainers() error {
 		return err
 	}
 
-	// Wait for up to 5 minutes for Kibana to become healthy,
+	// Wait for up to 5 minutes for Kibana and Fleet Server to become healthy,
 	// which implies Elasticsearch is healthy too.
 	ctx, cancel := context.WithTimeout(context.Background(), startContainersTimeout)
 	defer cancel()
-	return waitKibanaContainerHealthy(ctx)
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return waitContainerHealthy(ctx, "kibana") })
+	g.Go(func() error { return waitContainerHealthy(ctx, "fleet-server") })
+	return g.Wait()
 }
 
 // NewUnstartedElasticsearchContainer returns a new ElasticsearchContainer.
@@ -91,9 +104,7 @@ func NewUnstartedElasticsearchContainer() (*ElasticsearchContainer, error) {
 		Image:      container.Image,
 		AutoRemove: true,
 	}
-	waitFor := wait.ForHTTP("/")
-	waitFor.Port = "9200/tcp"
-	req.WaitingFor = waitFor
+	req.WaitingFor = wait.ForHTTP("/").WithPort("9200/tcp")
 
 	for port := range containerDetails.Config.ExposedPorts {
 		req.ExposedPorts = append(req.ExposedPorts, string(port))
@@ -115,14 +126,14 @@ func NewUnstartedElasticsearchContainer() (*ElasticsearchContainer, error) {
 	return &ElasticsearchContainer{request: req, Env: env}, nil
 }
 
-func waitKibanaContainerHealthy(ctx context.Context) error {
+func waitContainerHealthy(ctx context.Context, serviceName string) error {
 	docker, err := client.NewClientWithOpts(client.FromEnv)
 	if err != nil {
 		return err
 	}
 	defer docker.Close()
 
-	container, err := stackContainerInfo(ctx, docker, "kibana")
+	container, err := stackContainerInfo(ctx, docker, serviceName)
 	if err != nil {
 		return err
 	}
@@ -137,7 +148,7 @@ func waitKibanaContainerHealthy(ctx context.Context) error {
 			break
 		}
 		if first {
-			log.Printf("Waiting for Kibana container (%s) to become healthy", container.ID)
+			log.Printf("Waiting for %s container (%s) to become healthy", serviceName, container.ID)
 			first = false
 		}
 		time.Sleep(5 * time.Second)
@@ -252,30 +263,35 @@ func NewUnstartedElasticAgentContainer() (*ElasticAgentContainer, error) {
 	}
 	defer docker.Close()
 
-	kibanaContainer, err := stackContainerInfo(context.Background(), docker, "kibana")
+	fleetServerContainer, err := stackContainerInfo(context.Background(), docker, "fleet-server")
 	if err != nil {
 		return nil, err
 	}
-	kibanaContainerDetails, err := docker.ContainerInspect(context.Background(), kibanaContainer.ID)
+	fleetServerContainerDetails, err := docker.ContainerInspect(context.Background(), fleetServerContainer.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	var kibanaIPAddress string
+	var fleetServerIPAddress string
 	var networks []string
-	for network, settings := range kibanaContainerDetails.NetworkSettings.Networks {
+	for network, settings := range fleetServerContainerDetails.NetworkSettings.Networks {
 		networks = append(networks, network)
-		if kibanaIPAddress == "" && settings.IPAddress != "" {
-			kibanaIPAddress = settings.IPAddress
+		if fleetServerIPAddress == "" && settings.IPAddress != "" {
+			fleetServerIPAddress = settings.IPAddress
 		}
 	}
-	kibanaURL := &url.URL{
-		Scheme: "http",
-		Host:   net.JoinHostPort(kibanaIPAddress, apmservertest.KibanaPort()),
+	fleetServerURL := &url.URL{
+		Scheme: "https",
+		Host:   net.JoinHostPort(fleetServerIPAddress, fleetServerPort),
+	}
+	containerCACertPath := "/etc/pki/tls/certs/fleet-ca.pem"
+	hostCACertPath, err := filepath.Abs("../testing/docker/fleet-server/ca.pem")
+	if err != nil {
+		return nil, err
 	}
 
-	// Use the same stack version as used for Kibana.
-	agentImageVersion := kibanaContainer.Image[strings.LastIndex(kibanaContainer.Image, ":")+1:]
+	// Use the same stack version as used for fleet-server.
+	agentImageVersion := fleetServerContainer.Image[strings.LastIndex(fleetServerContainer.Image, ":")+1:]
 	agentImage := "docker.elastic.co/beats/elastic-agent:" + agentImageVersion
 	if err := pullDockerImage(context.Background(), docker, agentImage); err != nil {
 		return nil, err
@@ -284,31 +300,27 @@ func NewUnstartedElasticAgentContainer() (*ElasticAgentContainer, error) {
 	if err != nil {
 		return nil, err
 	}
-	agentVCSRef := agentImageDetails.Config.Labels["org.label-schema.vcs-ref"]
-	agentDataHashDir := path.Join("/usr/share/elastic-agent/data", "elastic-agent-"+agentVCSRef[:6])
-	agentInstallDir := path.Join(agentDataHashDir, "install")
+	stackVersion := agentImageDetails.Config.Labels["org.label-schema.version"]
+
+	// Build a custom elastic-agent image with a locally built apm-server binary injected.
+	agentImage, err = buildElasticAgentImage(context.Background(), docker, stackVersion, agentImageVersion)
+	if err != nil {
+		return nil, err
+	}
 
 	req := testcontainers.ContainerRequest{
 		Image:      agentImage,
 		AutoRemove: true,
 		Networks:   networks,
+		BindMounts: map[string]string{hostCACertPath: containerCACertPath},
 		Env: map[string]string{
-			"KIBANA_HOST": kibanaURL.String(),
-
-			// TODO(axw) remove once https://github.com/elastic/elastic-agent-client/issues/20 is fixed
-			"GODEBUG": "x509ignoreCN=0",
-
-			// NOTE(axw) because we bind-mount the apm-server artifacts in, they end up owned by the
-			// current user rather than root. Disable Beats's strict permission checks to avoid resulting
-			// complaints, as they're irrelevant to these system tests.
-			"BEAT_STRICT_PERMS": "false",
+			"FLEET_URL": fleetServerURL.String(),
+			"FLEET_CA":  containerCACertPath,
 		},
 	}
 	return &ElasticAgentContainer{
-		request:          req,
-		installDir:       agentInstallDir,
-		StackVersion:     agentImageVersion,
-		BindMountInstall: make(map[string]string),
+		request:      req,
+		StackVersion: agentImageVersion,
 	}, nil
 }
 
@@ -316,14 +328,6 @@ func NewUnstartedElasticAgentContainer() (*ElasticAgentContainer, error) {
 type ElasticAgentContainer struct {
 	container testcontainers.Container
 	request   testcontainers.ContainerRequest
-
-	// installDir holds the location of the "install" directory inside
-	// the Elastic Agent container.
-	//
-	// This will be set when the ElasticAgentContainer object is created,
-	// and can be used to anticipate the location into which artifacts
-	// can be bind-mounted.
-	installDir string
 
 	// StackVersion holds the stack version of the container image,
 	// e.g. 8.0.0-SNAPSHOT.
@@ -335,14 +339,9 @@ type ElasticAgentContainer struct {
 	// WaitingFor holds an optional wait strategy.
 	WaitingFor wait.Strategy
 
-	// Addrs holds the "host:port" address for each exposed port.
-	// This will be populated by Start.
-	Addrs []string
-
-	// BindMountInstall holds a map of files to bind mount into the
-	// container, mapping from the host location to target paths relative
-	// to the install directory in the container.
-	BindMountInstall map[string]string
+	// Addrs holds the "host:port" address for each exposed port, mapped
+	// by exposed port. This will be populated by Start.
+	Addrs map[string]string
 
 	// FleetEnrollmentToken holds an optional Fleet enrollment token to
 	// use for enrolling the agent with Fleet. The agent will only enroll
@@ -364,15 +363,9 @@ func (c *ElasticAgentContainer) Start() error {
 	if c.FleetEnrollmentToken != "" {
 		c.request.Env["FLEET_ENROLL"] = "1"
 		c.request.Env["FLEET_ENROLLMENT_TOKEN"] = c.FleetEnrollmentToken
-		c.request.Env["FLEET_INSECURE"] = "1"
-		c.request.Env["FLEET_URL"] = "http://kibana:5601"
 	}
 	c.request.ExposedPorts = c.ExposedPorts
 	c.request.WaitingFor = c.WaitingFor
-	c.request.BindMounts = map[string]string{}
-	for source, target := range c.BindMountInstall {
-		c.request.BindMounts[source] = path.Join(c.installDir, target)
-	}
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: c.request,
@@ -385,19 +378,18 @@ func (c *ElasticAgentContainer) Start() error {
 	if err := container.Start(ctx); err != nil {
 		return err
 	}
-	ports, err := container.Ports(ctx)
-	if err != nil {
-		return err
-	}
-	if len(ports) > 0 {
-		ip, err := container.Host(ctx)
+	if len(c.request.ExposedPorts) > 0 {
+		hostIP, err := container.Host(ctx)
 		if err != nil {
 			return err
 		}
-		for _, portbindings := range ports {
-			for _, pb := range portbindings {
-				c.Addrs = append(c.Addrs, net.JoinHostPort(ip, pb.HostPort))
+		c.Addrs = make(map[string]string)
+		for _, exposedPort := range c.request.ExposedPorts {
+			mappedPort, err := container.MappedPort(ctx, nat.Port(exposedPort))
+			if err != nil {
+				return err
 			}
+			c.Addrs[exposedPort] = net.JoinHostPort(hostIP, mappedPort.Port())
 		}
 	}
 
@@ -431,4 +423,104 @@ func pullDockerImage(ctx context.Context, docker *client.Client, imageRef string
 	defer rc.Close()
 	_, err = io.Copy(ioutil.Discard, rc)
 	return err
+}
+
+func matchFleetServerAPIStatusHealthy(r io.Reader) bool {
+	var status struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+		Status  string `json:"status"`
+	}
+	if err := json.NewDecoder(r).Decode(&status); err != nil {
+		return false
+	}
+	return status.Status == "HEALTHY"
+}
+
+// buildElasticAgentImage builds a Docker image from the published image with a locally built apm-server injected.
+func buildElasticAgentImage(ctx context.Context, docker *client.Client, stackVersion, imageVersion string) (string, error) {
+	imageName := fmt.Sprintf("elastic-agent-systemtest:%s", imageVersion)
+	log.Printf("Building image %s...", imageName)
+
+	// Build apm-server, and copy it into the elastic-agent container's "install" directory.
+	// This bypasses downloading the artifact.
+	arch := runtime.GOARCH
+	if arch == "amd64" {
+		arch = "x86_64"
+	}
+	apmServerInstallDir := fmt.Sprintf("./state/data/install/apm-server-%s-linux-%s", stackVersion, arch)
+	apmServerBinary, err := apmservertest.BuildServerBinary("linux")
+	if err != nil {
+		return "", err
+	}
+
+	// Binaries to copy from disk into the build context.
+	binaries := map[string]string{
+		"apm-server": apmServerBinary,
+	}
+
+	// Generate Dockerfile contents.
+	var dockerfile bytes.Buffer
+	fmt.Fprintf(&dockerfile, "FROM docker.elastic.co/beats/elastic-agent:%s\n", imageVersion)
+	fmt.Fprintf(&dockerfile, "COPY --chown=elastic-agent:elastic-agent apm-server apm-server.yml %s/\n", apmServerInstallDir)
+
+	// Files to generate in the build context.
+	generatedFiles := map[string][]byte{
+		"Dockerfile":     dockerfile.Bytes(),
+		"apm-server.yml": []byte(""),
+	}
+
+	var buildContext bytes.Buffer
+	tarw := tar.NewWriter(&buildContext)
+	for name, path := range binaries {
+		f, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		defer f.Close()
+		info, err := f.Stat()
+		if err != nil {
+			return "", err
+		}
+		if err := tarw.WriteHeader(&tar.Header{
+			Name:  name,
+			Size:  info.Size(),
+			Mode:  0755,
+			Uname: "elastic-agent",
+			Gname: "elastic-agent",
+		}); err != nil {
+			return "", err
+		}
+		if _, err := io.Copy(tarw, f); err != nil {
+			return "", err
+		}
+	}
+	for name, content := range generatedFiles {
+		if err := tarw.WriteHeader(&tar.Header{
+			Name:  name,
+			Size:  int64(len(content)),
+			Mode:  0644,
+			Uname: "elastic-agent",
+			Gname: "elastic-agent",
+		}); err != nil {
+			return "", err
+		}
+		if _, err := tarw.Write(content); err != nil {
+			return "", err
+		}
+	}
+	if err := tarw.Close(); err != nil {
+		return "", err
+	}
+
+	resp, err := docker.ImageBuild(ctx, &buildContext, types.ImageBuildOptions{Tags: []string{imageName}})
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if _, err := io.Copy(ioutil.Discard, resp.Body); err != nil {
+		return "", err
+	}
+	log.Printf("Built image %s", imageName)
+	return imageName, nil
 }

@@ -354,9 +354,7 @@ func TestTransactionRequiredValidationRules(t *testing.T) {
 		"me.sa":        nil, //metricsets.samples
 		"t":            nil, //type
 		"tid":          nil, //trace_id
-		"y.c.dt.se.n":  nil, //spans.*.context.destination.service.name
 		"y.c.dt.se.rc": nil, //spans.*.context.destination.service.resource
-		"y.c.dt.se.t":  nil, //spans.*.context.destination.service.type
 		"y.d":          nil, //spans.*.duration
 		"y.id":         nil, //spans.*.id
 		"y.n":          nil, //spans.*.name
@@ -365,6 +363,7 @@ func TestTransactionRequiredValidationRules(t *testing.T) {
 		"y.st.f":       nil, //spans.*.stacktrace.*.filename
 		"yc":           nil, //span_count
 		"yc.sd":        nil, //span_count.started
+		"ses.id":       nil, //session.id
 	}
 	cb := assertRequiredFn(t, requiredKeys, event.validate)
 	modeldecodertest.SetZeroStructValue(&event, cb)

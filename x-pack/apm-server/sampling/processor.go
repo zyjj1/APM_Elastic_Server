@@ -6,6 +6,10 @@ package sampling
 
 import (
 	"context"
+	"encoding/json"
+	"io/ioutil"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,6 +29,10 @@ import (
 const (
 	badgerValueLogFileSize = 128 * 1024 * 1024
 
+	// subscriberPositionFile holds the file name used for persisting
+	// the subscriber position across server restarts.
+	subscriberPositionFile = "subscriber_position.json"
+
 	// tooManyGroupsLoggerRateLimit is the maximum frequency at which
 	// "too many groups" log messages are logged.
 	tooManyGroupsLoggerRateLimit = time.Minute
@@ -43,7 +51,7 @@ type Processor struct {
 	storageMu    sync.RWMutex
 	db           *badger.DB
 	storage      *eventstorage.ShardedReadWriter
-	eventMetrics eventMetrics
+	eventMetrics *eventMetrics // heap-allocated for 64-bit alignment
 
 	stopMu   sync.Mutex
 	stopping chan struct{}
@@ -85,6 +93,7 @@ func NewProcessor(config Config) (*Processor, error) {
 		groups:              newTraceGroups(config.Policies, config.MaxDynamicServices, config.IngestRateDecayFactor),
 		db:                  db,
 		storage:             readWriter,
+		eventMetrics:        &eventMetrics{},
 		stopping:            make(chan struct{}),
 		stopped:             make(chan struct{}),
 	}
@@ -335,6 +344,11 @@ func (p *Processor) Run() error {
 		bulkIndexerFlushInterval = p.config.FlushInterval
 	}
 
+	initialSubscriberPosition, err := readSubscriberPosition(p.config.StorageDir)
+	if err != nil {
+		return err
+	}
+	subscriberPositions := make(chan pubsub.SubscriberPosition)
 	pubsub, err := pubsub.New(pubsub.Config{
 		BeatID:     p.config.BeatID,
 		Client:     p.config.Elasticsearch,
@@ -353,8 +367,9 @@ func (p *Processor) Run() error {
 
 	remoteSampledTraceIDs := make(chan string)
 	localSampledTraceIDs := make(chan string)
-	errgroup, ctx := errgroup.WithContext(context.Background())
-	errgroup.Go(func() error {
+	publishSampledTraceIDs := make(chan string)
+	g, ctx := errgroup.WithContext(context.Background())
+	g.Go(func() error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -362,7 +377,7 @@ func (p *Processor) Run() error {
 			return context.Canceled
 		}
 	})
-	errgroup.Go(func() error {
+	g.Go(func() error {
 		// This goroutine is responsible for periodically garbage
 		// collecting the Badger value log, using the recommended
 		// discard ratio of 0.5.
@@ -380,10 +395,14 @@ func (p *Processor) Run() error {
 			}
 		}
 	})
-	errgroup.Go(func() error {
-		return pubsub.SubscribeSampledTraceIDs(ctx, remoteSampledTraceIDs)
+	g.Go(func() error {
+		defer close(subscriberPositions)
+		return pubsub.SubscribeSampledTraceIDs(ctx, initialSubscriberPosition, remoteSampledTraceIDs, subscriberPositions)
 	})
-	errgroup.Go(func() error {
+	g.Go(func() error {
+		return pubsub.PublishSampledTraceIDs(ctx, publishSampledTraceIDs)
+	})
+	g.Go(func() error {
 		ticker := time.NewTicker(p.config.FlushInterval)
 		defer ticker.Stop()
 		var traceIDs []string
@@ -397,21 +416,17 @@ func (p *Processor) Run() error {
 				if len(traceIDs) == 0 {
 					continue
 				}
-				if err := pubsub.PublishSampledTraceIDs(ctx, traceIDs...); err != nil {
+				var g errgroup.Group
+				g.Go(func() error { return sendTraceIDs(ctx, publishSampledTraceIDs, traceIDs) })
+				g.Go(func() error { return sendTraceIDs(ctx, localSampledTraceIDs, traceIDs) })
+				if err := g.Wait(); err != nil {
 					return err
-				}
-				for _, traceID := range traceIDs {
-					select {
-					case <-ctx.Done():
-						return ctx.Err()
-					case localSampledTraceIDs <- traceID:
-					}
 				}
 				traceIDs = traceIDs[:0]
 			}
 		}
 	})
-	errgroup.Go(func() error {
+	g.Go(func() error {
 		// TODO(axw) pace the publishing over the flush interval?
 		// Alternatively we can rely on backpressure from the reporter,
 		// removing the artificial one second timeout from publisher code
@@ -460,8 +475,52 @@ func (p *Processor) Run() error {
 			}
 		}
 	})
-	if err := errgroup.Wait(); err != nil && err != context.Canceled {
+	g.Go(func() error {
+		// Write subscriber position to a file on disk, to support resuming
+		// on apm-server restart without reprocessing all indices.
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case pos := <-subscriberPositions:
+				if err := writeSubscriberPosition(p.config.StorageDir, pos); err != nil {
+					return err
+				}
+			}
+		}
+	})
+	if err := g.Wait(); err != nil && err != context.Canceled {
 		return err
+	}
+	return nil
+}
+
+func readSubscriberPosition(storageDir string) (pubsub.SubscriberPosition, error) {
+	var pos pubsub.SubscriberPosition
+	data, err := ioutil.ReadFile(filepath.Join(storageDir, subscriberPositionFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return pos, nil
+	} else if err != nil {
+		return pos, err
+	}
+	return pos, json.Unmarshal(data, &pos)
+}
+
+func writeSubscriberPosition(storageDir string, pos pubsub.SubscriberPosition) error {
+	data, err := json.Marshal(pos)
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile(filepath.Join(storageDir, subscriberPositionFile), data, 0644)
+}
+
+func sendTraceIDs(ctx context.Context, out chan<- string, traceIDs []string) error {
+	for _, traceID := range traceIDs {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case out <- traceID:
+		}
 	}
 	return nil
 }

@@ -180,7 +180,7 @@ func TestEventsTransformWithMetadata(t *testing.T) {
 	require.Len(t, events, 1)
 	assert.Equal(t, events[0].Fields, common.MapStr{
 		"data_stream.type":    "traces",
-		"data_stream.dataset": "apm." + serviceName,
+		"data_stream.dataset": "apm",
 		"user":                common.MapStr{"id": "123", "name": "jane"},
 		"client":              common.MapStr{"ip": ip},
 		"source":              common.MapStr{"ip": ip},
@@ -305,5 +305,51 @@ func TestTransactionTransformMarks(t *testing.T) {
 		output := test.Transaction.appendBeatEvents(&transform.Config{}, nil)
 		marks, _ := output[0].Fields.GetValue("transaction.marks")
 		assert.Equal(t, test.Output, marks, fmt.Sprintf("Failed at idx %v; %s", idx, test.Msg))
+	}
+}
+
+func TestTransactionSession(t *testing.T) {
+	tests := []struct {
+		Transaction Transaction
+		Output      common.MapStr
+	}{{
+		Transaction: Transaction{
+			Session: TransactionSession{
+				ID: "session_id",
+			},
+		},
+		Output: common.MapStr{
+			"id": "session_id",
+		},
+	}, {
+		Transaction: Transaction{
+			Session: TransactionSession{
+				ID:       "session_id",
+				Sequence: 123,
+			},
+		},
+		Output: common.MapStr{
+			"id":       "session_id",
+			"sequence": 123,
+		},
+	}, {
+		Transaction: Transaction{
+			Session: TransactionSession{
+				// Sequence is ignored if ID is empty.
+				Sequence: 123,
+			},
+		},
+		Output: nil,
+	}}
+
+	for _, test := range tests {
+		output := test.Transaction.appendBeatEvents(&transform.Config{}, nil)
+		session, err := output[0].Fields.GetValue("session")
+		if test.Output == nil {
+			assert.Equal(t, common.ErrKeyNotFound, err)
+		} else {
+			require.NoError(t, err)
+			assert.Equal(t, test.Output, session)
+		}
 	}
 }

@@ -19,6 +19,7 @@ package model_test
 
 import (
 	"context"
+	"io/ioutil"
 	"net/http"
 	"testing"
 	"time"
@@ -36,7 +37,6 @@ import (
 	logs "github.com/elastic/apm-server/log"
 	"github.com/elastic/apm-server/model"
 	"github.com/elastic/apm-server/sourcemap"
-	"github.com/elastic/apm-server/tests/loader"
 	"github.com/elastic/apm-server/transform"
 )
 
@@ -67,7 +67,7 @@ func TestTransform(t *testing.T) {
 }
 
 func TestParseSourcemaps(t *testing.T) {
-	fileBytes, err := loader.LoadDataAsBytes("../testdata/sourcemap/bundle.js.map")
+	fileBytes, err := ioutil.ReadFile("../testdata/sourcemap/bundle.js.map")
 	assert.NoError(t, err)
 	parser, err := s.Parse("", fileBytes)
 	assert.NoError(t, err)
@@ -86,7 +86,7 @@ func TestInvalidateCache(t *testing.T) {
 		// create sourcemap store
 		client, err := estest.NewElasticsearchClient(estest.NewTransport(t, http.StatusOK, nil))
 		require.NoError(t, err)
-		store, err := sourcemap.NewStore(client, "foo", time.Minute)
+		store, err := sourcemap.NewElasticsearchStore(client, "foo", time.Minute)
 		require.NoError(t, err)
 
 		// transform with sourcemap store

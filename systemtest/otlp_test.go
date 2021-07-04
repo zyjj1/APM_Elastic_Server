@@ -26,11 +26,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpgrpc"
-	"go.opentelemetry.io/otel/label"
 	"go.opentelemetry.io/otel/metric"
 	export "go.opentelemetry.io/otel/sdk/export/metric"
+	"go.opentelemetry.io/otel/sdk/metric/aggregator/histogram"
 	controller "go.opentelemetry.io/otel/sdk/metric/controller/basic"
 	processor "go.opentelemetry.io/otel/sdk/metric/processor/basic"
 	"go.opentelemetry.io/otel/sdk/metric/selector/simple"
@@ -66,7 +67,7 @@ func TestOTLPGRPCTraces(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	err := sendOTLPTrace(ctx, srv, sdktrace.Config{})
+	err := sendOTLPTrace(ctx, newOTLPTracerProvider(newOTLPExporter(t, srv)))
 	require.NoError(t, err)
 
 	result := systemtest.Elasticsearch.ExpectDocs(t, "apm-*", estest.BoolQuery{Filter: []interface{}{
@@ -78,24 +79,22 @@ func TestOTLPGRPCTraces(t *testing.T) {
 func TestOTLPGRPCMetrics(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
 	srv := apmservertest.NewUnstartedServer(t)
-	srv.Config.Monitoring = &apmservertest.MonitoringConfig{
-		Enabled:       true,
-		MetricsPeriod: time.Duration(time.Second),
-		StatePeriod:   time.Duration(time.Second),
-	}
+	srv.Config.Monitoring = newFastMonitoringConfig()
 	err := srv.Start()
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	aggregator := simple.NewWithHistogramDistribution([]float64{1, 100, 1000, 10000})
-	err = sendOTLPMetrics(ctx, srv, aggregator, func(meter metric.MeterMust) {
+	aggregator := simple.NewWithHistogramDistribution(histogram.WithExplicitBoundaries([]float64{1, 100, 1000, 10000}))
+	err = sendOTLPMetrics(t, ctx, srv, aggregator, func(meter metric.MeterMust) {
 		float64Counter := meter.NewFloat64Counter("float64_counter")
 		float64Counter.Add(context.Background(), 1)
 
-		// This will be dropped, as we do not support consuming histograms yet.
 		int64Recorder := meter.NewInt64ValueRecorder("int64_recorder")
+		int64Recorder.Record(context.Background(), 1)
 		int64Recorder.Record(context.Background(), 123)
+		int64Recorder.Record(context.Background(), 1024)
+		int64Recorder.Record(context.Background(), 20000)
 	})
 	require.NoError(t, err)
 
@@ -119,11 +118,13 @@ func TestOTLPGRPCAuth(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err = sendOTLPTrace(ctx, srv, sdktrace.Config{})
+	err = sendOTLPTrace(ctx, newOTLPTracerProvider(newOTLPExporter(t, srv)))
 	assert.Error(t, err)
 	assert.Equal(t, codes.Unauthenticated, status.Code(err))
 
-	err = sendOTLPTrace(ctx, srv, sdktrace.Config{}, otlpgrpc.WithHeaders(map[string]string{"Authorization": "Bearer abc123"}))
+	err = sendOTLPTrace(ctx, newOTLPTracerProvider(newOTLPExporter(t, srv, otlpgrpc.WithHeaders(map[string]string{
+		"Authorization": "Bearer abc123",
+	}))))
 	require.NoError(t, err)
 	systemtest.Elasticsearch.ExpectDocs(t, "apm-*", estest.BoolQuery{Filter: []interface{}{
 		estest.TermQuery{Field: "processor.event", Value: "transaction"},
@@ -137,21 +138,22 @@ func TestOTLPClientIP(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := sendOTLPTrace(ctx, srv, sdktrace.Config{})
+	exporter := newOTLPExporter(t, srv)
+	err := sendOTLPTrace(ctx, newOTLPTracerProvider(exporter))
 	assert.NoError(t, err)
 
-	err = sendOTLPTrace(ctx, srv, sdktrace.Config{
-		Resource: sdkresource.NewWithAttributes(label.String("service.name", "service1")),
-	})
+	err = sendOTLPTrace(ctx, newOTLPTracerProvider(exporter, sdktrace.WithResource(
+		sdkresource.NewWithAttributes(attribute.String("service.name", "service1")),
+	)))
 	require.NoError(t, err)
 
-	err = sendOTLPTrace(ctx, srv, sdktrace.Config{
-		Resource: sdkresource.NewWithAttributes(
-			label.String("service.name", "service2"),
-			label.String("telemetry.sdk.name", "iOS"),
-			label.String("telemetry.sdk.language", "swift"),
+	err = sendOTLPTrace(ctx, newOTLPTracerProvider(exporter, sdktrace.WithResource(
+		sdkresource.NewWithAttributes(
+			attribute.String("service.name", "service2"),
+			attribute.String("telemetry.sdk.name", "iOS"),
+			attribute.String("telemetry.sdk.language", "swift"),
 		),
-	})
+	)))
 	require.NoError(t, err)
 
 	// Non-iOS agent documents should have no client.ip field set.
@@ -167,74 +169,21 @@ func TestOTLPClientIP(t *testing.T) {
 	assert.True(t, gjson.GetBytes(result.Hits.Hits[0].RawSource, "client.ip").Exists())
 }
 
-func TestOpenTelemetryJavaMetrics(t *testing.T) {
-	systemtest.CleanupElasticsearch(t)
-	srv := apmservertest.NewUnstartedServer(t)
-	err := srv.Start()
-	require.NoError(t, err)
-
-	aggregator := simple.NewWithExactDistribution()
-	err = sendOTLPMetrics(context.Background(), srv, aggregator, func(meter metric.MeterMust) {
-		// Record well-known JVM runtime metrics, to test that they are
-		// copied to their Elastic APM equivalents during ingest.
-		jvmGCTime := meter.NewInt64Counter("runtime.jvm.gc.time")
-		jvmGCCount := meter.NewInt64Counter("runtime.jvm.gc.count")
-		jvmGCTime.Bind(label.String("gc", "G1 Young Generation")).Add(context.Background(), 123)
-		jvmGCCount.Bind(label.String("gc", "G1 Young Generation")).Add(context.Background(), 1)
-		jvmMemoryArea := meter.NewInt64UpDownCounter("runtime.jvm.memory.area")
-		jvmMemoryArea.Bind(
-			label.String("area", "heap"),
-			label.String("type", "used"),
-		).Add(context.Background(), 42)
-	})
-	require.NoError(t, err)
-
-	result := systemtest.Elasticsearch.ExpectMinDocs(t, 2, "apm-*", estest.BoolQuery{Filter: []interface{}{
-		estest.TermQuery{Field: "processor.event", Value: "metric"},
-	}})
-	require.Len(t, result.Hits.Hits, 2) // one for each set of labels
-
-	var gcHit, memoryAreaHit estest.SearchHit
-	for _, hit := range result.Hits.Hits {
-		require.Contains(t, hit.Source, "jvm")
-		switch {
-		case gjson.GetBytes(hit.RawSource, "labels.gc").Exists():
-			gcHit = hit
-		case gjson.GetBytes(hit.RawSource, "labels.area").Exists():
-			memoryAreaHit = hit
-		}
-	}
-
-	assert.Equal(t, 123.0, gjson.GetBytes(gcHit.RawSource, "runtime.jvm.gc.time").Value())
-	assert.Equal(t, 1.0, gjson.GetBytes(gcHit.RawSource, "runtime.jvm.gc.count").Value())
-	assert.Equal(t, map[string]interface{}{
-		"gc":   "G1 Young Generation",
-		"name": "G1 Young Generation",
-	}, gcHit.Source["labels"])
-	assert.Equal(t, 123.0, gjson.GetBytes(gcHit.RawSource, "jvm.gc.time").Value())
-	assert.Equal(t, 1.0, gjson.GetBytes(gcHit.RawSource, "jvm.gc.count").Value())
-
-	assert.Equal(t, 42.0, gjson.GetBytes(memoryAreaHit.RawSource, "runtime.jvm.memory.area").Value())
-	assert.Equal(t, map[string]interface{}{
-		"area": "heap",
-		"type": "used",
-	}, memoryAreaHit.Source["labels"])
-	assert.Equal(t, 42.0, gjson.GetBytes(memoryAreaHit.RawSource, "jvm.memory.heap.used").Value())
-}
-
-func sendOTLPTrace(ctx context.Context, srv *apmservertest.Server, config sdktrace.Config, options ...otlpgrpc.Option) error {
+func newOTLPExporter(t testing.TB, srv *apmservertest.Server, options ...otlpgrpc.Option) *otlp.Exporter {
 	options = append(options, otlpgrpc.WithEndpoint(serverAddr(srv)), otlpgrpc.WithInsecure())
 	driver := otlpgrpc.NewDriver(options...)
 	exporter, err := otlp.NewExporter(context.Background(), driver)
-	if err != nil {
-		panic(err)
-	}
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		exporter.Shutdown(context.Background())
+	})
+	return exporter
+}
 
-	if config.DefaultSampler == nil {
-		config.DefaultSampler = sdktrace.AlwaysSample()
-	}
-	if config.IDGenerator == nil {
-		config.IDGenerator = &idGeneratorFuncs{
+func newOTLPTracerProvider(exporter *otlp.Exporter, options ...sdktrace.TracerProviderOption) *sdktrace.TracerProvider {
+	return sdktrace.NewTracerProvider(append([]sdktrace.TracerProviderOption{
+		sdktrace.WithSyncer(exporter),
+		sdktrace.WithIDGenerator(&idGeneratorFuncs{
 			newIDs: func(context.Context) (trace.TraceID, trace.SpanID) {
 				traceID, err := trace.TraceIDFromHex("d2acbef8b37655e48548fd9d61ad6114")
 				if err != nil {
@@ -246,19 +195,17 @@ func sendOTLPTrace(ctx context.Context, srv *apmservertest.Server, config sdktra
 				}
 				return traceID, spanID
 			},
-		}
-	}
-	tracerProvider := sdktrace.NewTracerProvider(
-		sdktrace.WithConfig(config),
-		sdktrace.WithBatcher(exporter),
-	)
+		}),
+	}, options...)...)
+}
 
+func sendOTLPTrace(ctx context.Context, tracerProvider *sdktrace.TracerProvider) error {
 	tracer := tracerProvider.Tracer("systemtest")
 	startTime := time.Unix(123, 456)
 	endTime := startTime.Add(time.Second)
 	_, span := tracer.Start(ctx, "operation_name", trace.WithTimestamp(startTime))
 	span.End(trace.WithTimestamp(endTime))
-	if err := tracerProvider.Shutdown(ctx); err != nil {
+	if err := tracerProvider.ForceFlush(ctx); err != nil {
 		return err
 	}
 	select {
@@ -270,20 +217,16 @@ func sendOTLPTrace(ctx context.Context, srv *apmservertest.Server, config sdktra
 }
 
 func sendOTLPMetrics(
+	t testing.TB,
 	ctx context.Context,
 	srv *apmservertest.Server,
 	aggregator export.AggregatorSelector,
 	recordMetrics func(metric.MeterMust),
 ) error {
-	driver := otlpgrpc.NewDriver(otlpgrpc.WithEndpoint(serverAddr(srv)), otlpgrpc.WithInsecure())
-	exporter, err := otlp.NewExporter(context.Background(), driver)
-	if err != nil {
-		panic(err)
-	}
-
+	exporter := newOTLPExporter(t, srv)
 	controller := controller.New(
 		processor.New(aggregator, exporter),
-		controller.WithPusher(exporter),
+		controller.WithExporter(exporter),
 		controller.WithCollectPeriod(time.Minute),
 	)
 	if err := controller.Start(context.Background()); err != nil {

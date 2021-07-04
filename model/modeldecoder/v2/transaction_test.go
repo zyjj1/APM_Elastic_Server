@@ -82,7 +82,7 @@ func TestDecodeMapToTransactionModel(t *testing.T) {
 	gatewayIP := net.ParseIP("192.168.0.1")
 	randomIP := net.ParseIP("71.0.54.1")
 	exceptions := func(key string) bool {
-		return key == "RepresentativeCount"
+		return key == "RepresentativeCount" || strings.HasPrefix(key, "System.Network")
 	}
 
 	t.Run("metadata-set", func(t *testing.T) {
@@ -263,5 +263,22 @@ func TestDecodeMapToTransactionModel(t *testing.T) {
 		input.Context.Response.StatusCode.Reset()
 		mapToTransactionModel(&input, &model.Metadata{}, time.Now(), modeldecoder.Config{}, &out)
 		assert.Equal(t, "unknown", out.Outcome)
+	})
+
+	t.Run("session", func(t *testing.T) {
+		var input transaction
+		var out model.Transaction
+		modeldecodertest.SetStructValues(&input, modeldecodertest.DefaultValues())
+		input.Session.ID.Reset()
+		mapToTransactionModel(&input, &model.Metadata{}, time.Now(), modeldecoder.Config{}, &out)
+		assert.Equal(t, model.TransactionSession{}, out.Session)
+
+		input.Session.ID.Set("session_id")
+		input.Session.Sequence.Set(123)
+		mapToTransactionModel(&input, &model.Metadata{}, time.Now(), modeldecoder.Config{}, &out)
+		assert.Equal(t, model.TransactionSession{
+			ID:       "session_id",
+			Sequence: 123,
+		}, out.Session)
 	})
 }

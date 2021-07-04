@@ -32,7 +32,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.elastic.co/apm/apmtest"
-	"golang.org/x/time/rate"
 
 	"github.com/elastic/beats/v7/libbeat/common"
 	libkibana "github.com/elastic/beats/v7/libbeat/kibana"
@@ -44,7 +43,7 @@ import (
 	"github.com/elastic/apm-server/beater/request"
 	"github.com/elastic/apm-server/convert"
 	"github.com/elastic/apm-server/kibana"
-	"github.com/elastic/apm-server/tests"
+	"github.com/elastic/apm-server/kibana/kibanatest"
 )
 
 type m map[string]interface{}
@@ -61,12 +60,11 @@ var (
 		queryParams                            map[string]string
 		method                                 string
 		respStatus                             int
-		respBodyToken                          map[string]string
 		respBody                               map[string]string
 		respEtagHeader, respCacheControlHeader string
 	}{
 		"NotModified": {
-			kbClient: tests.MockKibana(http.StatusOK, m{
+			kbClient: kibanatest.MockKibana(http.StatusOK, m{
 				"_id": "1",
 				"_source": m{
 					"settings": m{
@@ -84,7 +82,7 @@ var (
 		},
 
 		"ModifiedWithEtag": {
-			kbClient: tests.MockKibana(http.StatusOK, m{
+			kbClient: kibanatest.MockKibana(http.StatusOK, m{
 				"_id": "1",
 				"_source": m{
 					"settings": m{
@@ -100,76 +98,70 @@ var (
 			respEtagHeader:         `"` + mockEtag + `"`,
 			respCacheControlHeader: "max-age=4, must-revalidate",
 			respBody:               successBody,
-			respBodyToken:          successBody,
 		},
 
 		"NoConfigFound": {
-			kbClient:               tests.MockKibana(http.StatusNotFound, m{}, mockVersion, true),
+			kbClient:               kibanatest.MockKibana(http.StatusNotFound, m{}, mockVersion, true),
 			method:                 http.MethodGet,
 			queryParams:            map[string]string{"service.name": "opbeans-python"},
 			respStatus:             http.StatusOK,
 			respCacheControlHeader: "max-age=4, must-revalidate",
 			respEtagHeader:         fmt.Sprintf("\"%s\"", agentcfg.EtagSentinel),
 			respBody:               emptyBody,
-			respBodyToken:          emptyBody,
 		},
 
 		"SendToKibanaFailed": {
-			kbClient:               tests.MockKibana(http.StatusBadGateway, m{}, mockVersion, true),
+			kbClient:               kibanatest.MockKibana(http.StatusBadGateway, m{}, mockVersion, true),
 			method:                 http.MethodGet,
 			queryParams:            map[string]string{"service.name": "opbeans-ruby"},
 			respStatus:             http.StatusServiceUnavailable,
 			respCacheControlHeader: "max-age=300, must-revalidate",
-			respBody:               map[string]string{"error": agentcfg.ErrMsgSendToKibanaFailed},
-			respBodyToken:          map[string]string{"error": fmt.Sprintf("%s: testerror", agentcfg.ErrMsgSendToKibanaFailed)},
+			respBody:               map[string]string{"error": fmt.Sprintf("%s: testerror", agentcfg.ErrMsgSendToKibanaFailed)},
 		},
 
 		"NoConnection": {
-			kbClient:               tests.MockKibana(http.StatusServiceUnavailable, m{}, mockVersion, false),
-			method:                 http.MethodGet,
-			respStatus:             http.StatusServiceUnavailable,
-			respCacheControlHeader: "max-age=300, must-revalidate",
-			respBody:               map[string]string{"error": msgNoKibanaConnection},
-			respBodyToken:          map[string]string{"error": msgNoKibanaConnection},
-		},
-
-		"InvalidVersion": {
-			kbClient: tests.MockKibana(http.StatusServiceUnavailable, m{},
-				*common.MustNewVersion("7.2.0"), true),
-			method:                 http.MethodGet,
-			respStatus:             http.StatusServiceUnavailable,
-			respCacheControlHeader: "max-age=300, must-revalidate",
-			respBody:               map[string]string{"error": msgKibanaVersionNotCompatible},
-			respBodyToken: map[string]string{"error": fmt.Sprintf("%s: min version 7.5.0, "+
-				"configured version 7.2.0", msgKibanaVersionNotCompatible)},
-		},
-
-		"NoService": {
-			kbClient:               tests.MockKibana(http.StatusOK, m{}, mockVersion, true),
-			method:                 http.MethodGet,
-			respStatus:             http.StatusBadRequest,
-			respBody:               map[string]string{"error": msgInvalidQuery},
-			respBodyToken:          map[string]string{"error": "service.name is required"},
-			respCacheControlHeader: "max-age=300, must-revalidate",
-		},
-
-		"MethodNotAllowed": {
-			kbClient:               tests.MockKibana(http.StatusOK, m{}, mockVersion, true),
-			method:                 http.MethodPut,
-			respStatus:             http.StatusMethodNotAllowed,
-			respCacheControlHeader: "max-age=300, must-revalidate",
-			respBody:               map[string]string{"error": msgMethodUnsupported},
-			respBodyToken:          map[string]string{"error": fmt.Sprintf("%s: PUT", msgMethodUnsupported)},
-		},
-
-		"Unauthorized": {
-			kbClient:               tests.MockKibana(http.StatusUnauthorized, m{"error": "Unauthorized"}, mockVersion, true),
+			kbClient:               kibanatest.MockKibana(http.StatusServiceUnavailable, m{}, mockVersion, false),
 			method:                 http.MethodGet,
 			queryParams:            map[string]string{"service.name": "opbeans-node"},
 			respStatus:             http.StatusServiceUnavailable,
 			respCacheControlHeader: "max-age=300, must-revalidate",
-			respBody:               map[string]string{"error": agentcfg.ErrUnauthorized},
-			respBodyToken: map[string]string{"error": "APM Server is not authorized to query Kibana. " +
+			respBody:               map[string]string{"error": agentcfg.ErrMsgNoKibanaConnection},
+		},
+
+		"InvalidVersion": {
+			kbClient: kibanatest.MockKibana(http.StatusServiceUnavailable, m{},
+				*common.MustNewVersion("7.2.0"), true),
+			method:                 http.MethodGet,
+			queryParams:            map[string]string{"service.name": "opbeans-node"},
+			respStatus:             http.StatusServiceUnavailable,
+			respCacheControlHeader: "max-age=300, must-revalidate",
+			respBody: map[string]string{"error": fmt.Sprintf("%s: min version 7.5.0, "+
+				"configured version 7.2.0", agentcfg.ErrMsgKibanaVersionNotCompatible)},
+		},
+
+		"NoService": {
+			kbClient:               kibanatest.MockKibana(http.StatusOK, m{}, mockVersion, true),
+			method:                 http.MethodGet,
+			respStatus:             http.StatusBadRequest,
+			respBody:               map[string]string{"error": "service.name is required"},
+			respCacheControlHeader: "max-age=300, must-revalidate",
+		},
+
+		"MethodNotAllowed": {
+			kbClient:               kibanatest.MockKibana(http.StatusOK, m{}, mockVersion, true),
+			method:                 http.MethodPut,
+			respStatus:             http.StatusMethodNotAllowed,
+			respCacheControlHeader: "max-age=300, must-revalidate",
+			respBody:               map[string]string{"error": fmt.Sprintf("%s: PUT", msgMethodUnsupported)},
+		},
+
+		"Unauthorized": {
+			kbClient:               kibanatest.MockKibana(http.StatusUnauthorized, m{"error": "Unauthorized"}, mockVersion, true),
+			method:                 http.MethodGet,
+			queryParams:            map[string]string{"service.name": "opbeans-node"},
+			respStatus:             http.StatusServiceUnavailable,
+			respCacheControlHeader: "max-age=300, must-revalidate",
+			respBody: map[string]string{"error": "APM Server is not authorized to query Kibana. " +
 				"Please configure apm-server.kibana.username and apm-server.kibana.password, " +
 				"and ensure the user has the necessary privileges."},
 		},
@@ -177,51 +169,102 @@ var (
 )
 
 func TestAgentConfigHandler(t *testing.T) {
-	var cfg = config.AgentConfig{Cache: &config.Cache{Expiration: 4 * time.Second}}
-
-	for name, tc := range testcases {
-
-		runTest := func(t *testing.T, expectedBody map[string]string, auth authorization.Authorization) {
-			h := Handler(tc.kbClient, &cfg, "")
-			r := httptest.NewRequest(tc.method, target(tc.queryParams), nil)
-			for k, v := range tc.requestHeader {
-				r.Header.Set(k, v)
-			}
-			ctx, w := newRequestContext(r)
-			ctx.Authorization = auth
-			h(ctx)
-
-			require.Equal(t, tc.respStatus, w.Code)
-			require.Equal(t, tc.respCacheControlHeader, w.Header().Get(headers.CacheControl))
-			require.Equal(t, tc.respEtagHeader, w.Header().Get(headers.Etag))
-			b, err := ioutil.ReadAll(w.Body)
-			require.NoError(t, err)
-			var actualBody map[string]string
-			json.Unmarshal(b, &actualBody)
-			assert.Equal(t, expectedBody, actualBody)
+	var cfg = config.KibanaAgentConfig{Cache: config.Cache{Expiration: 4 * time.Second}}
+	for _, tc := range testcases {
+		f := agentcfg.NewKibanaFetcher(tc.kbClient, cfg.Cache.Expiration)
+		h := NewHandler(f, cfg, "", nil)
+		r := httptest.NewRequest(tc.method, target(tc.queryParams), nil)
+		for k, v := range tc.requestHeader {
+			r.Header.Set(k, v)
 		}
+		ctx, w := newRequestContext(r)
+		h(ctx)
 
-		t.Run(name+"NoSecretToken", func(t *testing.T) {
-			runTest(t, tc.respBody, authorization.AllowAuth{})
-		})
-
-		t.Run(name+"WithSecretToken", func(t *testing.T) {
-			runTest(t, tc.respBodyToken, authorization.DenyAuth{})
-		})
+		require.Equal(t, tc.respStatus, w.Code)
+		require.Equal(t, tc.respCacheControlHeader, w.Header().Get(headers.CacheControl))
+		require.Equal(t, tc.respEtagHeader, w.Header().Get(headers.Etag))
+		b, err := ioutil.ReadAll(w.Body)
+		require.NoError(t, err)
+		var actualBody map[string]string
+		json.Unmarshal(b, &actualBody)
+		assert.Equal(t, tc.respBody, actualBody)
 	}
 }
 
-func TestAgentConfigHandler_NoKibanaClient(t *testing.T) {
-	cfg := config.AgentConfig{Cache: &config.Cache{Expiration: time.Nanosecond}}
-	h := Handler(nil, &cfg, "")
+func TestAgentConfigHandlerAnonymousAccess(t *testing.T) {
+	kbClient := kibanatest.MockKibana(http.StatusUnauthorized, m{"error": "Unauthorized"}, mockVersion, true)
+	cfg := config.KibanaAgentConfig{Cache: config.Cache{Expiration: time.Nanosecond}}
+	f := agentcfg.NewKibanaFetcher(kbClient, cfg.Cache.Expiration)
+	h := NewHandler(f, cfg, "", nil)
 
-	w := sendRequest(h, httptest.NewRequest(http.MethodGet, "/config", nil))
+	for _, tc := range []struct {
+		anonymous    bool
+		response     string
+		authResource *authorization.Resource
+	}{{
+		anonymous:    false,
+		response:     `{"error":"APM Server is not authorized to query Kibana. Please configure apm-server.kibana.username and apm-server.kibana.password, and ensure the user has the necessary privileges."}`,
+		authResource: &authorization.Resource{ServiceName: "opbeans"},
+	}, {
+		anonymous:    true,
+		response:     `{"error":"Unauthorized"}`,
+		authResource: &authorization.Resource{ServiceName: "opbeans"},
+	}} {
+		r := httptest.NewRequest(http.MethodGet, target(map[string]string{"service.name": "opbeans"}), nil)
+		c, w := newRequestContext(r)
+		c.AuthResult.Authorized = true
+		c.AuthResult.Anonymous = tc.anonymous
+
+		var requestedResource *authorization.Resource
+		c.Request = withAuthorization(c.Request,
+			authorizedForFunc(func(ctx context.Context, resource authorization.Resource) (authorization.Result, error) {
+				if requestedResource != nil {
+					panic("expected only one AuthorizedFor request")
+				}
+				requestedResource = &resource
+				return c.AuthResult, nil
+			}),
+		)
+		h(c)
+		assert.Equal(t, tc.response+"\n", w.Body.String())
+		assert.Equal(t, tc.authResource, requestedResource)
+	}
+}
+
+func TestAgentConfigHandlerAuthorizedForService(t *testing.T) {
+	cfg := config.KibanaAgentConfig{Cache: config.Cache{Expiration: time.Nanosecond}}
+	f := agentcfg.NewKibanaFetcher(nil, cfg.Cache.Expiration)
+	h := NewHandler(f, cfg, "", nil)
+
+	r := httptest.NewRequest(http.MethodGet, target(map[string]string{"service.name": "opbeans"}), nil)
+	ctx, w := newRequestContext(r)
+	ctx.AuthResult.Authorized = true
+
+	var queriedResource authorization.Resource
+	ctx.Request = withAuthorization(ctx.Request,
+		authorizedForFunc(func(ctx context.Context, resource authorization.Resource) (authorization.Result, error) {
+			queriedResource = resource
+			return authorization.Result{Authorized: false}, nil
+		}),
+	)
+	h(ctx)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code, w.Body.String())
+	assert.Equal(t, authorization.Resource{ServiceName: "opbeans"}, queriedResource)
+}
+
+func TestAgentConfigHandler_NoKibanaClient(t *testing.T) {
+	cfg := config.KibanaAgentConfig{Cache: config.Cache{Expiration: time.Nanosecond}}
+	f := agentcfg.NewKibanaFetcher(nil, cfg.Cache.Expiration)
+	h := NewHandler(f, cfg, "", nil)
+
+	w := sendRequest(h, httptest.NewRequest(http.MethodPost, "/config", convert.ToReader(m{
+		"service": m{"name": "opbeans-node"}})))
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
 }
 
 func TestAgentConfigHandler_PostOk(t *testing.T) {
-
-	kb := tests.MockKibana(http.StatusOK, m{
+	kb := kibanatest.MockKibana(http.StatusOK, m{
 		"_id": "1",
 		"_source": m{
 			"settings": m{
@@ -230,8 +273,9 @@ func TestAgentConfigHandler_PostOk(t *testing.T) {
 		},
 	}, mockVersion, true)
 
-	var cfg = config.AgentConfig{Cache: &config.Cache{Expiration: time.Nanosecond}}
-	h := Handler(kb, &cfg, "")
+	var cfg = config.KibanaAgentConfig{Cache: config.Cache{Expiration: time.Nanosecond}}
+	f := agentcfg.NewKibanaFetcher(kb, cfg.Cache.Expiration)
+	h := NewHandler(f, cfg, "", nil)
 
 	w := sendRequest(h, httptest.NewRequest(http.MethodPost, "/config", convert.ToReader(m{
 		"service": m{"name": "opbeans-node"}})))
@@ -240,7 +284,7 @@ func TestAgentConfigHandler_PostOk(t *testing.T) {
 
 func TestAgentConfigHandler_DefaultServiceEnvironment(t *testing.T) {
 	kb := &recordingKibanaClient{
-		Client: tests.MockKibana(http.StatusOK, m{
+		Client: kibanatest.MockKibana(http.StatusOK, m{
 			"_id": "1",
 			"_source": m{
 				"settings": m{
@@ -250,8 +294,9 @@ func TestAgentConfigHandler_DefaultServiceEnvironment(t *testing.T) {
 		}, mockVersion, true),
 	}
 
-	var cfg = config.AgentConfig{Cache: &config.Cache{Expiration: time.Nanosecond}}
-	h := Handler(kb, &cfg, "default")
+	var cfg = config.KibanaAgentConfig{Cache: config.Cache{Expiration: time.Nanosecond}}
+	f := agentcfg.NewKibanaFetcher(kb, cfg.Cache.Expiration)
+	h := NewHandler(f, cfg, "default", nil)
 
 	sendRequest(h, httptest.NewRequest(http.MethodPost, "/config", convert.ToReader(m{"service": m{"name": "opbeans-node", "environment": "specified"}})))
 	sendRequest(h, httptest.NewRequest(http.MethodPost, "/config", convert.ToReader(m{"service": m{"name": "opbeans-node"}})))
@@ -268,7 +313,6 @@ func TestAgentConfigRum(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/rum", convert.ToReader(m{
 		"service": m{"name": "opbeans"}}))
 	ctx, w := newRequestContext(r)
-	ctx.IsRum = true
 	h(ctx)
 	var actual map[string]string
 	json.Unmarshal(w.Body.Bytes(), &actual)
@@ -281,7 +325,6 @@ func TestAgentConfigRumEtag(t *testing.T) {
 	h := getHandler("rum-js")
 	r := httptest.NewRequest(http.MethodGet, "/rum?ifnonematch=123&service.name=opbeans", nil)
 	ctx, w := newRequestContext(r)
-	ctx.IsRum = true
 	h(ctx)
 	assert.Equal(t, http.StatusNotModified, w.Code, w.Body.String())
 }
@@ -291,6 +334,11 @@ func TestAgentConfigNotRum(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/backend", convert.ToReader(m{
 		"service": m{"name": "opbeans"}}))
 	ctx, w := newRequestContext(r)
+	ctx.Request = withAuthorization(ctx.Request,
+		authorizedForFunc(func(context.Context, authorization.Resource) (authorization.Result, error) {
+			return authorization.Result{Authorized: true, Anonymous: false}, nil
+		}),
+	)
 	h(ctx)
 	var actual map[string]string
 	json.Unmarshal(w.Body.Bytes(), &actual)
@@ -303,7 +351,6 @@ func TestAgentConfigNoLeak(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/rum", convert.ToReader(m{
 		"service": m{"name": "opbeans"}}))
 	ctx, w := newRequestContext(r)
-	ctx.IsRum = true
 	h(ctx)
 	var actual map[string]string
 	json.Unmarshal(w.Body.Bytes(), &actual)
@@ -311,22 +358,8 @@ func TestAgentConfigNoLeak(t *testing.T) {
 	assert.Equal(t, map[string]string{}, actual)
 }
 
-func TestAgentConfigRateLimit(t *testing.T) {
-	h := getHandler("rum-js")
-	r := httptest.NewRequest(http.MethodPost, "/rum", convert.ToReader(m{
-		"service": m{"name": "opbeans"}}))
-	ctx, w := newRequestContext(r)
-	ctx.IsRum = true
-	ctx.RateLimiter = rate.NewLimiter(rate.Limit(0), 0)
-	h(ctx)
-	var actual map[string]string
-	json.Unmarshal(w.Body.Bytes(), &actual)
-	assert.Equal(t, http.StatusTooManyRequests, w.Code, w.Body.String())
-	assert.Equal(t, map[string]string{"error": "too many requests"}, actual)
-}
-
 func getHandler(agent string) request.Handler {
-	kb := tests.MockKibana(http.StatusOK, m{
+	kb := kibanatest.MockKibana(http.StatusOK, m{
 		"_id": "1",
 		"_source": m{
 			"settings": m{
@@ -337,9 +370,9 @@ func getHandler(agent string) request.Handler {
 			"agent_name": agent,
 		},
 	}, mockVersion, true)
-
-	var cfg = config.AgentConfig{Cache: &config.Cache{Expiration: time.Nanosecond}}
-	return Handler(kb, &cfg, "")
+	cfg := config.KibanaAgentConfig{Cache: config.Cache{Expiration: time.Nanosecond}}
+	f := agentcfg.NewKibanaFetcher(kb, cfg.Cache.Expiration)
+	return NewHandler(f, cfg, "", []string{"rum-js"})
 }
 
 func TestIfNoneMatch(t *testing.T) {
@@ -363,7 +396,9 @@ func TestAgentConfigTraceContext(t *testing.T) {
 	kibanaCfg := config.KibanaConfig{Enabled: true, ClientConfig: libkibana.DefaultClientConfig()}
 	kibanaCfg.Host = "testKibana:12345"
 	client := kibana.NewConnectingClient(&kibanaCfg)
-	handler := Handler(client, &config.AgentConfig{Cache: &config.Cache{Expiration: 5 * time.Minute}}, "")
+	cfg := config.KibanaAgentConfig{Cache: config.Cache{Expiration: 5 * time.Minute}}
+	f := agentcfg.NewKibanaFetcher(client, cfg.Cache.Expiration)
+	handler := NewHandler(f, cfg, "default", nil)
 	_, spans, _ := apmtest.WithTransaction(func(ctx context.Context) {
 		// When the handler is called with a context containing
 		// a transaction, the underlying Kibana query should create a span
@@ -377,6 +412,11 @@ func TestAgentConfigTraceContext(t *testing.T) {
 
 func sendRequest(h request.Handler, r *http.Request) *httptest.ResponseRecorder {
 	ctx, recorder := newRequestContext(r)
+	ctx.Request = withAuthorization(ctx.Request,
+		authorizedForFunc(func(context.Context, authorization.Resource) (authorization.Result, error) {
+			return authorization.Result{Authorized: true}, nil
+		}),
+	)
 	h(ctx)
 	return recorder
 }
@@ -385,6 +425,7 @@ func newRequestContext(r *http.Request) (*request.Context, *httptest.ResponseRec
 	w := httptest.NewRecorder()
 	ctx := request.NewContext()
 	ctx.Reset(w, r)
+	ctx.Request = withAnonymousAuthorization(ctx.Request)
 	return ctx, w
 }
 
@@ -415,4 +456,20 @@ func (c *recordingKibanaClient) Send(ctx context.Context, method string, path st
 	}
 	c.requests = append(c.requests, req.WithContext(ctx))
 	return c.Client.Send(ctx, method, path, params, header, body)
+}
+
+func withAnonymousAuthorization(req *http.Request) *http.Request {
+	return withAuthorization(req, authorizedForFunc(func(context.Context, authorization.Resource) (authorization.Result, error) {
+		return authorization.Result{Authorized: true, Anonymous: true}, nil
+	}))
+}
+
+func withAuthorization(req *http.Request, auth authorization.Authorization) *http.Request {
+	return req.WithContext(authorization.ContextWithAuthorization(req.Context(), auth))
+}
+
+type authorizedForFunc func(context.Context, authorization.Resource) (authorization.Result, error)
+
+func (f authorizedForFunc) AuthorizedFor(ctx context.Context, resource authorization.Resource) (authorization.Result, error) {
+	return f(ctx, resource)
 }

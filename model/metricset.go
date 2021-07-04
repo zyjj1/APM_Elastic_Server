@@ -47,6 +47,16 @@ var (
 	metricsetProcessorEntry  = common.MapStr{"name": metricsetProcessorName, "event": metricsetDocType}
 )
 
+// MetricType describes the type of a metric: gauge, counter, or histogram.
+type MetricType string
+
+// Valid MetricType values.
+const (
+	MetricTypeGauge     MetricType = "gauge"
+	MetricTypeCounter   MetricType = "counter"
+	MetricTypeHistogram MetricType = "histogram"
+)
+
 // Metricset describes a set of metrics and associated metadata.
 type Metricset struct {
 	// Timestamp holds the time at which the metrics were published.
@@ -95,6 +105,20 @@ type Metricset struct {
 type Sample struct {
 	// Name holds the metric name.
 	Name string
+
+	// Type holds an optional metric type.
+	//
+	// If Type is unspecified or invalid, it will be ignored.
+	Type MetricType
+
+	// Unit holds an optional unit:
+	//
+	// - "percent" (value is in the range [0,1])
+	// - "byte"
+	// - a time unit: "nanos", "micros", "ms", "s", "m", "h", "d"
+	//
+	// If Unit is unspecified or invalid, it will be ignored.
+	Unit string
 
 	// Value holds the metric value for single-value metrics.
 	//
@@ -204,16 +228,24 @@ func (me *Metricset) appendBeatEvents(cfg *transform.Config, events []beat.Event
 
 	fields["processor"] = metricsetProcessorEntry
 
+	// Set a _metric_descriptions field, which holds optional metric types and units.
+	var metricDescriptions mapStr
+	for _, sample := range me.Samples {
+		var m mapStr
+		m.maybeSetString("type", string(sample.Type))
+		m.maybeSetString("unit", sample.Unit)
+		metricDescriptions.maybeSetMapStr(sample.Name, common.MapStr(m))
+	}
+	fields.maybeSetMapStr("_metric_descriptions", common.MapStr(metricDescriptions))
+
 	if cfg.DataStreams {
-		dataset := AppMetricsDataset
-		// Metrics are stored in "metrics" data streams.
-		if isInternal {
-			// Metrics that include well-defined transaction/span fields
-			// (i.e. breakdown metrics, transaction and span metrics) will
-			// be stored separately from application and runtime metrics.
-			dataset = InternalMetricsDataset
+		// Metrics that include well-defined transaction/span fields
+		// (i.e. breakdown metrics, transaction and span metrics) will
+		// be stored separately from application and runtime metrics.
+		dataset := InternalMetricsDataset
+		if !isInternal {
+			dataset = fmt.Sprintf("%s.%s", AppMetricsDataset, datastreams.NormalizeServiceName(me.Metadata.Service.Name))
 		}
-		dataset += fmt.Sprintf(".%s", datastreams.NormalizeServiceName(me.Metadata.Service.Name))
 		fields[datastreams.DatasetField] = dataset
 		fields[datastreams.TypeField] = datastreams.MetricsType
 	}

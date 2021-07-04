@@ -12,6 +12,7 @@ This file is generated! See _meta/fields.yml and scripts/generate_fields_docs.py
 This document describes the fields that are exported by Apm-Server. They are
 grouped in the following categories:
 
+* <<exported-fields-apm-application-metrics>>
 * <<exported-fields-apm-error>>
 * <<exported-fields-apm-profile>>
 * <<exported-fields-apm-sourcemap>>
@@ -30,6 +31,19 @@ grouped in the following categories:
 * <<exported-fields-system>>
 
 --
+[[exported-fields-apm-application-metrics]]
+== APM Application Metrics fields
+
+APM application metrics.
+
+
+*`histogram`*::
++
+--
+type: histogram
+
+--
+
 [[exported-fields-apm-error]]
 == APM Error fields
 
@@ -549,6 +563,70 @@ type: keyword
 --
 
 [float]
+=== network
+
+Optional network fields
+
+
+
+*`network.connection_type`*::
++
+--
+Cellular network technology, eg. 4G
+
+
+type: keyword
+
+--
+
+[float]
+=== carrier
+
+Network operator
+
+
+
+*`network.carrier.name`*::
++
+--
+Carrier name, eg. Vodafone, T-Mobile, etc.
+
+
+type: keyword
+
+--
+
+*`network.carrier.mcc`*::
++
+--
+Mobile country code
+
+
+type: keyword
+
+--
+
+*`network.carrier.mnc`*::
++
+--
+Mobile network code
+
+
+type: keyword
+
+--
+
+*`network.carrier.icc`*::
++
+--
+ISO country code, eg. US
+
+
+type: keyword
+
+--
+
+[float]
 === host
 
 Optional host fields.
@@ -747,6 +825,18 @@ type: keyword
 
 --
 
+*`user.domain`*::
++
+--
+Domain of the logged in user.
+
+
+type: keyword
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
 *`user.id`*::
 +
 --
@@ -772,6 +862,18 @@ type: keyword
 --
 
 
+*`client.domain`*::
++
+--
+Client domain.
+
+
+type: keyword
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
 *`client.ip`*::
 +
 --
@@ -784,6 +886,30 @@ type: ip
 
 --
 
+*`client.port`*::
++
+--
+Port of the client.
+
+
+type: long
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+
+*`source.domain`*::
++
+--
+Source domain.
+
+
+type: keyword
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
 
 *`source.ip`*::
 +
@@ -792,6 +918,18 @@ IP address of the source of a recorded event. This is typically obtained from a 
 
 
 type: ip
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`source.port`*::
++
+--
+Port of the source.
+
+
+type: long
 
 {yes-icon} {ecs-ref}[ECS] field.
 
@@ -1524,6 +1662,70 @@ type: keyword
 --
 
 [float]
+=== network
+
+Optional network fields
+
+
+
+*`network.connection_type`*::
++
+--
+Cellular network technology, eg. 4G
+
+
+type: keyword
+
+--
+
+[float]
+=== carrier
+
+Network operator
+
+
+
+*`network.carrier.name`*::
++
+--
+Carrier name, eg. Vodafone, T-Mobile, etc.
+
+
+type: keyword
+
+--
+
+*`network.carrier.mcc`*::
++
+--
+Mobile country code
+
+
+type: keyword
+
+--
+
+*`network.carrier.mnc`*::
++
+--
+Mobile network code
+
+
+type: keyword
+
+--
+
+*`network.carrier.icc`*::
++
+--
+ISO country code, eg. US
+
+
+type: keyword
+
+--
+
+[float]
 === kubernetes
 
 Kubernetes metadata reported by agents
@@ -1796,6 +1998,18 @@ type: keyword
 --
 
 
+*`client.domain`*::
++
+--
+Client domain.
+
+
+type: keyword
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
 *`client.ip`*::
 +
 --
@@ -1808,6 +2022,30 @@ type: ip
 
 --
 
+*`client.port`*::
++
+--
+Port of the client.
+
+
+type: long
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+
+*`source.domain`*::
++
+--
+Source domain.
+
+
+type: keyword
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
 
 *`source.ip`*::
 +
@@ -1816,6 +2054,18 @@ IP address of the source of a recorded event. This is typically obtained from a 
 
 
 type: ip
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`source.port`*::
++
+--
+Port of the source.
+
+
+type: long
 
 {yes-icon} {ecs-ref}[ECS] field.
 
@@ -2197,7 +2447,7 @@ type: keyword
 *`profile.duration`*::
 +
 --
-Duration of the profile, in microseconds. All samples within a profile will have the same duration. To aggregate durations, you should first group by the profile ID.
+Duration of the profile, in nanoseconds. All samples within a profile will have the same duration. To aggregate durations, you should first group by the profile ID.
 
 
 type: long
@@ -2751,6 +3001,70 @@ type: keyword
 --
 
 [float]
+=== network
+
+Optional network fields
+
+
+
+*`network.connection_type`*::
++
+--
+Cellular network technology, eg. 4G
+
+
+type: keyword
+
+--
+
+[float]
+=== carrier
+
+Network operator
+
+
+
+*`network.carrier.name`*::
++
+--
+Carrier name, eg. Vodafone, T-Mobile, etc.
+
+
+type: keyword
+
+--
+
+*`network.carrier.mcc`*::
++
+--
+Mobile country code
+
+
+type: keyword
+
+--
+
+*`network.carrier.mnc`*::
++
+--
+Mobile network code
+
+
+type: keyword
+
+--
+
+*`network.carrier.icc`*::
++
+--
+ISO country code, eg. US
+
+
+type: keyword
+
+--
+
+[float]
 === host
 
 Optional host fields.
@@ -2949,6 +3263,18 @@ type: keyword
 
 --
 
+*`user.domain`*::
++
+--
+Domain of the logged in user.
+
+
+type: keyword
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
 *`user.id`*::
 +
 --
@@ -2974,6 +3300,18 @@ type: keyword
 --
 
 
+*`client.domain`*::
++
+--
+Client domain.
+
+
+type: keyword
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
 *`client.ip`*::
 +
 --
@@ -2986,6 +3324,30 @@ type: ip
 
 --
 
+*`client.port`*::
++
+--
+Port of the client.
+
+
+type: long
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+
+*`source.domain`*::
++
+--
+Source domain.
+
+
+type: keyword
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
 
 *`source.ip`*::
 +
@@ -2994,6 +3356,18 @@ IP address of the source of a recorded event. This is typically obtained from a 
 
 
 type: ip
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`source.port`*::
++
+--
+Port of the source.
+
+
+type: long
 
 {yes-icon} {ecs-ref}[ECS] field.
 
@@ -3503,7 +3877,7 @@ Destination service context
 *`span.destination.service.type`*::
 +
 --
-Type of the destination service (e.g. 'db', 'elasticsearch'). Should typically be the same as span.type.
+Type of the destination service (e.g. 'db', 'elasticsearch'). Should typically be the same as span.type. DEPRECATED: this field will be removed in a future release
 
 
 type: keyword
@@ -3513,7 +3887,7 @@ type: keyword
 *`span.destination.service.name`*::
 +
 --
-Identifier for the destination service (e.g. 'http://elastic.co', 'elasticsearch', 'rabbitmq')
+Identifier for the destination service (e.g. 'http://elastic.co', 'elasticsearch', 'rabbitmq') DEPRECATED: this field will be removed in a future release
 
 
 type: keyword
@@ -3929,6 +4303,27 @@ type: keyword
 --
 
 
+*`session.id`*::
++
+--
+The ID of the session to which the event belongs.
+
+
+type: keyword
+
+--
+
+*`session.sequence`*::
++
+--
+The sequence number of the event within the session to which the event belongs.
+
+
+type: long
+
+--
+
+
 
 *`transaction.duration.us`*::
 +
@@ -4194,6 +4589,70 @@ type: keyword
 --
 
 [float]
+=== network
+
+Optional network fields
+
+
+
+*`network.connection_type`*::
++
+--
+Cellular network technology, eg. 4G
+
+
+type: keyword
+
+--
+
+[float]
+=== carrier
+
+Network operator
+
+
+
+*`network.carrier.name`*::
++
+--
+Carrier name, eg. Vodafone, T-Mobile, etc.
+
+
+type: keyword
+
+--
+
+*`network.carrier.mcc`*::
++
+--
+Mobile country code
+
+
+type: keyword
+
+--
+
+*`network.carrier.mnc`*::
++
+--
+Mobile network code
+
+
+type: keyword
+
+--
+
+*`network.carrier.icc`*::
++
+--
+ISO country code, eg. US
+
+
+type: keyword
+
+--
+
+[float]
 === host
 
 Optional host fields.
@@ -4380,6 +4839,18 @@ type: keyword
 --
 
 
+*`user.domain`*::
++
+--
+The domain of the logged in user.
+
+
+type: keyword
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
 *`user.name`*::
 +
 --
@@ -4417,6 +4888,18 @@ type: keyword
 --
 
 
+*`client.domain`*::
++
+--
+Client domain.
+
+
+type: keyword
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
 *`client.ip`*::
 +
 --
@@ -4429,6 +4912,30 @@ type: ip
 
 --
 
+*`client.port`*::
++
+--
+Port of the client.
+
+
+type: long
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+
+*`source.domain`*::
++
+--
+Source domain.
+
+
+type: keyword
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
 
 *`source.ip`*::
 +
@@ -4437,6 +4944,18 @@ IP address of the source of a recorded event. This is typically obtained from a 
 
 
 type: ip
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`source.port`*::
++
+--
+Port of the source.
+
+
+type: long
 
 {yes-icon} {ecs-ref}[ECS] field.
 
@@ -5269,6 +5788,70 @@ type: keyword
 --
 
 [float]
+=== network
+
+Optional network fields
+
+
+
+*`network.connection_type`*::
++
+--
+Cellular network technology, eg. 4G
+
+
+type: keyword
+
+--
+
+[float]
+=== carrier
+
+Network operator
+
+
+
+*`network.carrier.name`*::
++
+--
+Carrier name, eg. Vodafone, T-Mobile, etc.
+
+
+type: keyword
+
+--
+
+*`network.carrier.mcc`*::
++
+--
+Mobile country code
+
+
+type: keyword
+
+--
+
+*`network.carrier.mnc`*::
++
+--
+Mobile network code
+
+
+type: keyword
+
+--
+
+*`network.carrier.icc`*::
++
+--
+ISO country code, eg. US
+
+
+type: keyword
+
+--
+
+[float]
 === host
 
 Optional host fields.
@@ -5492,6 +6075,18 @@ type: keyword
 --
 
 
+*`client.domain`*::
++
+--
+Client domain.
+
+
+type: keyword
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
 *`client.ip`*::
 +
 --
@@ -5504,6 +6099,30 @@ type: ip
 
 --
 
+*`client.port`*::
++
+--
+Port of the client.
+
+
+type: long
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+
+*`source.domain`*::
++
+--
+Source domain.
+
+
+type: keyword
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
 
 *`source.ip`*::
 +
@@ -5512,6 +6131,18 @@ IP address of the source of a recorded event. This is typically obtained from a 
 
 
 type: ip
+
+{yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`source.port`*::
++
+--
+Port of the source.
+
+
+type: long
 
 {yes-icon} {ecs-ref}[ECS] field.
 
@@ -6395,6 +7026,17 @@ example: Montreal
 
 --
 
+*`client.geo.continent_code`*::
++
+--
+Two-letter code representing continent's name.
+
+type: keyword
+
+example: NA
+
+--
+
 *`client.geo.continent_name`*::
 +
 --
@@ -6462,6 +7104,18 @@ example: boston-dc
 
 --
 
+*`client.geo.postal_code`*::
++
+--
+Postal code associated with the location.
+Values appropriate for this field may also be known as a postcode or ZIP code and will vary widely from country to country.
+
+type: keyword
+
+example: 94040
+
+--
+
 *`client.geo.region_iso_code`*::
 +
 --
@@ -6488,6 +7142,17 @@ example: Quebec
 
 --
 
+*`client.geo.timezone`*::
++
+--
+The time zone of the location, such as IANA time zone name.
+
+type: keyword
+
+example: America/Argentina/Buenos_Aires
+
+--
+
 *`client.ip`*::
 +
 --
@@ -6503,8 +7168,11 @@ type: ip
 +
 --
 MAC address of the client.
+The notation format from RFC 7042 is suggested: Each octet (that is, 8-bit byte) is represented by two [uppercase] hexadecimal digits giving the value of the octet as an unsigned integer. Successive octets are separated by a hyphen.
 
 type: keyword
+
+example: 00-00-5E-00-53-23
 
 {yes-icon} {ecs-ref}[ECS] field.
 
@@ -6874,6 +7542,18 @@ example: us-east-1
 
 --
 
+*`cloud.service.name`*::
++
+--
+The cloud service name is intended to distinguish services running on different platforms within a provider, eg AWS EC2 vs Lambda, GCP GCE vs App Engine, Azure VM vs App Server.
+Examples: app engine, app service, cloud run, fargate, lambda.
+
+type: keyword
+
+example: lambda
+
+--
+
 [float]
 === code_signature
 
@@ -6888,6 +7568,18 @@ Boolean to capture if a signature is present.
 type: boolean
 
 example: true
+
+--
+
+*`code_signature.signing_id`*::
++
+--
+The identifier used to sign the process.
+This is used to identify the application manufactured by a software vendor. The field is relevant to Apple *OS only.
+
+type: keyword
+
+example: com.apple.xpc.proxy
 
 --
 
@@ -6911,6 +7603,18 @@ Subject name of the code signer
 type: keyword
 
 example: Microsoft Corporation
+
+--
+
+*`code_signature.team_id`*::
++
+--
+The team identifier used to sign the process.
+This is used to identify the team or vendor of a software product. The field is relevant to Apple *OS only.
+
+type: keyword
+
+example: EQHXZ8M8AV
 
 --
 
@@ -7014,6 +7718,56 @@ example: docker
 --
 
 [float]
+=== data_stream
+
+The data_stream fields take part in defining the new data stream naming scheme.
+In the new data stream naming scheme the value of the data stream fields combine to the name of the actual data stream in the following manner: `{data_stream.type}-{data_stream.dataset}-{data_stream.namespace}`. This means the fields can only contain characters that are valid as part of names of data streams. More details about this can be found in this https://www.elastic.co/blog/an-introduction-to-the-elastic-data-stream-naming-scheme[blog post].
+An Elasticsearch data stream consists of one or more backing indices, and a data stream name forms part of the backing indices names. Due to this convention, data streams must also follow index naming restrictions. For example, data stream names cannot include `\`, `/`, `*`, `?`, `"`, `<`, `>`, `|`, ` ` (space character), `,`, or `#`. Please see the Elasticsearch reference for additional https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-create-index.html#indices-create-api-path-params[restrictions].
+
+
+*`data_stream.dataset`*::
++
+--
+The field can contain anything that makes sense to signify the source of the data.
+Examples include `nginx.access`, `prometheus`, `endpoint` etc. For data streams that otherwise fit, but that do not have dataset set we use the value "generic" for the dataset value. `event.dataset` should have the same value as `data_stream.dataset`.
+Beyond the Elasticsearch data stream naming criteria noted above, the `dataset` value has additional restrictions:
+  * Must not contain `-`
+  * No longer than 100 characters
+
+type: constant_keyword
+
+example: nginx.access
+
+--
+
+*`data_stream.namespace`*::
++
+--
+A user defined namespace. Namespaces are useful to allow grouping of data.
+Many users already organize their indices this way, and the data stream naming scheme now provides this best practice as a default. Many users will populate this field with `default`. If no value is used, it falls back to `default`.
+Beyond the Elasticsearch index naming criteria noted above, `namespace` value has the additional restrictions:
+  * Must not contain `-`
+  * No longer than 100 characters
+
+type: constant_keyword
+
+example: production
+
+--
+
+*`data_stream.type`*::
++
+--
+An overarching type for the data stream.
+Currently allowed values are "logs" and "metrics". We expect to also add "traces" and "synthetics" in the near future.
+
+type: constant_keyword
+
+example: logs
+
+--
+
+[float]
 === destination
 
 Destination fields capture details about the receiver of a network exchange/packet. These fields are populated from a network event, packet, or other event containing details of a network transaction.
@@ -7104,6 +7858,17 @@ example: Montreal
 
 --
 
+*`destination.geo.continent_code`*::
++
+--
+Two-letter code representing continent's name.
+
+type: keyword
+
+example: NA
+
+--
+
 *`destination.geo.continent_name`*::
 +
 --
@@ -7171,6 +7936,18 @@ example: boston-dc
 
 --
 
+*`destination.geo.postal_code`*::
++
+--
+Postal code associated with the location.
+Values appropriate for this field may also be known as a postcode or ZIP code and will vary widely from country to country.
+
+type: keyword
+
+example: 94040
+
+--
+
 *`destination.geo.region_iso_code`*::
 +
 --
@@ -7197,6 +7974,17 @@ example: Quebec
 
 --
 
+*`destination.geo.timezone`*::
++
+--
+The time zone of the location, such as IANA time zone name.
+
+type: keyword
+
+example: America/Argentina/Buenos_Aires
+
+--
+
 *`destination.ip`*::
 +
 --
@@ -7212,8 +8000,11 @@ type: ip
 +
 --
 MAC address of the destination.
+The notation format from RFC 7042 is suggested: Each octet (that is, 8-bit byte) is represented by two [uppercase] hexadecimal digits giving the value of the octet as an unsigned integer. Successive octets are separated by a hyphen.
 
 type: keyword
+
+example: 00-00-5E-00-53-23
 
 {yes-icon} {ecs-ref}[ECS] field.
 
@@ -7469,6 +8260,18 @@ example: true
 
 --
 
+*`dll.code_signature.signing_id`*::
++
+--
+The identifier used to sign the process.
+This is used to identify the application manufactured by a software vendor. The field is relevant to Apple *OS only.
+
+type: keyword
+
+example: com.apple.xpc.proxy
+
+--
+
 *`dll.code_signature.status`*::
 +
 --
@@ -7493,6 +8296,18 @@ type: keyword
 example: Microsoft Corporation
 
 {yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`dll.code_signature.team_id`*::
++
+--
+The team identifier used to sign the process.
+This is used to identify the team or vendor of a software product. The field is relevant to Apple *OS only.
+
+type: keyword
+
+example: EQHXZ8M8AV
 
 --
 
@@ -7565,6 +8380,15 @@ SHA512 hash.
 type: keyword
 
 {yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`dll.hash.ssdeep`*::
++
+--
+SSDEEP hash.
+
+type: keyword
 
 --
 
@@ -8435,6 +9259,18 @@ example: true
 
 --
 
+*`file.code_signature.signing_id`*::
++
+--
+The identifier used to sign the process.
+This is used to identify the application manufactured by a software vendor. The field is relevant to Apple *OS only.
+
+type: keyword
+
+example: com.apple.xpc.proxy
+
+--
+
 *`file.code_signature.status`*::
 +
 --
@@ -8459,6 +9295,18 @@ type: keyword
 example: Microsoft Corporation
 
 {yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`file.code_signature.team_id`*::
++
+--
+The team identifier used to sign the process.
+This is used to identify the team or vendor of a software product. The field is relevant to Apple *OS only.
+
+type: keyword
+
+example: EQHXZ8M8AV
 
 --
 
@@ -8635,6 +9483,15 @@ SHA512 hash.
 type: keyword
 
 {yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`file.hash.ssdeep`*::
++
+--
+SSDEEP hash.
+
+type: keyword
 
 --
 
@@ -9212,6 +10069,17 @@ example: Montreal
 
 --
 
+*`geo.continent_code`*::
++
+--
+Two-letter code representing continent's name.
+
+type: keyword
+
+example: NA
+
+--
+
 *`geo.continent_name`*::
 +
 --
@@ -9269,6 +10137,18 @@ example: boston-dc
 
 --
 
+*`geo.postal_code`*::
++
+--
+Postal code associated with the location.
+Values appropriate for this field may also be known as a postcode or ZIP code and will vary widely from country to country.
+
+type: keyword
+
+example: 94040
+
+--
+
 *`geo.region_iso_code`*::
 +
 --
@@ -9288,6 +10168,17 @@ Region name.
 type: keyword
 
 example: Quebec
+
+--
+
+*`geo.timezone`*::
++
+--
+The time zone of the location, such as IANA time zone name.
+
+type: keyword
+
+example: America/Argentina/Buenos_Aires
 
 --
 
@@ -9334,8 +10225,9 @@ type: keyword
 [float]
 === hash
 
-The hash fields represent different hash algorithms and their values.
+The hash fields represent different bitwise hash algorithms and their values.
 Field names for common hashes (e.g. MD5, SHA1) are predefined. Add fields for other hashes by lowercasing the hash algorithm name and using underscore separators as appropriate (snake case, e.g. sha3_512).
+Note that this fieldset is used for common hashes that may be computed over a range of generic bytes. Entity-specific hashes such as ja3 or imphash are placed in the fieldsets to which they relate (tls and pe, respectively).
 
 
 *`hash.md5`*::
@@ -9374,6 +10266,15 @@ type: keyword
 
 --
 
+*`hash.ssdeep`*::
++
+--
+SSDEEP hash.
+
+type: keyword
+
+--
+
 [float]
 === host
 
@@ -9391,6 +10292,35 @@ type: keyword
 example: x86_64
 
 {yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`host.cpu.usage`*::
++
+--
+Percent CPU used which is normalized by the number of CPU cores and it ranges from 0 to 1.
+Scaling factor: 1000.
+For example: For a two core host, this value should be the average of the two cores, between 0 and 1.
+
+type: scaled_float
+
+--
+
+*`host.disk.read.bytes`*::
++
+--
+The total number of bytes (gauge) read successfully (aggregated from all disks) since the last metric collection.
+
+type: long
+
+--
+
+*`host.disk.write.bytes`*::
++
+--
+The total number of bytes (gauge) written successfully (aggregated from all disks) since the last metric collection.
+
+type: long
 
 --
 
@@ -9418,6 +10348,17 @@ type: keyword
 example: Montreal
 
 {yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`host.geo.continent_code`*::
++
+--
+Two-letter code representing continent's name.
+
+type: keyword
+
+example: NA
 
 --
 
@@ -9488,6 +10429,18 @@ example: boston-dc
 
 --
 
+*`host.geo.postal_code`*::
++
+--
+Postal code associated with the location.
+Values appropriate for this field may also be known as a postcode or ZIP code and will vary widely from country to country.
+
+type: keyword
+
+example: 94040
+
+--
+
 *`host.geo.region_iso_code`*::
 +
 --
@@ -9511,6 +10464,17 @@ type: keyword
 example: Quebec
 
 {yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`host.geo.timezone`*::
++
+--
+The time zone of the location, such as IANA time zone name.
+
+type: keyword
+
+example: America/Argentina/Buenos_Aires
 
 --
 
@@ -9553,9 +10517,12 @@ type: ip
 *`host.mac`*::
 +
 --
-Host mac addresses.
+Host MAC addresses.
+The notation format from RFC 7042 is suggested: Each octet (that is, 8-bit byte) is represented by two [uppercase] hexadecimal digits giving the value of the octet as an unsigned integer. Successive octets are separated by a hyphen.
 
 type: keyword
+
+example: ["00-00-5E-00-53-23", "00-00-5E-00-53-24"]
 
 {yes-icon} {ecs-ref}[ECS] field.
 
@@ -9570,6 +10537,42 @@ It can contain what `hostname` returns on Unix systems, the fully qualified doma
 type: keyword
 
 {yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`host.network.egress.bytes`*::
++
+--
+The number of bytes (gauge) sent out on all network interfaces by the host since the last metric collection.
+
+type: long
+
+--
+
+*`host.network.egress.packets`*::
++
+--
+The number of packets (gauge) sent out on all network interfaces by the host since the last metric collection.
+
+type: long
+
+--
+
+*`host.network.ingress.bytes`*::
++
+--
+The number of bytes received (gauge) on all network interfaces by the host since the last metric collection.
+
+type: long
+
+--
+
+*`host.network.ingress.packets`*::
++
+--
+The number of packets (gauge) received on all network interfaces by the host since the last metric collection.
+
+type: long
 
 --
 
@@ -9889,6 +10892,18 @@ example: 1437
 format: bytes
 
 {yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`http.request.id`*::
++
+--
+A unique identifier for each HTTP request to correlate logs between clients and servers in transactions.
+The id may be contained in a non-standard HTTP header, such as `X-Request-ID` or `X-Correlation-ID`.
+
+type: keyword
+
+example: 123e4567-e89b-12d3-a456-426614174000
 
 --
 
@@ -10497,7 +11512,7 @@ This could be a custom hardware appliance or a server that has been configured t
 *`observer.egress`*::
 +
 --
-Observer.egress holds information like interface number and name, vlan, and zone information to  classify egress traffic.  Single armed monitoring such as a network sensor on a span port should  only use observer.ingress to categorize traffic.
+Observer.egress holds information like interface number and name, vlan, and zone information to classify egress traffic.  Single armed monitoring such as a network sensor on a span port should only use observer.ingress to categorize traffic.
 
 type: object
 
@@ -10573,7 +11588,7 @@ example: outside
 *`observer.egress.zone`*::
 +
 --
-Network zone of outbound traffic as reported by the observer to categorize the destination area of egress  traffic, e.g. Internal, External, DMZ, HR, Legal, etc.
+Network zone of outbound traffic as reported by the observer to categorize the destination area of egress traffic, e.g. Internal, External, DMZ, HR, Legal, etc.
 
 type: keyword
 
@@ -10593,6 +11608,17 @@ type: keyword
 example: Montreal
 
 {yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`observer.geo.continent_code`*::
++
+--
+Two-letter code representing continent's name.
+
+type: keyword
+
+example: NA
 
 --
 
@@ -10663,6 +11689,18 @@ example: boston-dc
 
 --
 
+*`observer.geo.postal_code`*::
++
+--
+Postal code associated with the location.
+Values appropriate for this field may also be known as a postcode or ZIP code and will vary widely from country to country.
+
+type: keyword
+
+example: 94040
+
+--
+
 *`observer.geo.region_iso_code`*::
 +
 --
@@ -10689,6 +11727,17 @@ example: Quebec
 
 --
 
+*`observer.geo.timezone`*::
++
+--
+The time zone of the location, such as IANA time zone name.
+
+type: keyword
+
+example: America/Argentina/Buenos_Aires
+
+--
+
 *`observer.hostname`*::
 +
 --
@@ -10703,7 +11752,7 @@ type: keyword
 *`observer.ingress`*::
 +
 --
-Observer.ingress holds information like interface number and name, vlan, and zone information to  classify ingress traffic.  Single armed monitoring such as a network sensor on a span port should  only use observer.ingress to categorize traffic.
+Observer.ingress holds information like interface number and name, vlan, and zone information to classify ingress traffic.  Single armed monitoring such as a network sensor on a span port should only use observer.ingress to categorize traffic.
 
 type: object
 
@@ -10779,7 +11828,7 @@ example: outside
 *`observer.ingress.zone`*::
 +
 --
-Network zone of incoming traffic as reported by the observer to categorize the source area of ingress  traffic. e.g. internal, External, DMZ, HR, Legal, etc.
+Network zone of incoming traffic as reported by the observer to categorize the source area of ingress traffic. e.g. internal, External, DMZ, HR, Legal, etc.
 
 type: keyword
 
@@ -10803,9 +11852,12 @@ type: ip
 *`observer.mac`*::
 +
 --
-MAC addresses of the observer
+MAC addresses of the observer.
+The notation format from RFC 7042 is suggested: Each octet (that is, 8-bit byte) is represented by two [uppercase] hexadecimal digits giving the value of the octet as an unsigned integer. Successive octets are separated by a hyphen.
 
 type: keyword
+
+example: ["00-00-5E-00-53-23", "00-00-5E-00-53-24"]
 
 {yes-icon} {ecs-ref}[ECS] field.
 
@@ -10990,6 +12042,105 @@ Observer version.
 type: keyword
 
 {yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+[float]
+=== orchestrator
+
+Fields that describe the resources which container orchestrators manage or act upon.
+
+
+*`orchestrator.api_version`*::
++
+--
+API version being used to carry out the action
+
+type: keyword
+
+example: v1beta1
+
+--
+
+*`orchestrator.cluster.name`*::
++
+--
+Name of the cluster.
+
+type: keyword
+
+--
+
+*`orchestrator.cluster.url`*::
++
+--
+URL of the API used to manage the cluster.
+
+type: keyword
+
+--
+
+*`orchestrator.cluster.version`*::
++
+--
+The version of the cluster.
+
+type: keyword
+
+--
+
+*`orchestrator.namespace`*::
++
+--
+Namespace in which the action is taking place.
+
+type: keyword
+
+example: kube-system
+
+--
+
+*`orchestrator.organization`*::
++
+--
+Organization affected by the event (for multi-tenant orchestrator setups).
+
+type: keyword
+
+example: elastic
+
+--
+
+*`orchestrator.resource.name`*::
++
+--
+Name of the resource being acted upon.
+
+type: keyword
+
+example: test-pod-cdcws
+
+--
+
+*`orchestrator.resource.type`*::
++
+--
+Type of resource being acted upon.
+
+type: keyword
+
+example: service
+
+--
+
+*`orchestrator.type`*::
++
+--
+Orchestrator cluster type (e.g. kubernetes, nomad or cloudfoundry).
+
+type: keyword
+
+example: kubernetes
 
 --
 
@@ -11438,6 +12589,18 @@ example: true
 
 --
 
+*`process.code_signature.signing_id`*::
++
+--
+The identifier used to sign the process.
+This is used to identify the application manufactured by a software vendor. The field is relevant to Apple *OS only.
+
+type: keyword
+
+example: com.apple.xpc.proxy
+
+--
+
 *`process.code_signature.status`*::
 +
 --
@@ -11462,6 +12625,18 @@ type: keyword
 example: Microsoft Corporation
 
 {yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`process.code_signature.team_id`*::
++
+--
+The team identifier used to sign the process.
+This is used to identify the team or vendor of a software product. The field is relevant to Apple *OS only.
+
+type: keyword
+
+example: EQHXZ8M8AV
 
 --
 
@@ -11607,6 +12782,15 @@ type: keyword
 
 --
 
+*`process.hash.ssdeep`*::
++
+--
+SSDEEP hash.
+
+type: keyword
+
+--
+
 *`process.name`*::
 +
 --
@@ -11669,6 +12853,18 @@ example: true
 
 --
 
+*`process.parent.code_signature.signing_id`*::
++
+--
+The identifier used to sign the process.
+This is used to identify the application manufactured by a software vendor. The field is relevant to Apple *OS only.
+
+type: keyword
+
+example: com.apple.xpc.proxy
+
+--
+
 *`process.parent.code_signature.status`*::
 +
 --
@@ -11693,6 +12889,18 @@ type: keyword
 example: Microsoft Corporation
 
 {yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`process.parent.code_signature.team_id`*::
++
+--
+The team identifier used to sign the process.
+This is used to identify the team or vendor of a software product. The field is relevant to Apple *OS only.
+
+type: keyword
+
+example: EQHXZ8M8AV
 
 --
 
@@ -11835,6 +13043,15 @@ SHA512 hash.
 type: keyword
 
 {yes-icon} {ecs-ref}[ECS] field.
+
+--
+
+*`process.parent.hash.ssdeep`*::
++
+--
+SSDEEP hash.
+
+type: keyword
 
 --
 
@@ -12696,6 +13913,17 @@ example: Montreal
 
 --
 
+*`server.geo.continent_code`*::
++
+--
+Two-letter code representing continent's name.
+
+type: keyword
+
+example: NA
+
+--
+
 *`server.geo.continent_name`*::
 +
 --
@@ -12763,6 +13991,18 @@ example: boston-dc
 
 --
 
+*`server.geo.postal_code`*::
++
+--
+Postal code associated with the location.
+Values appropriate for this field may also be known as a postcode or ZIP code and will vary widely from country to country.
+
+type: keyword
+
+example: 94040
+
+--
+
 *`server.geo.region_iso_code`*::
 +
 --
@@ -12789,6 +14029,17 @@ example: Quebec
 
 --
 
+*`server.geo.timezone`*::
++
+--
+The time zone of the location, such as IANA time zone name.
+
+type: keyword
+
+example: America/Argentina/Buenos_Aires
+
+--
+
 *`server.ip`*::
 +
 --
@@ -12804,8 +14055,11 @@ type: ip
 +
 --
 MAC address of the server.
+The notation format from RFC 7042 is suggested: Each octet (that is, 8-bit byte) is represented by two [uppercase] hexadecimal digits giving the value of the octet as an unsigned integer. Successive octets are separated by a hyphen.
 
 type: keyword
+
+example: 00-00-5E-00-53-23
 
 {yes-icon} {ecs-ref}[ECS] field.
 
@@ -13234,6 +14488,17 @@ example: Montreal
 
 --
 
+*`source.geo.continent_code`*::
++
+--
+Two-letter code representing continent's name.
+
+type: keyword
+
+example: NA
+
+--
+
 *`source.geo.continent_name`*::
 +
 --
@@ -13301,6 +14566,18 @@ example: boston-dc
 
 --
 
+*`source.geo.postal_code`*::
++
+--
+Postal code associated with the location.
+Values appropriate for this field may also be known as a postcode or ZIP code and will vary widely from country to country.
+
+type: keyword
+
+example: 94040
+
+--
+
 *`source.geo.region_iso_code`*::
 +
 --
@@ -13327,6 +14604,17 @@ example: Quebec
 
 --
 
+*`source.geo.timezone`*::
++
+--
+The time zone of the location, such as IANA time zone name.
+
+type: keyword
+
+example: America/Argentina/Buenos_Aires
+
+--
+
 *`source.ip`*::
 +
 --
@@ -13342,8 +14630,11 @@ type: ip
 +
 --
 MAC address of the source.
+The notation format from RFC 7042 is suggested: Each octet (that is, 8-bit byte) is represented by two [uppercase] hexadecimal digits giving the value of the octet as an unsigned integer. Successive octets are separated by a hyphen.
 
 type: keyword
+
+example: 00-00-5E-00-53-23
 
 {yes-icon} {ecs-ref}[ECS] field.
 
@@ -16179,6 +17470,16 @@ type: keyword
 
 --
 
+*`kubernetes.pod.ip`*::
++
+--
+Kubernetes Pod IP
+
+
+type: ip
+
+--
+
 *`kubernetes.namespace`*::
 +
 --
@@ -16229,10 +17530,10 @@ type: object
 
 --
 
-*`kubernetes.service.selectors.*`*::
+*`kubernetes.selectors.*`*::
 +
 --
-Kubernetes Service selectors map
+Kubernetes selectors map
 
 
 type: object
@@ -16272,7 +17573,7 @@ type: keyword
 *`kubernetes.container.name`*::
 +
 --
-Kubernetes container name
+Kubernetes container name (different than the name from the runtime)
 
 
 type: keyword
@@ -16285,7 +17586,9 @@ type: keyword
 Kubernetes container image
 
 
-type: keyword
+type: alias
+
+alias to: container.image.name
 
 --
 
@@ -16450,7 +17753,7 @@ CPU-specific cgroup metrics and limits.
 --
 ID for the current cgroup CPU.
 
-type: long
+type: keyword
 
 --
 
@@ -16516,7 +17819,7 @@ CPU Accounting-specific cgroup metrics and limits.
 --
 ID for the current cgroup CPU.
 
-type: long
+type: keyword
 
 --
 

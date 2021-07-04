@@ -35,13 +35,22 @@ import (
 func isUnmappedMetadataField(key string) bool {
 	switch key {
 	case
+		"Client.Domain",
 		"Client.IP",
+		"Client.Port",
 		"Process.CommandLine",
 		"Process.Executable",
 		"System.Container.Runtime",
 		"System.Container.ImageName",
 		"System.Container.ImageTag",
 		"System.Container.Name",
+		"System.Network",
+		"System.Network.ConnectionType",
+		"System.Network.Carrier",
+		"System.Network.Carrier.Name",
+		"System.Network.Carrier.MCC",
+		"System.Network.Carrier.MNC",
+		"System.Network.Carrier.ICC",
 		"System.FullPlatform",
 		"System.ID",
 		"System.IP",

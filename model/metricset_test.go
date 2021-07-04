@@ -130,7 +130,7 @@ func TestTransform(t *testing.T) {
 			Output: []common.MapStr{
 				{
 					"data_stream.type":    "metrics",
-					"data_stream.dataset": "apm.internal.myservice",
+					"data_stream.dataset": "apm.internal",
 					"processor":           common.MapStr{"event": "metric", "name": "metric"},
 					"service":             common.MapStr{"name": "myservice"},
 					"transaction":         common.MapStr{"type": trType, "name": trName},
@@ -168,7 +168,7 @@ func TestTransform(t *testing.T) {
 			Output: []common.MapStr{
 				{
 					"data_stream.type":    "metrics",
-					"data_stream.dataset": "apm.internal.myservice",
+					"data_stream.dataset": "apm.internal",
 					"processor":           common.MapStr{"event": "metric", "name": "metric"},
 					"service":             common.MapStr{"name": "myservice"},
 					"event":               common.MapStr{"outcome": eventOutcome},
@@ -211,7 +211,7 @@ func TestTransform(t *testing.T) {
 			Output: []common.MapStr{
 				{
 					"data_stream.type":    "metrics",
-					"data_stream.dataset": "apm.internal.myservice",
+					"data_stream.dataset": "apm.internal",
 					"processor":           common.MapStr{"event": "metric", "name": "metric"},
 					"service":             common.MapStr{"name": "myservice"},
 					"span": common.MapStr{"type": spType, "subtype": spSubtype,
@@ -225,6 +225,54 @@ func TestTransform(t *testing.T) {
 				},
 			},
 			Msg: "Payload with destination service.",
+		},
+		{
+			Metricset: &Metricset{
+				Timestamp: timestamp,
+				Metadata:  metadata,
+				Samples: []Sample{{
+					Name:   "latency_histogram",
+					Type:   "histogram",
+					Unit:   "s",
+					Counts: []int64{1, 2, 3},
+					Values: []float64{1.1, 2.2, 3.3},
+				}, {
+					Name:  "just_type",
+					Type:  "counter",
+					Value: 123,
+				}, {
+					Name:  "just_unit",
+					Unit:  "percent",
+					Value: 0.99,
+				}},
+			},
+			Output: []common.MapStr{
+				{
+					"data_stream.type":    "metrics",
+					"data_stream.dataset": "apm.app.myservice",
+					"processor":           common.MapStr{"event": "metric", "name": "metric"},
+					"service":             common.MapStr{"name": "myservice"},
+					"latency_histogram": common.MapStr{
+						"counts": []int64{1, 2, 3},
+						"values": []float64{1.1, 2.2, 3.3},
+					},
+					"just_type": 123.0,
+					"just_unit": 0.99,
+					"_metric_descriptions": common.MapStr{
+						"latency_histogram": common.MapStr{
+							"type": "histogram",
+							"unit": "s",
+						},
+						"just_type": common.MapStr{
+							"type": "counter",
+						},
+						"just_unit": common.MapStr{
+							"unit": "percent",
+						},
+					},
+				},
+			},
+			Msg: "Payload with metric type and unit.",
 		},
 	}
 

@@ -32,7 +32,7 @@
             "container": {
                 "id": "container-id"
             },
-            "data_stream.dataset": "apm.1234_service_12a3",
+            "data_stream.dataset": "apm",
             "data_stream.type": "traces",
             "event": {
                 "outcome": "unknown"
@@ -153,7 +153,7 @@
             "container": {
                 "id": "container-id"
             },
-            "data_stream.dataset": "apm.1234_service_12a3",
+            "data_stream.dataset": "apm",
             "data_stream.type": "traces",
             "event": {
                 "outcome": "success"
@@ -325,6 +325,7 @@
                 "scheme": "https"
             },
             "user": {
+                "domain": "ldap://abc",
                 "id": "99",
                 "name": "foo"
             },
@@ -365,7 +366,7 @@
             "container": {
                 "id": "container-id"
             },
-            "data_stream.dataset": "apm.service1",
+            "data_stream.dataset": "apm",
             "data_stream.type": "traces",
             "event": {
                 "outcome": "unknown"
@@ -509,7 +510,7 @@
             "container": {
                 "id": "container-id"
             },
-            "data_stream.dataset": "apm.1234_service_12a3",
+            "data_stream.dataset": "apm",
             "data_stream.type": "traces",
             "event": {
                 "outcome": "unknown"
@@ -571,6 +572,10 @@
                     "version": "8.0.0"
                 },
                 "version": "5.1.3"
+            },
+            "session": {
+                "id": "sunday",
+                "sequence": 123
             },
             "timestamp": {
                 "us": 1533117600000000

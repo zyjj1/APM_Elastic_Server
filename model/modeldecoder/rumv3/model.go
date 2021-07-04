@@ -417,13 +417,15 @@ type spanContextDestination struct {
 type spanContextDestinationService struct {
 	// Name is the identifier for the destination service,
 	// e.g. 'http://elastic.co', 'elasticsearch', 'rabbitmq'
-	Name nullable.String `json:"n" validate:"required,maxLength=1024"`
+	// DEPRECATED: this field will be removed in a future release
+	Name nullable.String `json:"n" validate:"maxLength=1024"`
 	// Resource identifies the destination service resource being operated on
 	// e.g. 'http://elastic.co:80', 'elasticsearch', 'rabbitmq/queue_name'
 	Resource nullable.String `json:"rc" validate:"required,maxLength=1024"`
 	// Type of the destination service, e.g. db, elasticsearch. Should
 	// typically be the same as span.type.
-	Type nullable.String `json:"t" validate:"required,maxLength=1024"`
+	// DEPRECATED: this field will be removed in a future release
+	Type nullable.String `json:"t" validate:"maxLength=1024"`
 }
 
 type spanContextHTTP struct {
@@ -516,6 +518,8 @@ type transaction struct {
 	// was recorded. Allowed values are [0..1]. A SampleRate <1 indicates that
 	// not all spans are recorded.
 	SampleRate nullable.Float64 `json:"sr"`
+	// Session holds optional transaction session information for RUM.
+	Session transactionSession `json:"ses"`
 	// SpanCount counts correlated spans.
 	SpanCount transactionSpanCount `json:"yc" validate:"required"`
 	// Spans is a collection of spans related to this transaction.
@@ -528,6 +532,16 @@ type transaction struct {
 	// UserExperience holds metrics for measuring real user experience.
 	// This information is only sent by RUM agents.
 	UserExperience transactionUserExperience `json:"exp"`
+}
+
+type transactionSession struct {
+	// ID holds a session ID for grouping a set of related transactions.
+	ID nullable.String `json:"id" validate:"required"`
+
+	// Sequence holds an optional sequence number for a transaction within
+	// a session. It is not meaningful to compare sequences across two
+	// different sessions.
+	Sequence nullable.Int `json:"seq" validate:"min=1"`
 }
 
 type transactionMarks struct {
@@ -629,6 +643,8 @@ type longtaskMetrics struct {
 }
 
 type user struct {
+	// Domain of the user
+	Domain nullable.String `json:"ud" validate:"maxLength=1024"`
 	// ID identifies the logged in user, e.g. can be the primary key of the user
 	ID nullable.Interface `json:"id" validate:"maxLength=1024,inputTypes=string;int"`
 	// Email of the user.

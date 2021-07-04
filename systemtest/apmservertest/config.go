@@ -156,6 +156,28 @@ type RUMConfig struct {
 
 	// ResponseHeaders holds headers to add to all APM Server RUM HTTP responses.
 	ResponseHeaders http.Header `json:"response_headers,omitempty"`
+
+	// RateLimit holds event rate limit configuration.
+	RateLimit *RUMRateLimitConfig `json:"event_rate,omitempty"`
+
+	Sourcemap *RUMSourcemapConfig `json:"source_mapping,omitempty"`
+}
+
+// RUMRateLimitConfig holds APM Server RUM event rate limit configuration.
+type RUMRateLimitConfig struct {
+	IPLimit    int `json:"lru_size,omitempty"`
+	EventLimit int `json:"limit,omitempty"`
+}
+
+// RUMSourcemapConfig holds APM Server RUM sourcemap configuration.
+type RUMSourcemapConfig struct {
+	Enabled bool                     `json:"enabled,omitempty"`
+	Cache   *RUMSourcemapCacheConfig `json:"cache,omitempty"`
+}
+
+// RUMSourcemapCacheConfig holds sourcemap cache expiration.
+type RUMSourcemapCacheConfig struct {
+	Expiration time.Duration `json:"expiration,omitempty"`
 }
 
 // DataStreamsConfig holds APM Server data streams configuration.
@@ -453,7 +475,7 @@ func defaultOutputConfig() OutputConfig {
 			Enabled: true,
 			Hosts: []string{net.JoinHostPort(
 				getenvDefault("ES_HOST", defaultElasticsearchHost),
-				getenvDefault("ES_PORT", defaultElasticsearchPort),
+				ElasticsearchPort(),
 			)},
 			Username: getenvDefault("ES_USER", defaultElasticsearchUser),
 			Password: getenvDefault("ES_PASS", defaultElasticsearchPass),
@@ -468,6 +490,13 @@ func defaultOutputConfig() OutputConfig {
 // KIBANA_PORT, or otherwise returning the default of 5601.
 func KibanaPort() string {
 	return getenvDefault("KIBANA_PORT", defaultKibanaPort)
+}
+
+// ElasticsearchPort returns the Elasticsearch REST API port,
+// configured using ES_PORT, or otherwise returning the default
+// of 9200.
+func ElasticsearchPort() string {
+	return getenvDefault("ES_PORT", defaultElasticsearchPort)
 }
 
 func getenvDefault(k, defaultv string) string {

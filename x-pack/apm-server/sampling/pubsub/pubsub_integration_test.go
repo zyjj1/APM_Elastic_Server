@@ -46,11 +46,6 @@ func TestElasticsearchIntegration_PublishSampledTraceIDs(t *testing.T) {
 	client := newElasticsearchClient(t)
 	recreateDataStream(t, client, dataStream)
 
-	var input []string
-	for i := 0; i < 50; i++ {
-		input = append(input, uuid.Must(uuid.NewV4()).String())
-	}
-
 	es, err := pubsub.New(pubsub.Config{
 		Client:         client,
 		DataStream:     dataStream,
@@ -60,8 +55,27 @@ func TestElasticsearchIntegration_PublishSampledTraceIDs(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = es.PublishSampledTraceIDs(context.Background(), input...)
-	assert.NoError(t, err)
+	var input []string
+	for i := 0; i < 50; i++ {
+		input = append(input, uuid.Must(uuid.NewV4()).String())
+	}
+	ids := make(chan string, len(input))
+	for _, id := range input {
+		ids <- id
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		return es.PublishSampledTraceIDs(ctx, ids)
+	})
+	defer func() {
+		err := g.Wait()
+		assert.NoError(t, err)
+	}()
+	defer cancel()
+
+	//input...)
 
 	var result struct {
 		Hits struct {
@@ -135,7 +149,7 @@ func TestElasticsearchIntegration_SubscribeSampledTraceIDs(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	g.Go(func() error {
-		return es.SubscribeSampledTraceIDs(ctx, out)
+		return es.SubscribeSampledTraceIDs(ctx, pubsub.SubscriberPosition{}, out, nil)
 	})
 	assert.NoError(t, err)
 
@@ -200,6 +214,9 @@ func TestElasticsearchIntegration_SubscribeSampledTraceIDs(t *testing.T) {
 
 func recreateDataStream(tb testing.TB, client elasticsearch.Client, dataStream pubsub.DataStreamConfig) {
 	body := strings.NewReader(`{
+  "settings": {
+    "index.number_of_shards": 1
+  },
   "mappings": {
     "properties": {
       "event.ingested": {"type": "date"},
@@ -233,7 +250,7 @@ func recreateDataStream(tb testing.TB, client elasticsearch.Client, dataStream p
 		Body:  body,
 	}.Do(context.Background(), client)
 	require.NoError(tb, err)
-	assert.False(tb, resp.IsError())
+	require.False(tb, resp.IsError())
 	resp.Body.Close()
 }
 

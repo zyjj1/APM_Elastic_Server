@@ -48,9 +48,11 @@ import (
 	"go.opentelemetry.io/collector/consumer/pdata"
 	"go.opentelemetry.io/collector/translator/conventions"
 	jaegertranslator "go.opentelemetry.io/collector/translator/trace/jaeger"
+	"google.golang.org/grpc/codes"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/common"
+	"github.com/elastic/beats/v7/libbeat/logp"
 
 	"github.com/elastic/apm-server/approvaltest"
 	"github.com/elastic/apm-server/beater/beatertest"
@@ -474,6 +476,177 @@ func TestInstrumentationLibrary(t *testing.T) {
 	assert.Equal(t, "1.2.3", tx.Metadata.Service.Framework.Version)
 }
 
+func TestRPCTransaction(t *testing.T) {
+	tx := transformTransactionWithAttributes(t, map[string]pdata.AttributeValue{
+		"rpc.system":           pdata.NewAttributeValueString("grpc"),
+		"rpc.service":          pdata.NewAttributeValueString("myservice.EchoService"),
+		"rpc.method":           pdata.NewAttributeValueString("exampleMethod"),
+		"rpc.grpc.status_code": pdata.NewAttributeValueInt(int64(codes.Unavailable)),
+		"net.peer.name":        pdata.NewAttributeValueString("peer_name"),
+		"net.peer.ip":          pdata.NewAttributeValueString("10.20.30.40"),
+		"net.peer.port":        pdata.NewAttributeValueInt(123),
+	})
+	assert.Equal(t, "request", tx.Type)
+	assert.Equal(t, "Unavailable", tx.Result)
+	assert.Empty(t, tx.Labels)
+	assert.Equal(t, model.Client{
+		Domain: "peer_name",
+		IP:     net.ParseIP("10.20.30.40"),
+		Port:   123,
+	}, tx.Metadata.Client)
+}
+
+func TestRPCSpan(t *testing.T) {
+	span := transformSpanWithAttributes(t, map[string]pdata.AttributeValue{
+		"rpc.system":           pdata.NewAttributeValueString("grpc"),
+		"rpc.service":          pdata.NewAttributeValueString("myservice.EchoService"),
+		"rpc.method":           pdata.NewAttributeValueString("exampleMethod"),
+		"rpc.grpc.status_code": pdata.NewAttributeValueInt(int64(codes.Unavailable)),
+		"net.peer.ip":          pdata.NewAttributeValueString("10.20.30.40"),
+		"net.peer.port":        pdata.NewAttributeValueInt(123),
+	})
+	assert.Equal(t, "external", span.Type)
+	assert.Equal(t, "grpc", span.Subtype)
+	assert.Empty(t, span.Labels)
+	assert.Equal(t, &model.Destination{
+		Address: "10.20.30.40",
+		Port:    123,
+	}, span.Destination)
+	assert.Equal(t, &model.DestinationService{
+		Type:     "external",
+		Name:     "10.20.30.40:123",
+		Resource: "10.20.30.40:123",
+	}, span.DestinationService)
+}
+
+func TestMessagingTransaction(t *testing.T) {
+	tx := transformTransactionWithAttributes(t, map[string]pdata.AttributeValue{
+		"messaging.destination": pdata.NewAttributeValueString("myQueue"),
+	}, func(s pdata.Span) {
+		s.SetKind(pdata.SpanKindConsumer)
+		// Set parentID to imply this isn't the root, but
+		// kind==Consumer should still force the span to be translated
+		// as a transaction.
+		s.SetParentSpanID(pdata.NewSpanID([8]byte{3}))
+	})
+	assert.Equal(t, "messaging", tx.Type)
+	assert.Empty(t, tx.Labels)
+	assert.Equal(t, &model.Message{
+		QueueName: "myQueue",
+	}, tx.Message)
+}
+
+func TestMessagingSpan(t *testing.T) {
+	span := transformSpanWithAttributes(t, map[string]pdata.AttributeValue{
+		"messaging.system":      pdata.NewAttributeValueString("kafka"),
+		"messaging.destination": pdata.NewAttributeValueString("myTopic"),
+		"net.peer.ip":           pdata.NewAttributeValueString("10.20.30.40"),
+		"net.peer.port":         pdata.NewAttributeValueInt(123),
+	}, func(s pdata.Span) {
+		s.SetKind(pdata.SpanKindProducer)
+	})
+	assert.Equal(t, "messaging", span.Type)
+	assert.Equal(t, "kafka", span.Subtype)
+	assert.Equal(t, "send", span.Action)
+	assert.Empty(t, span.Labels)
+	assert.Equal(t, &model.Destination{
+		Address: "10.20.30.40",
+		Port:    123,
+	}, span.Destination)
+	assert.Equal(t, &model.DestinationService{
+		Type:     "messaging",
+		Name:     "kafka",
+		Resource: "kafka/myTopic",
+	}, span.DestinationService)
+}
+
+func TestArrayLabels(t *testing.T) {
+	stringArray := pdata.NewAttributeValueArray()
+	stringArray.ArrayVal().Append(pdata.NewAttributeValueString("string1"))
+	stringArray.ArrayVal().Append(pdata.NewAttributeValueString("string2"))
+
+	boolArray := pdata.NewAttributeValueArray()
+	boolArray.ArrayVal().Append(pdata.NewAttributeValueBool(false))
+	boolArray.ArrayVal().Append(pdata.NewAttributeValueBool(true))
+
+	tx := transformTransactionWithAttributes(t, map[string]pdata.AttributeValue{
+		"string_array": stringArray,
+		"bool_array":   boolArray,
+	})
+	assert.Equal(t, common.MapStr{
+		"bool_array":   []interface{}{false, true},
+		"string_array": []interface{}{"string1", "string2"},
+	}, tx.Labels)
+}
+
+func TestConsumeTracesExportTimestamp(t *testing.T) {
+	traces, otelSpans := newTracesSpans()
+
+	// The actual timestamps will be non-deterministic, as they are adjusted
+	// based on the server's clock.
+	//
+	// Use a large delta so that we can allow for a significant amount of
+	// delay in the test environment affecting the timestamp adjustment.
+	const timeDelta = time.Hour
+	const allowedError = 5 // seconds
+
+	now := time.Now()
+	exportTimestamp := now.Add(-timeDelta)
+	traces.ResourceSpans().At(0).Resource().Attributes().InitFromMap(map[string]pdata.AttributeValue{
+		"telemetry.sdk.elastic_export_timestamp": pdata.NewAttributeValueInt(exportTimestamp.UnixNano()),
+	})
+
+	// Offsets are start times relative to the export timestamp.
+	transactionOffset := -2 * time.Second
+	spanOffset := transactionOffset + time.Second
+	exceptionOffset := spanOffset + 25*time.Millisecond
+	transactionDuration := time.Second + 100*time.Millisecond
+	spanDuration := 50 * time.Millisecond
+
+	exportedTransactionTimestamp := exportTimestamp.Add(transactionOffset)
+	exportedSpanTimestamp := exportTimestamp.Add(spanOffset)
+	exportedExceptionTimestamp := exportTimestamp.Add(exceptionOffset)
+
+	otelSpan1 := pdata.NewSpan()
+	otelSpan1.SetTraceID(pdata.NewTraceID([16]byte{1}))
+	otelSpan1.SetSpanID(pdata.NewSpanID([8]byte{2}))
+	otelSpan1.SetStartTimestamp(pdata.TimestampFromTime(exportedTransactionTimestamp))
+	otelSpan1.SetEndTimestamp(pdata.TimestampFromTime(exportedTransactionTimestamp.Add(transactionDuration)))
+	otelSpans.Spans().Append(otelSpan1)
+
+	otelSpan2 := pdata.NewSpan()
+	otelSpan2.SetTraceID(pdata.NewTraceID([16]byte{1}))
+	otelSpan2.SetSpanID(pdata.NewSpanID([8]byte{2}))
+	otelSpan2.SetParentSpanID(pdata.NewSpanID([8]byte{3}))
+	otelSpan2.SetStartTimestamp(pdata.TimestampFromTime(exportedSpanTimestamp))
+	otelSpan2.SetEndTimestamp(pdata.TimestampFromTime(exportedSpanTimestamp.Add(spanDuration)))
+	otelSpans.Spans().Append(otelSpan2)
+
+	otelSpanEvent := pdata.NewSpanEvent()
+	otelSpanEvent.SetTimestamp(pdata.TimestampFromTime(exportedExceptionTimestamp))
+	otelSpanEvent.SetName("exception")
+	otelSpanEvent.Attributes().InitFromMap(map[string]pdata.AttributeValue{
+		"exception.type":       pdata.NewAttributeValueString("the_type"),
+		"exception.message":    pdata.NewAttributeValueString("the_message"),
+		"exception.stacktrace": pdata.NewAttributeValueString("the_stacktrace"),
+	})
+	otelSpan2.Events().Append(otelSpanEvent)
+
+	batch := transformTraces(t, traces)
+	require.Len(t, batch.Transactions, 1)
+	require.Len(t, batch.Spans, 1)
+	require.Len(t, batch.Errors, 1)
+
+	// Give some leeway for one event, and check other events' timestamps relative to that one.
+	assert.InDelta(t, now.Add(transactionOffset).Unix(), batch.Transactions[0].Timestamp.Unix(), allowedError)
+	assert.Equal(t, spanOffset-transactionOffset, batch.Spans[0].Timestamp.Sub(batch.Transactions[0].Timestamp))
+	assert.Equal(t, exceptionOffset-transactionOffset, batch.Errors[0].Timestamp.Sub(batch.Transactions[0].Timestamp))
+
+	// Durations should be unaffected.
+	assert.Equal(t, float64(transactionDuration.Milliseconds()), batch.Transactions[0].Duration)
+	assert.Equal(t, float64(spanDuration.Milliseconds()), batch.Spans[0].Duration)
+}
+
 func TestConsumer_JaegerMetadata(t *testing.T) {
 	jaegerBatch := jaegermodel.Batch{
 		Spans: []*jaegermodel.Span{{
@@ -862,6 +1035,21 @@ func TestJaegerServiceVersion(t *testing.T) {
 	assert.Equal(t, "span_tag_value", batches[0].Transactions[1].Metadata.Service.Version)
 }
 
+func TestTracesLogging(t *testing.T) {
+	for _, level := range []logp.Level{logp.InfoLevel, logp.DebugLevel} {
+		t.Run(level.String(), func(t *testing.T) {
+			logp.DevelopmentSetup(logp.ToObserverOutput(), logp.WithLevel(level))
+			transformTraces(t, pdata.NewTraces())
+			logs := logp.ObserverLogs().TakeAll()
+			if level == logp.InfoLevel {
+				assert.Empty(t, logs)
+			} else {
+				assert.NotEmpty(t, logs)
+			}
+		})
+	}
+}
+
 func testJaegerLogs() []jaegermodel.Log {
 	return []jaegermodel.Log{{
 		// errors that can be converted to elastic errors
@@ -992,23 +1180,29 @@ func jaegerKeyValue(k string, v interface{}) jaegermodel.KeyValue {
 	return kv
 }
 
-func transformTransactionWithAttributes(t *testing.T, attrs map[string]pdata.AttributeValue) *model.Transaction {
+func transformTransactionWithAttributes(t *testing.T, attrs map[string]pdata.AttributeValue, configFns ...func(pdata.Span)) *model.Transaction {
 	traces, spans := newTracesSpans()
 	otelSpan := pdata.NewSpan()
 	otelSpan.SetTraceID(pdata.NewTraceID([16]byte{1}))
 	otelSpan.SetSpanID(pdata.NewSpanID([8]byte{2}))
+	for _, fn := range configFns {
+		fn(otelSpan)
+	}
 	otelSpan.Attributes().InitFromMap(attrs)
 	spans.Spans().Append(otelSpan)
 	events := transformTraces(t, traces)
 	return events.Transactions[0]
 }
 
-func transformSpanWithAttributes(t *testing.T, attrs map[string]pdata.AttributeValue) *model.Span {
+func transformSpanWithAttributes(t *testing.T, attrs map[string]pdata.AttributeValue, configFns ...func(pdata.Span)) *model.Span {
 	traces, spans := newTracesSpans()
 	otelSpan := pdata.NewSpan()
 	otelSpan.SetTraceID(pdata.NewTraceID([16]byte{1}))
 	otelSpan.SetSpanID(pdata.NewSpanID([8]byte{2}))
 	otelSpan.SetParentSpanID(pdata.NewSpanID([8]byte{3}))
+	for _, fn := range configFns {
+		fn(otelSpan)
+	}
 	otelSpan.Attributes().InitFromMap(attrs)
 	spans.Spans().Append(otelSpan)
 	events := transformTraces(t, traces)

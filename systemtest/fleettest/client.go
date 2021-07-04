@@ -70,13 +70,13 @@ func (c *Client) Agents() ([]Agent, error) {
 }
 
 // BulkUnenrollAgents bulk-unenrolls agents.
-func (c *Client) BulkUnenrollAgents(force bool, agentIDs ...string) error {
+func (c *Client) BulkUnenrollAgents(revoke bool, agentIDs ...string) error {
 	var body bytes.Buffer
 	type bulkUnenroll struct {
 		Agents []string `json:"agents"`
-		Force  bool     `json:"force"`
+		Revoke bool     `json:"revoke"`
 	}
-	if err := json.NewEncoder(&body).Encode(bulkUnenroll{agentIDs, force}); err != nil {
+	if err := json.NewEncoder(&body).Encode(bulkUnenroll{agentIDs, revoke}); err != nil {
 		return err
 	}
 	req := c.newFleetRequest("POST", "/agents/bulk_unenroll", &body)
@@ -237,6 +237,17 @@ func (c *Client) Package(name, version string) (*Package, error) {
 		return nil, err
 	}
 	return &result.Response, nil
+}
+
+// DeletePackage deletes (uninstalls) the package with the given name and version.
+func (c *Client) DeletePackage(name, version string) error {
+	req := c.newFleetRequest("DELETE", "/epm/packages/"+name+"-"+version, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return consumeResponse(resp, nil)
 }
 
 // PackagePolicy returns information about the package policy with the given ID.

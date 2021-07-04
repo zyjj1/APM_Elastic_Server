@@ -322,6 +322,14 @@
               ],
               "maxLength": 1024
             },
+            "ud": {
+              "description": "Domain of the user",
+              "type": [
+                "null",
+                "string"
+              ],
+              "maxLength": 1024
+            },
             "un": {
               "description": "Name of the user.",
               "type": [
@@ -605,6 +613,30 @@
       ],
       "maxLength": 1024
     },
+    "ses": {
+      "description": "Session holds optional transaction session information for RUM.",
+      "type": [
+        "null",
+        "object"
+      ],
+      "properties": {
+        "id": {
+          "description": "ID holds a session ID for grouping a set of related transactions.",
+          "type": "string"
+        },
+        "seq": {
+          "description": "Sequence holds an optional sequence number for a transaction within a session. It is not meaningful to compare sequences across two different sessions.",
+          "type": [
+            "null",
+            "integer"
+          ],
+          "minimum": 1
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
     "sm": {
       "description": "Sampled indicates whether or not the full information for a transaction is captured. If a transaction is unsampled no spans and less context information will be reported.",
       "type": [
@@ -683,8 +715,11 @@
                     ],
                     "properties": {
                       "n": {
-                        "description": "Name is the identifier for the destination service, e.g. 'http://elastic.co', 'elasticsearch', 'rabbitmq'",
-                        "type": "string",
+                        "description": "Name is the identifier for the destination service, e.g. 'http://elastic.co', 'elasticsearch', 'rabbitmq' DEPRECATED: this field will be removed in a future release",
+                        "type": [
+                          "null",
+                          "string"
+                        ],
                         "maxLength": 1024
                       },
                       "rc": {
@@ -693,15 +728,16 @@
                         "maxLength": 1024
                       },
                       "t": {
-                        "description": "Type of the destination service, e.g. db, elasticsearch. Should typically be the same as span.type.",
-                        "type": "string",
+                        "description": "Type of the destination service, e.g. db, elasticsearch. Should typically be the same as span.type. DEPRECATED: this field will be removed in a future release",
+                        "type": [
+                          "null",
+                          "string"
+                        ],
                         "maxLength": 1024
                       }
                     },
                     "required": [
-                      "n",
-                      "rc",
-                      "t"
+                      "rc"
                     ]
                   }
                 }

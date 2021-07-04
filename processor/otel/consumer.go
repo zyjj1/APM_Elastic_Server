@@ -42,9 +42,13 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
+	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/pdata"
+	"go.opentelemetry.io/collector/otlptext"
 	"go.opentelemetry.io/collector/translator/conventions"
+	"google.golang.org/grpc/codes"
 
 	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/logp"
@@ -90,35 +94,65 @@ func (c *Consumer) Stats() ConsumerStats {
 	}
 }
 
+// Capabilities is part of the consumer interfaces.
+func (c *Consumer) Capabilities() consumer.Capabilities {
+	return consumer.Capabilities{
+		MutatesData: false,
+	}
+}
+
 // ConsumeTraces consumes OpenTelemetry trace data,
 // converting into Elastic APM events and reporting to the Elastic APM schema.
 func (c *Consumer) ConsumeTraces(ctx context.Context, traces pdata.Traces) error {
-	batch := c.convert(traces)
+	receiveTimestamp := time.Now()
+	logger := logp.NewLogger(logs.Otel)
+	if logger.IsDebug() {
+		logger.Debug(otlptext.Traces(traces))
+	}
+	batch := c.convert(traces, receiveTimestamp, logger)
 	return c.Processor.ProcessBatch(ctx, batch)
 }
 
-func (c *Consumer) convert(td pdata.Traces) *model.Batch {
+func (c *Consumer) convert(td pdata.Traces, receiveTimestamp time.Time, logger *logp.Logger) *model.Batch {
 	batch := model.Batch{}
 	resourceSpans := td.ResourceSpans()
 	for i := 0; i < resourceSpans.Len(); i++ {
-		c.convertResourceSpans(resourceSpans.At(i), &batch)
+		c.convertResourceSpans(resourceSpans.At(i), receiveTimestamp, logger, &batch)
 	}
 	return &batch
 }
 
-func (c *Consumer) convertResourceSpans(resourceSpans pdata.ResourceSpans, out *model.Batch) {
+func (c *Consumer) convertResourceSpans(
+	resourceSpans pdata.ResourceSpans,
+	receiveTimestamp time.Time,
+	logger *logp.Logger,
+	out *model.Batch,
+) {
 	var metadata model.Metadata
-	translateResourceMetadata(resourceSpans.Resource(), &metadata)
+	var timeDelta time.Duration
+	resource := resourceSpans.Resource()
+	translateResourceMetadata(resource, &metadata)
+	if exportTimestamp, ok := exportTimestamp(resource); ok {
+		timeDelta = receiveTimestamp.Sub(exportTimestamp)
+	}
 	instrumentationLibrarySpans := resourceSpans.InstrumentationLibrarySpans()
 	for i := 0; i < instrumentationLibrarySpans.Len(); i++ {
-		c.convertInstrumentationLibrarySpans(instrumentationLibrarySpans.At(i), metadata, out)
+		c.convertInstrumentationLibrarySpans(
+			instrumentationLibrarySpans.At(i), metadata, timeDelta, logger, out,
+		)
 	}
 }
 
-func (c *Consumer) convertInstrumentationLibrarySpans(in pdata.InstrumentationLibrarySpans, metadata model.Metadata, out *model.Batch) {
+func (c *Consumer) convertInstrumentationLibrarySpans(
+	in pdata.InstrumentationLibrarySpans,
+	metadata model.Metadata,
+	timeDelta time.Duration,
+	logger *logp.Logger,
+	out *model.Batch,
+) {
 	otelSpans := in.Spans()
 	for i := 0; i < otelSpans.Len(); i++ {
-		c.convertSpan(otelSpans.At(i), in.InstrumentationLibrary(), metadata, out)
+		c.convertSpan(otelSpans.At(i), in.InstrumentationLibrary(), metadata, timeDelta, logger, out)
 	}
 }
 
@@ -126,12 +160,11 @@ func (c *Consumer) convertSpan(
 	otelSpan pdata.Span,
 	otelLibrary pdata.InstrumentationLibrary,
 	metadata model.Metadata,
+	timeDelta time.Duration,
+	logger *logp.Logger,
 	out *model.Batch,
 ) {
-	logger := logp.NewLogger(logs.Otel)
-
 	root := otelSpan.ParentSpanID().IsEmpty()
-
 	var parentID string
 	if !root {
 		parentID = otelSpan.ParentSpanID().HexString()
@@ -140,24 +173,30 @@ func (c *Consumer) convertSpan(
 	traceID := otelSpan.TraceID().HexString()
 	spanID := otelSpan.SpanID().HexString()
 
-	startTime := otelSpan.StartTime().AsTime()
-	endTime := otelSpan.EndTime().AsTime()
+	startTime := otelSpan.StartTimestamp().AsTime()
+	endTime := otelSpan.EndTimestamp().AsTime()
 	var durationMillis float64
 	if endTime.After(startTime) {
 		durationMillis = endTime.Sub(startTime).Seconds() * 1000
 	}
+	timestamp := startTime.Add(timeDelta)
 
 	var transaction *model.Transaction
 	var span *model.Span
 
 	name := otelSpan.Name()
-	if root || otelSpan.Kind() == pdata.SpanKindSERVER {
+	// Message consumption results in either a transaction or a span based
+	// on whether the consumption is active or passive. Otel spans
+	// currently do not have the metadata to make this distinction. For
+	// now, we assume that the majority of consumption is passive, and
+	// therefore start a transaction whenever span kind == consumer.
+	if root || otelSpan.Kind() == pdata.SpanKindServer || otelSpan.Kind() == pdata.SpanKindConsumer {
 		transaction = &model.Transaction{
 			Metadata:  metadata,
 			ID:        spanID,
 			ParentID:  parentID,
 			TraceID:   traceID,
-			Timestamp: startTime,
+			Timestamp: timestamp,
 			Duration:  durationMillis,
 			Name:      name,
 			Outcome:   spanStatusOutcome(otelSpan.Status()),
@@ -170,7 +209,7 @@ func (c *Consumer) convertSpan(
 			ID:        spanID,
 			ParentID:  parentID,
 			TraceID:   traceID,
-			Timestamp: startTime,
+			Timestamp: timestamp,
 			Duration:  durationMillis,
 			Name:      name,
 			Outcome:   spanStatusOutcome(otelSpan.Status()),
@@ -181,7 +220,7 @@ func (c *Consumer) convertSpan(
 
 	events := otelSpan.Events()
 	for i := 0; i < events.Len(); i++ {
-		convertSpanEvent(logger, events.At(i), metadata, transaction, span, out)
+		convertSpanEvent(logger, events.At(i), metadata, transaction, span, timeDelta, out)
 	}
 }
 
@@ -198,6 +237,7 @@ func translateTransaction(
 		netHostName string
 		netHostPort int
 		netPeerIP   string
+		netPeerName string
 		netPeerPort int
 	)
 
@@ -206,25 +246,42 @@ func translateTransaction(
 	var isMessaging bool
 	var samplerType, samplerParam pdata.AttributeValue
 	var httpHostName string
-	span.Attributes().ForEach(func(kDots string, v pdata.AttributeValue) {
+	span.Attributes().Range(func(kDots string, v pdata.AttributeValue) bool {
 		if isJaeger {
 			switch kDots {
 			case "sampler.type":
 				samplerType = v
-				return
+				return true
 			case "sampler.param":
 				samplerParam = v
-				return
+				return true
 			}
 		}
 
 		k := replaceDots(kDots)
 		switch v.Type() {
-		case pdata.AttributeValueBOOL:
+		case pdata.AttributeValueTypeArray:
+			array := v.ArrayVal()
+			values := make([]interface{}, array.Len())
+			for i := range values {
+				value := array.At(i)
+				switch value.Type() {
+				case pdata.AttributeValueTypeBool:
+					values[i] = value.BoolVal()
+				case pdata.AttributeValueTypeDouble:
+					values[i] = value.DoubleVal()
+				case pdata.AttributeValueTypeInt:
+					values[i] = value.IntVal()
+				case pdata.AttributeValueTypeString:
+					values[i] = truncate(value.StringVal())
+				}
+			}
+			labels[k] = values
+		case pdata.AttributeValueTypeBool:
 			labels[k] = v.BoolVal()
-		case pdata.AttributeValueDOUBLE:
+		case pdata.AttributeValueTypeDouble:
 			labels[k] = v.DoubleVal()
-		case pdata.AttributeValueINT:
+		case pdata.AttributeValueTypeInt:
 			switch kDots {
 			case conventions.AttributeHTTPStatusCode:
 				tx.setHTTPStatusCode(int(v.IntVal()))
@@ -232,10 +289,12 @@ func translateTransaction(
 				netPeerPort = int(v.IntVal())
 			case conventions.AttributeNetHostPort:
 				netHostPort = int(v.IntVal())
+			case "rpc.grpc.status_code":
+				tx.Result = codes.Code(v.IntVal()).String()
 			default:
 				labels[k] = v.IntVal()
 			}
-		case pdata.AttributeValueSTRING:
+		case pdata.AttributeValueTypeString:
 			stringval := truncate(v.StringVal())
 			switch kDots {
 			// http.*
@@ -287,15 +346,25 @@ func translateTransaction(
 			// net.*
 			case conventions.AttributeNetPeerIP:
 				netPeerIP = stringval
+			case conventions.AttributeNetPeerName:
+				netPeerName = stringval
 			case conventions.AttributeNetHostName:
 				netHostName = stringval
 
-			// messaging
-			//
-			// TODO(axw) translate OpenTelemtry messaging conventions.
-			case "message_bus.destination":
+			// messaging.*
+			case "message_bus.destination", conventions.AttributeMessagingDestination:
 				message.QueueName = stringval
 				isMessaging = true
+
+			// rpc.*
+			//
+			// TODO(axw) add RPC fieldset to ECS? Currently we drop these
+			// attributes, and rely on the operation name like we do with
+			// Elastic APM agents.
+			case conventions.AttributeRPCSystem:
+				tx.Type = "request"
+			case conventions.AttributeRPCService:
+			case conventions.AttributeRPCMethod:
 
 			// miscellaneous
 			case "span.kind": // filter out
@@ -303,13 +372,14 @@ func translateTransaction(
 				tx.Type = stringval
 			case conventions.AttributeServiceVersion:
 				tx.Metadata.Service.Version = stringval
-			case conventions.AttributeComponent:
+			case "component":
 				component = stringval
 				fallthrough
 			default:
 				labels[k] = stringval
 			}
 		}
+		return true
 	})
 
 	if tx.Type == "" {
@@ -355,6 +425,12 @@ func translateTransaction(
 		tx.Message = &message
 	}
 
+	if netPeerIP != "" {
+		tx.Metadata.Client.IP = net.ParseIP(netPeerIP)
+	}
+	tx.Metadata.Client.Port = netPeerPort
+	tx.Metadata.Client.Domain = netPeerName
+
 	if samplerType != (pdata.AttributeValue{}) {
 		// The client has reported its sampling rate, so we can use it to extrapolate span metrics.
 		parseSamplerAttributes(samplerType, samplerParam, &tx.RepresentativeCount, labels)
@@ -386,42 +462,50 @@ func translateSpan(span pdata.Span, metadata model.Metadata, event *model.Span) 
 		httpScheme string = "http"
 	)
 
+	var (
+		messageSystem    string
+		messageOperation string
+	)
+
 	var http model.HTTP
 	var message model.Message
 	var db model.DB
 	var destinationService model.DestinationService
-	var isDBSpan, isHTTPSpan, isMessagingSpan bool
+	var isDBSpan, isHTTPSpan, isMessagingSpan, isRPCSpan bool
 	var component string
+	var rpcSystem string
 	var samplerType, samplerParam pdata.AttributeValue
-	span.Attributes().ForEach(func(kDots string, v pdata.AttributeValue) {
+	span.Attributes().Range(func(kDots string, v pdata.AttributeValue) bool {
 		if isJaeger {
 			switch kDots {
 			case "sampler.type":
 				samplerType = v
-				return
+				return true
 			case "sampler.param":
 				samplerParam = v
-				return
+				return true
 			}
 		}
 
 		k := replaceDots(kDots)
 		switch v.Type() {
-		case pdata.AttributeValueBOOL:
+		case pdata.AttributeValueTypeBool:
 			labels[k] = v.BoolVal()
-		case pdata.AttributeValueDOUBLE:
+		case pdata.AttributeValueTypeDouble:
 			labels[k] = v.DoubleVal()
-		case pdata.AttributeValueINT:
+		case pdata.AttributeValueTypeInt:
 			switch kDots {
 			case "http.status_code":
 				http.StatusCode = int(v.IntVal())
 				isHTTPSpan = true
 			case conventions.AttributeNetPeerPort, "peer.port":
 				netPeerPort = int(v.IntVal())
+			case "rpc.grpc.status_code":
+				// Ignored for spans.
 			default:
 				labels[k] = v.IntVal()
 			}
-		case pdata.AttributeValueSTRING:
+		case pdata.AttributeValueTypeString:
 			stringval := truncate(v.StringVal())
 			switch kDots {
 			// http.*
@@ -475,12 +559,29 @@ func translateSpan(span pdata.Span, metadata model.Metadata, event *model.Span) 
 					netPeerName = stringval
 				}
 
-			// messaging
-			//
-			// TODO(axw) translate OpenTelemtry messaging conventions.
-			case "message_bus.destination":
+			// messaging.*
+			case "message_bus.destination", conventions.AttributeMessagingDestination:
 				message.QueueName = stringval
 				isMessagingSpan = true
+			case conventions.AttributeMessagingOperation:
+				messageOperation = stringval
+				isMessagingSpan = true
+			case conventions.AttributeMessagingSystem:
+				messageSystem = stringval
+				destinationService.Resource = stringval
+				destinationService.Name = stringval
+				isMessagingSpan = true
+
+			// rpc.*
+			//
+			// TODO(axw) add RPC fieldset to ECS? Currently we drop these
+			// attributes, and rely on the operation name and span type/subtype
+			// like we do with Elastic APM agents.
+			case conventions.AttributeRPCSystem:
+				rpcSystem = stringval
+				isRPCSpan = true
+			case conventions.AttributeRPCService:
+			case conventions.AttributeRPCMethod:
 
 			// miscellaneous
 			case "span.kind": // filter out
@@ -490,13 +591,14 @@ func translateSpan(span pdata.Span, metadata model.Metadata, event *model.Span) 
 					// Prefer using peer.address for resource.
 					destinationService.Resource = stringval
 				}
-			case conventions.AttributeComponent:
+			case "component":
 				component = stringval
 				fallthrough
 			default:
 				labels[k] = stringval
 			}
 		}
+		return true
 	})
 
 	destPort := netPeerPort
@@ -563,6 +665,15 @@ func translateSpan(span pdata.Span, metadata model.Metadata, event *model.Span) 
 		}
 	}
 
+	if isRPCSpan {
+		// Set destination.service.* from the peer address, unless peer.service was specified.
+		if destinationService.Name == "" {
+			destHostPort := net.JoinHostPort(destAddr, strconv.Itoa(destPort))
+			destinationService.Name = destHostPort
+			destinationService.Resource = destHostPort
+		}
+	}
+
 	switch {
 	case isHTTPSpan:
 		if http.StatusCode > 0 {
@@ -588,7 +699,18 @@ func translateSpan(span pdata.Span, metadata model.Metadata, event *model.Span) 
 		event.DB = &db
 	case isMessagingSpan:
 		event.Type = "messaging"
+		event.Subtype = messageSystem
+		if messageOperation == "" && span.Kind() == pdata.SpanKindProducer {
+			messageOperation = "send"
+		}
+		event.Action = messageOperation
+		if destinationService.Resource != "" && message.QueueName != "" {
+			destinationService.Resource += "/" + message.QueueName
+		}
 		event.Message = &message
+	case isRPCSpan:
+		event.Type = "external"
+		event.Subtype = rpcSystem
 	default:
 		event.Type = "app"
 		event.Subtype = component
@@ -625,9 +747,9 @@ func parseSamplerAttributes(samplerType, samplerParam pdata.AttributeValue, repr
 	default:
 		labels["sampler_type"] = samplerType
 		switch samplerParam.Type() {
-		case pdata.AttributeValueBOOL:
+		case pdata.AttributeValueTypeBool:
 			labels["sampler_param"] = samplerParam.BoolVal()
-		case pdata.AttributeValueDOUBLE:
+		case pdata.AttributeValueTypeDouble:
 			labels["sampler_param"] = samplerParam.DoubleVal()
 		}
 	}
@@ -638,6 +760,7 @@ func convertSpanEvent(
 	event pdata.SpanEvent,
 	metadata model.Metadata,
 	transaction *model.Transaction, span *model.Span, // only one is non-nil
+	timeDelta time.Duration,
 	out *model.Batch,
 ) {
 	var e *model.Error
@@ -658,7 +781,7 @@ func convertSpanEvent(
 		}
 		var exceptionEscaped bool
 		var exceptionMessage, exceptionStacktrace, exceptionType string
-		event.Attributes().ForEach(func(k string, v pdata.AttributeValue) {
+		event.Attributes().Range(func(k string, v pdata.AttributeValue) bool {
 			switch k {
 			case conventions.AttributeExceptionMessage:
 				exceptionMessage = v.StringVal()
@@ -669,6 +792,7 @@ func convertSpanEvent(
 			case "exception.escaped":
 				exceptionEscaped = v.BoolVal()
 			}
+			return true
 		})
 		if exceptionMessage == "" && exceptionType == "" {
 			// Per OpenTelemetry semantic conventions:
@@ -677,8 +801,10 @@ func convertSpanEvent(
 			//   - exception.message`
 			return
 		}
+		timestamp := event.Timestamp().AsTime()
+		timestamp = timestamp.Add(timeDelta)
 		e = convertOpenTelemetryExceptionSpanEvent(
-			event.Timestamp().AsTime(),
+			timestamp,
 			exceptionType, exceptionMessage, exceptionStacktrace,
 			exceptionEscaped, metadata.Service.Language.Name,
 		)
@@ -699,9 +825,9 @@ func convertJaegerErrorSpanEvent(logger *logp.Logger, event pdata.SpanEvent) *mo
 	var exMessage, exType string
 	logMessage := event.Name()
 	hasMinimalInfo := logMessage != ""
-	event.Attributes().ForEach(func(k string, v pdata.AttributeValue) {
-		if v.Type() != pdata.AttributeValueSTRING {
-			return
+	event.Attributes().Range(func(k string, v pdata.AttributeValue) bool {
+		if v.Type() != pdata.AttributeValueTypeString {
+			return true
 		}
 		stringval := truncate(v.StringVal())
 		switch k {
@@ -727,6 +853,7 @@ func convertJaegerErrorSpanEvent(logger *logp.Logger, event pdata.SpanEvent) *mo
 		case "level":
 			isError = stringval == "error"
 		}
+		return true
 	})
 	if !isError {
 		return nil

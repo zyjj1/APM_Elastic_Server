@@ -44,6 +44,7 @@ import (
 	"github.com/elastic/beats/v7/libbeat/common/transport/tlscommon"
 	"github.com/elastic/beats/v7/libbeat/logp"
 
+	"github.com/elastic/apm-server/agentcfg"
 	"github.com/elastic/apm-server/approvaltest"
 	"github.com/elastic/apm-server/beater/beatertest"
 	"github.com/elastic/apm-server/beater/config"
@@ -231,7 +232,7 @@ func TestServerIntegration(t *testing.T) {
 		"secret token set but no auth_tag": {
 			cfg: func() *config.Config {
 				cfg := config.DefaultConfig()
-				cfg.SecretToken = "hunter2"
+				cfg.AgentAuth.SecretToken = "hunter2"
 				cfg.JaegerConfig.GRPC.Enabled = true
 				cfg.JaegerConfig.GRPC.Host = "localhost:0"
 				cfg.JaegerConfig.HTTP.Enabled = true
@@ -243,7 +244,7 @@ func TestServerIntegration(t *testing.T) {
 		"secret token and auth_tag set, but no auth_tag sent by agent": {
 			cfg: func() *config.Config {
 				cfg := config.DefaultConfig()
-				cfg.SecretToken = "hunter2"
+				cfg.AgentAuth.SecretToken = "hunter2"
 				cfg.JaegerConfig.GRPC.Enabled = true
 				cfg.JaegerConfig.GRPC.Host = "localhost:0"
 				cfg.JaegerConfig.GRPC.AuthTag = "authorization"
@@ -255,7 +256,7 @@ func TestServerIntegration(t *testing.T) {
 		"secret token and auth_tag set, auth_tag sent by agent": {
 			cfg: func() *config.Config {
 				cfg := config.DefaultConfig()
-				cfg.SecretToken = "hunter2"
+				cfg.AgentAuth.SecretToken = "hunter2"
 				cfg.JaegerConfig.GRPC.Enabled = true
 				cfg.JaegerConfig.GRPC.Host = "localhost:0"
 				cfg.JaegerConfig.GRPC.AuthTag = "authorization"
@@ -364,7 +365,8 @@ func (tc *testcase) setup(t *testing.T) {
 
 	var err error
 	tc.tracer = apmtest.NewRecordingTracer()
-	tc.server, err = NewServer(logp.NewLogger("jaeger"), tc.cfg, tc.tracer.Tracer, batchProcessor)
+	f := agentcfg.NewFetcher(tc.cfg)
+	tc.server, err = NewServer(logp.NewLogger("jaeger"), tc.cfg, tc.tracer.Tracer, batchProcessor, f)
 	require.NoError(t, err)
 	if tc.server == nil {
 		return
