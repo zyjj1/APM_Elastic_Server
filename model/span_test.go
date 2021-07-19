@@ -25,9 +25,6 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/elastic/beats/v7/libbeat/common"
-
-	"github.com/elastic/apm-server/sourcemap"
-	"github.com/elastic/apm-server/transform"
 )
 
 func TestSpanTransform(t *testing.T) {
@@ -57,10 +54,8 @@ func TestSpanTransform(t *testing.T) {
 			Msg:  "Span without a Stacktrace",
 			Span: Span{Timestamp: timestamp, Metadata: metadata},
 			Output: common.MapStr{
-				"data_stream.type":    "traces",
-				"data_stream.dataset": "apm",
-				"processor":           common.MapStr{"event": "span", "name": "transaction"},
-				"service":             common.MapStr{"name": serviceName, "environment": env, "version": serviceVersion},
+				"processor": common.MapStr{"event": "span", "name": "transaction"},
+				"service":   common.MapStr{"name": serviceName, "environment": env, "version": serviceVersion},
 				"span": common.MapStr{
 					"duration": common.MapStr{"us": 0},
 					"name":     "",
@@ -75,10 +70,8 @@ func TestSpanTransform(t *testing.T) {
 			Msg:  "Span with outcome",
 			Span: Span{Timestamp: timestamp, Metadata: metadata, Outcome: "success"},
 			Output: common.MapStr{
-				"data_stream.type":    "traces",
-				"data_stream.dataset": "apm",
-				"processor":           common.MapStr{"event": "span", "name": "transaction"},
-				"service":             common.MapStr{"name": serviceName, "environment": env, "version": serviceVersion},
+				"processor": common.MapStr{"event": "span", "name": "transaction"},
+				"service":   common.MapStr{"name": serviceName, "environment": env, "version": serviceVersion},
 				"span": common.MapStr{
 					"duration": common.MapStr{"us": 0},
 					"name":     "",
@@ -105,7 +98,6 @@ func TestSpanTransform(t *testing.T) {
 				Outcome:             "unknown",
 				RepresentativeCount: 5,
 				Duration:            1.20,
-				RUM:                 true,
 				Stacktrace:          Stacktrace{{AbsPath: path}},
 				Labels:              common.MapStr{"label_a": 12},
 				HTTP:                &HTTP{Method: method, StatusCode: statusCode, URL: url},
@@ -114,7 +106,8 @@ func TestSpanTransform(t *testing.T) {
 					Statement:    statement,
 					Type:         dbType,
 					UserName:     user,
-					RowsAffected: &rowsAffected},
+					RowsAffected: &rowsAffected,
+				},
 				Destination: &Destination{Address: address, Port: port},
 				DestinationService: &DestinationService{
 					Type:     destServiceType,
@@ -124,8 +117,6 @@ func TestSpanTransform(t *testing.T) {
 				Message: &Message{QueueName: "users"},
 			},
 			Output: common.MapStr{
-				"data_stream.type":    "traces",
-				"data_stream.dataset": "apm",
 				"span": common.MapStr{
 					"id":       hexID,
 					"duration": common.MapStr{"us": 1200},
@@ -137,10 +128,7 @@ func TestSpanTransform(t *testing.T) {
 					"stacktrace": []common.MapStr{{
 						"exclude_from_grouping": false,
 						"abs_path":              path,
-						"sourcemap": common.MapStr{
-							"error":   "Colno mandatory for sourcemapping.",
-							"updated": false,
-						}}},
+					}},
 					"db": common.MapStr{
 						"instance":      instance,
 						"statement":     statement,
@@ -168,7 +156,7 @@ func TestSpanTransform(t *testing.T) {
 				"timestamp":   common.MapStr{"us": timestampUs},
 				"trace":       common.MapStr{"id": traceID},
 				"parent":      common.MapStr{"id": parentID},
-				"destination": common.MapStr{"address": address, "ip": address, "port": port},
+				"destination": common.MapStr{"address": address, "port": port},
 				"event":       common.MapStr{"outcome": "unknown"},
 				"http": common.MapStr{
 					"response":       common.MapStr{"status_code": statusCode},
@@ -180,11 +168,7 @@ func TestSpanTransform(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		output := test.Span.appendBeatEvents(context.Background(), &transform.Config{
-			DataStreams: true,
-			RUM:         transform.RUMConfig{SourcemapStore: &sourcemap.Store{}},
-		}, nil)
-		fields := output[0].Fields
-		assert.Equal(t, test.Output, fields, test.Msg)
+		output := test.Span.toBeatEvent(context.Background())
+		assert.Equal(t, test.Output, output.Fields, test.Msg)
 	}
 }

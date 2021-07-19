@@ -83,14 +83,15 @@ func (r Reporter) Run(ctx context.Context) error {
 			continue
 		case <-t.C:
 		}
-		batch := new(model.Batch)
+		batch := make(model.Batch, 0, len(applied))
 		for etag := range applied {
-			m := &model.Metricset{
-				Name:    "agent_config",
-				Labels:  common.MapStr{"etag": etag},
-				Samples: []model.Sample{{Name: "agent_config_applied", Value: 1}},
-			}
-			batch.Metricsets = append(batch.Metricsets, m)
+			batch = append(batch, model.APMEvent{Metricset: &model.Metricset{
+				Name:   "agent_config",
+				Labels: common.MapStr{"etag": etag},
+				Samples: map[string]model.MetricsetSample{
+					"agent_config_applied": {Value: 1},
+				},
+			}})
 		}
 		// Reset applied map, so that we report only configs applied
 		// during a given iteration.
@@ -98,7 +99,7 @@ func (r Reporter) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := r.p.ProcessBatch(ctx, batch); err != nil {
+			if err := r.p.ProcessBatch(ctx, &batch); err != nil {
 				r.logger.Errorf("error sending applied agent configs to kibana: %v", err)
 			}
 		}()

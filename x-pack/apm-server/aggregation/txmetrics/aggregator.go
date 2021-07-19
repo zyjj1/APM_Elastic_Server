@@ -217,19 +217,19 @@ func (a *Aggregator) publish(ctx context.Context) error {
 	// the specific time period (date_range) on the metrics documents.
 
 	now := time.Now()
-	metricsets := make([]*model.Metricset, 0, a.inactive.entries)
+	batch := make(model.Batch, 0, a.inactive.entries)
 	for hash, entries := range a.inactive.m {
 		for _, entry := range entries {
-			counts, values := entry.transactionMetrics.histogramBuckets()
-			metricset := makeMetricset(entry.transactionAggregationKey, hash, now, counts, values)
-			metricsets = append(metricsets, &metricset)
+			totalCount, counts, values := entry.transactionMetrics.histogramBuckets()
+			metricset := makeMetricset(entry.transactionAggregationKey, hash, now, totalCount, counts, values)
+			batch = append(batch, model.APMEvent{Metricset: &metricset})
 		}
 		delete(a.inactive.m, hash)
 	}
 	a.inactive.entries = 0
 
-	a.config.Logger.Debugf("publishing %d metricsets", len(metricsets))
-	return a.config.BatchProcessor.ProcessBatch(ctx, &model.Batch{Metricsets: metricsets})
+	a.config.Logger.Debugf("publishing %d metricsets", len(batch))
+	return a.config.BatchProcessor.ProcessBatch(ctx, &batch)
 }
 
 // ProcessBatch aggregates all transactions contained in "b", adding to it any
@@ -239,9 +239,12 @@ func (a *Aggregator) publish(ctx context.Context) error {
 // events, so that the metricsets requiring immediate publication can be
 // included in the same batch.
 func (a *Aggregator) ProcessBatch(ctx context.Context, b *model.Batch) error {
-	for _, tx := range b.Transactions {
-		if metricset := a.AggregateTransaction(tx); metricset != nil {
-			b.Metricsets = append(b.Metricsets, metricset)
+	for _, event := range *b {
+		if event.Transaction == nil {
+			continue
+		}
+		if metricset := a.AggregateTransaction(event.Transaction); metricset != nil {
+			*b = append(*b, model.APMEvent{Metricset: metricset})
 		}
 	}
 	return nil
@@ -275,7 +278,7 @@ unique transaction names.`[1:],
 	atomic.AddInt64(&a.metrics.overflowed, 1)
 	counts := []int64{int64(math.Round(count))}
 	values := []float64{float64(durationMicros(duration))}
-	metricset := makeMetricset(key, hash, time.Now(), counts, values)
+	metricset := makeMetricset(key, hash, time.Now(), counts[0], counts, values)
 	return &metricset
 }
 
@@ -356,7 +359,9 @@ func (a *Aggregator) makeTransactionAggregationKey(tx *model.Transaction) transa
 }
 
 // makeMetricset makes a Metricset from key, counts, and values, with timestamp ts.
-func makeMetricset(key transactionAggregationKey, hash uint64, ts time.Time, counts []int64, values []float64) model.Metricset {
+func makeMetricset(
+	key transactionAggregationKey, hash uint64, ts time.Time, totalCount int64, counts []int64, values []float64,
+) model.Metricset {
 	out := model.Metricset{
 		Timestamp: ts,
 		Name:      metricsetName,
@@ -382,11 +387,14 @@ func makeMetricset(key transactionAggregationKey, hash uint64, ts time.Time, cou
 			Result: key.transactionResult,
 			Root:   key.traceRoot,
 		},
-		Samples: []model.Sample{{
-			Name:   "transaction.duration.histogram",
-			Counts: counts,
-			Values: values,
-		}},
+		Samples: map[string]model.MetricsetSample{
+			"transaction.duration.histogram": {
+				Type:   model.MetricTypeHistogram,
+				Counts: counts,
+				Values: values,
+			},
+		},
+		DocCount: totalCount,
 	}
 
 	// Record an timeseries instance ID, which should be uniquely identify the aggregation key.
@@ -463,7 +471,7 @@ func (m *transactionMetrics) recordDuration(d time.Duration, n float64) {
 	m.histogram.RecordValuesAtomic(durationMicros(d), count)
 }
 
-func (m *transactionMetrics) histogramBuckets() (counts []int64, values []float64) {
+func (m *transactionMetrics) histogramBuckets() (totalCount int64, counts []int64, values []float64) {
 	// From https://www.elastic.co/guide/en/elasticsearch/reference/current/histogram.html:
 	//
 	// "For the High Dynamic Range (HDR) histogram mode, the values array represents
@@ -476,11 +484,12 @@ func (m *transactionMetrics) histogramBuckets() (counts []int64, values []float6
 		if b.Count <= 0 {
 			continue
 		}
-		count := math.Round(float64(b.Count) / histogramCountScale)
-		counts = append(counts, int64(count))
+		count := int64(math.Round(float64(b.Count) / histogramCountScale))
+		counts = append(counts, count)
 		values = append(values, float64(b.To))
+		totalCount += count
 	}
-	return counts, values
+	return totalCount, counts, values
 }
 
 func transactionCount(tx *model.Transaction) float64 {

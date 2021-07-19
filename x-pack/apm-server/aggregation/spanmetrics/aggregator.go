@@ -158,14 +158,14 @@ func (a *Aggregator) publish(ctx context.Context) error {
 	}
 
 	now := time.Now()
-	metricsets := make([]*model.Metricset, 0, size)
+	batch := make(model.Batch, 0, size)
 	for key, metrics := range a.inactive.m {
 		metricset := makeMetricset(now, key, metrics, a.config.Interval.Milliseconds())
-		metricsets = append(metricsets, &metricset)
+		batch = append(batch, model.APMEvent{Metricset: &metricset})
 		delete(a.inactive.m, key)
 	}
-	a.config.Logger.Debugf("publishing %d metricsets", len(metricsets))
-	return a.config.BatchProcessor.ProcessBatch(ctx, &model.Batch{Metricsets: metricsets})
+	a.config.Logger.Debugf("publishing %d metricsets", len(batch))
+	return a.config.BatchProcessor.ProcessBatch(ctx, &batch)
 }
 
 // ProcessBatch aggregates all spans contained in "b", adding to it any
@@ -176,9 +176,12 @@ func (a *Aggregator) publish(ctx context.Context) error {
 func (a *Aggregator) ProcessBatch(ctx context.Context, b *model.Batch) error {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	for _, span := range b.Spans {
-		if metricset := a.processSpan(span); metricset != nil {
-			b.Metricsets = append(b.Metricsets, metricset)
+	for _, event := range *b {
+		if event.Span == nil {
+			continue
+		}
+		if metricset := a.processSpan(event.Span); metricset != nil {
+			*b = append(*b, model.APMEvent{Metricset: metricset})
 		}
 	}
 	return nil
@@ -271,13 +274,11 @@ func makeMetricset(timestamp time.Time, key aggregationKey, metrics spanMetrics,
 		Span: model.MetricsetSpan{
 			DestinationService: model.DestinationService{Resource: key.resource},
 		},
-		Samples: []model.Sample{
-			{
-				Name:  "span.destination.service.response_time.count",
+		Samples: map[string]model.MetricsetSample{
+			"span.destination.service.response_time.count": {
 				Value: math.Round(metrics.count),
 			},
-			{
-				Name:  "span.destination.service.response_time.sum.us",
+			"span.destination.service.response_time.sum.us": {
 				Value: math.Round(metrics.sum),
 			},
 		},
@@ -288,10 +289,9 @@ func makeMetricset(timestamp time.Time, key aggregationKey, metrics spanMetrics,
 		// An interval of zero means the metricset is computed
 		// from an instantaneous value, meaning there is no
 		// aggregation period.
-		out.Samples = append(out.Samples, model.Sample{
-			Name:  "metricset.period",
+		out.Samples["metricset.period"] = model.MetricsetSample{
 			Value: float64(interval),
-		})
+		}
 	}
 	return out
 }

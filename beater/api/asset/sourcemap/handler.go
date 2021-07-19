@@ -18,6 +18,7 @@
 package sourcemap
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -28,8 +29,8 @@ import (
 
 	"github.com/elastic/beats/v7/libbeat/monitoring"
 
+	"github.com/elastic/apm-server/beater/auth"
 	"github.com/elastic/apm-server/beater/request"
-	"github.com/elastic/apm-server/model"
 	"github.com/elastic/apm-server/publish"
 	"github.com/elastic/apm-server/utility"
 )
@@ -45,15 +46,35 @@ var (
 	validateError = monitoring.NewInt(registry, "validation.errors")
 )
 
+// AddedNotifier is an interface for notifying of sourcemap additions.
+// This is implemented by sourcemap.Store.
+type AddedNotifier interface {
+	NotifyAdded(ctx context.Context, serviceName, serviceVersion, bundleFilepath string)
+}
+
 // Handler returns a request.Handler for managing asset requests.
-func Handler(report publish.Reporter) request.Handler {
+func Handler(report publish.Reporter, notifier AddedNotifier) request.Handler {
 	return func(c *request.Context) {
 		if c.Request.Method != "POST" {
 			c.Result.SetDefault(request.IDResponseErrorsMethodNotAllowed)
 			c.Write()
 			return
 		}
-		var smap model.Sourcemap
+
+		if err := auth.Authorize(c.Request.Context(), auth.ActionSourcemapUpload, auth.Resource{}); err != nil {
+			if errors.Is(err, auth.ErrUnauthorized) {
+				id := request.IDResponseErrorsForbidden
+				status := request.MapResultIDToStatus[id]
+				c.Result.Set(id, status.Code, err.Error(), nil, nil)
+			} else {
+				c.Result.SetDefault(request.IDResponseErrorsServiceUnavailable)
+				c.Result.Err = err
+			}
+			c.Write()
+			return
+		}
+
+		var smap sourcemapDoc
 		decodingCount.Inc()
 		if err := decode(c.Request, &smap); err != nil {
 			decodingError.Inc()
@@ -66,7 +87,7 @@ func Handler(report publish.Reporter) request.Handler {
 			return
 		}
 		validateCount.Inc()
-		if err := validate(smap); err != nil {
+		if err := validate(&smap); err != nil {
 			validateError.Inc()
 			c.Result.SetWithError(request.IDResponseErrorsValidate, err)
 			c.Write()
@@ -84,13 +105,15 @@ func Handler(report publish.Reporter) request.Handler {
 				c.Result.SetWithError(request.IDResponseErrorsFullQueue, err)
 			}
 			c.Write()
+			return
 		}
+		notifier.NotifyAdded(c.Request.Context(), smap.ServiceName, smap.ServiceVersion, smap.BundleFilepath)
 		c.Result.SetDefault(request.IDResponseValidAccepted)
 		c.Write()
 	}
 }
 
-func decode(req *http.Request, smap *model.Sourcemap) error {
+func decode(req *http.Request, smap *sourcemapDoc) error {
 	if !strings.Contains(req.Header.Get("Content-Type"), "multipart/form-data") {
 		return fmt.Errorf("invalid content type: %s", req.Header.Get("Content-Type"))
 	}
@@ -110,7 +133,7 @@ func decode(req *http.Request, smap *model.Sourcemap) error {
 	return nil
 }
 
-func validate(smap model.Sourcemap) error {
+func validate(smap *sourcemapDoc) error {
 	// ensure all information is given
 	if smap.BundleFilepath == "" || smap.ServiceName == "" || smap.ServiceVersion == "" {
 		return errors.New("error validating sourcemap: bundle_filepath, service_name and service_version must be sent")

@@ -22,7 +22,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -59,7 +58,6 @@ import (
 	"github.com/elastic/apm-server/publish"
 	"github.com/elastic/apm-server/sampling"
 	"github.com/elastic/apm-server/sourcemap"
-	"github.com/elastic/apm-server/transform"
 )
 
 var (
@@ -364,27 +362,32 @@ func (s *serverRunner) Start() {
 func (s *serverRunner) run() error {
 	// Send config to telemetry.
 	recordAPMServerConfig(s.config)
-	transformConfig, err := newTransformConfig(s.beat.Info, s.config, s.fleetConfig)
-	if err != nil {
-		return err
-	}
 	publisherConfig := &publish.PublisherConfig{
-		Info:            s.beat.Info,
-		Pipeline:        s.config.Pipeline,
-		Namespace:       s.namespace,
-		TransformConfig: transformConfig,
+		Info:      s.beat.Info,
+		Pipeline:  s.config.Pipeline,
+		Namespace: s.namespace,
 	}
 
+	cfg := ucfg.Config(*s.rawConfig)
+	parentCfg := cfg.Parent()
 	// Check for an environment variable set when running in a cloud environment
 	if eac := os.Getenv("ELASTIC_AGENT_CLOUD"); eac != "" && s.config.Kibana.Enabled {
 		// Don't block server startup sending the config.
 		go func() {
 			c := kibana_client.NewConnectingClient(&s.config.Kibana)
-			cfg := ucfg.Config(*s.rawConfig)
-			if err := kibana_client.SendConfig(s.runServerContext, c, cfg.Parent()); err != nil {
+			if err := kibana_client.SendConfig(s.runServerContext, c, parentCfg); err != nil {
 				s.logger.Infof("failed to upload config to kibana: %v", err)
 			}
 		}()
+	}
+
+	var sourcemapStore *sourcemap.Store
+	if s.config.RumConfig.Enabled && s.config.RumConfig.SourceMapping.Enabled {
+		store, err := newSourcemapStore(s.beat.Info, s.config.RumConfig.SourceMapping, s.fleetConfig)
+		if err != nil {
+			return err
+		}
+		sourcemapStore = store
 	}
 
 	// When the publisher stops cleanly it will close its pipeline client,
@@ -393,7 +396,6 @@ func (s *serverRunner) run() error {
 	// be closed at shutdown time.
 	s.acker.Open()
 	pipeline := pipetool.WithACKer(s.pipeline, s.acker)
-
 	publisher, err := publish.NewPublisher(pipeline, s.tracer, publisherConfig)
 	if err != nil {
 		return err
@@ -432,6 +434,7 @@ func (s *serverRunner) run() error {
 		Logger:         s.logger,
 		Tracer:         s.tracer,
 		BatchProcessor: batchProcessor,
+		SourcemapStore: sourcemapStore,
 	}); err != nil {
 		return err
 	}
@@ -442,12 +445,17 @@ func (s *serverRunner) wrapRunServerWithPreprocessors(runServer RunServerFunc) R
 	processors := []model.BatchProcessor{
 		modelprocessor.SetSystemHostname{},
 		modelprocessor.SetServiceNodeName{},
-		// Set metricset.name for well-known agent metrics.
 		modelprocessor.SetMetricsetName{},
+		modelprocessor.SetGroupingKey{},
 	}
 	if s.config.DefaultServiceEnvironment != "" {
 		processors = append(processors, &modelprocessor.SetDefaultServiceEnvironment{
 			DefaultServiceEnvironment: s.config.DefaultServiceEnvironment,
+		})
+	}
+	if s.config.DataStreams.Enabled {
+		processors = append(processors, &modelprocessor.SetDataStream{
+			Namespace: s.namespace,
 		})
 	}
 	return WrapRunServerWithProcessors(runServer, processors...)
@@ -618,26 +626,6 @@ func runServerWithTracerServer(runServer RunServerFunc, tracerServer *tracerServ
 	}
 }
 
-func newTransformConfig(beatInfo beat.Info, cfg *config.Config, fleetCfg *config.Fleet) (*transform.Config, error) {
-	transformConfig := &transform.Config{
-		DataStreams: cfg.DataStreams.Enabled,
-		RUM: transform.RUMConfig{
-			LibraryPattern:      regexp.MustCompile(cfg.RumConfig.LibraryPattern),
-			ExcludeFromGrouping: regexp.MustCompile(cfg.RumConfig.ExcludeFromGrouping),
-		},
-	}
-
-	if cfg.RumConfig.Enabled && cfg.RumConfig.SourceMapping.Enabled {
-		store, err := newSourcemapStore(beatInfo, cfg.RumConfig.SourceMapping, fleetCfg)
-		if err != nil {
-			return nil, err
-		}
-		transformConfig.RUM.SourcemapStore = store
-	}
-
-	return transformConfig, nil
-}
-
 func newSourcemapStore(beatInfo beat.Info, cfg config.SourceMapping, fleetCfg *config.Fleet) (*sourcemap.Store, error) {
 	if fleetCfg != nil {
 		var (
@@ -655,10 +643,7 @@ func newSourcemapStore(beatInfo beat.Info, cfg config.SourceMapping, fleetCfg *c
 		// Default for es is 90s :shrug:
 		timeout := 30 * time.Second
 		dialer := transport.NetDialer(timeout)
-		tlsDialer, err := transport.TLSDialer(dialer, tlsConfig, timeout)
-		if err != nil {
-			return nil, err
-		}
+		tlsDialer := transport.TLSDialer(dialer, tlsConfig, timeout)
 
 		rt = &http.Transport{
 			Proxy:           http.ProxyFromEnvironment,
@@ -686,7 +671,7 @@ func WrapRunServerWithProcessors(runServer RunServerFunc, processors ...model.Ba
 		return runServer
 	}
 	return func(ctx context.Context, args ServerParams) error {
-		processors = append(processors, args.BatchProcessor)
+		processors := append(processors, args.BatchProcessor)
 		args.BatchProcessor = modelprocessor.Chained(processors)
 		return runServer(ctx, args)
 	}

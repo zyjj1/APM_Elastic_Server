@@ -31,31 +31,22 @@ import (
 
 const (
 	allowAllOrigins                 = "*"
-	defaultEventRateLimit           = 300
-	defaultEventRateLRUSize         = 1000
 	defaultExcludeFromGrouping      = "^/webpack"
 	defaultLibraryPattern           = "node_modules|bower_components|~"
 	defaultSourcemapCacheExpiration = 5 * time.Minute
 	defaultSourcemapIndexPattern    = "apm-*-sourcemap*"
+	defaultSourcemapTimeout         = 5 * time.Second
 )
 
 // RumConfig holds config information related to the RUM endpoint
 type RumConfig struct {
 	Enabled             bool                `config:"enabled"`
-	EventRate           EventRate           `config:"event_rate"`
-	AllowServiceNames   []string            `config:"allow_service_names"`
 	AllowOrigins        []string            `config:"allow_origins"`
 	AllowHeaders        []string            `config:"allow_headers"`
 	ResponseHeaders     map[string][]string `config:"response_headers"`
 	LibraryPattern      string              `config:"library_pattern"`
 	ExcludeFromGrouping string              `config:"exclude_from_grouping"`
 	SourceMapping       SourceMapping       `config:"source_mapping"`
-}
-
-// EventRate holds config information about event rate limiting
-type EventRate struct {
-	Limit   int `config:"limit"`
-	LruSize int `config:"lru_size"`
 }
 
 // SourceMapping holds sourcemap config information
@@ -65,6 +56,7 @@ type SourceMapping struct {
 	IndexPattern string                `config:"index_pattern"`
 	ESConfig     *elasticsearch.Config `config:"elasticsearch"`
 	Metadata     []SourceMapMetadata   `config:"metadata"`
+	Timeout      time.Duration         `config:"timeout" validate:"positive"`
 	esConfigured bool
 }
 
@@ -117,15 +109,12 @@ func defaultSourcemapping() SourceMapping {
 		IndexPattern: defaultSourcemapIndexPattern,
 		ESConfig:     elasticsearch.DefaultConfig(),
 		Metadata:     []SourceMapMetadata{},
+		Timeout:      defaultSourcemapTimeout,
 	}
 }
 
 func defaultRum() RumConfig {
 	return RumConfig{
-		EventRate: EventRate{
-			Limit:   defaultEventRateLimit,
-			LruSize: defaultEventRateLRUSize,
-		},
 		AllowOrigins:        []string{allowAllOrigins},
 		AllowHeaders:        []string{},
 		SourceMapping:       defaultSourcemapping(),

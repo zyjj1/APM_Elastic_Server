@@ -9,8 +9,6 @@
             "client": {
                 "ip": "192.0.0.1"
             },
-            "data_stream.dataset": "apm",
-            "data_stream.type": "traces",
             "event": {
                 "outcome": "success"
             },
@@ -149,6 +147,157 @@
             }
         },
         {
+            "@timestamp": "2018-08-01T10:00:00.000Z",
+            "agent": {
+                "name": "js-base",
+                "version": "4.8.1"
+            },
+            "client": {
+                "ip": "192.0.0.1"
+            },
+            "labels": {
+                "testTagKey": "testTagValue"
+            },
+            "processor": {
+                "event": "metric",
+                "name": "metric"
+            },
+            "service": {
+                "environment": "prod",
+                "framework": {
+                    "name": "angular",
+                    "version": "2"
+                },
+                "language": {
+                    "name": "javascript",
+                    "version": "6"
+                },
+                "name": "apm-a-rum-test-e2e-general-usecase",
+                "runtime": {
+                    "name": "v8",
+                    "version": "8.0"
+                },
+                "version": "0.0.1"
+            },
+            "transaction": {
+                "name": "general-usecase-initial-p-load",
+                "type": "p-load"
+            },
+            "transaction.breakdown.count": 1,
+            "transaction.duration.count": 1,
+            "transaction.duration.sum.us": 295,
+            "user": {
+                "email": "user@email.com",
+                "id": "123",
+                "name": "John Doe"
+            },
+            "user_agent": {
+                "original": "rum-2.0"
+            }
+        },
+        {
+            "@timestamp": "2018-08-01T10:00:00.000Z",
+            "agent": {
+                "name": "js-base",
+                "version": "4.8.1"
+            },
+            "client": {
+                "ip": "192.0.0.1"
+            },
+            "labels": {
+                "testTagKey": "testTagValue"
+            },
+            "processor": {
+                "event": "metric",
+                "name": "metric"
+            },
+            "service": {
+                "environment": "prod",
+                "framework": {
+                    "name": "angular",
+                    "version": "2"
+                },
+                "language": {
+                    "name": "javascript",
+                    "version": "6"
+                },
+                "name": "apm-a-rum-test-e2e-general-usecase",
+                "runtime": {
+                    "name": "v8",
+                    "version": "8.0"
+                },
+                "version": "0.0.1"
+            },
+            "span": {
+                "type": "Request"
+            },
+            "span.self_time.count": 1,
+            "span.self_time.sum.us": 1,
+            "transaction": {
+                "name": "general-usecase-initial-p-load",
+                "type": "p-load"
+            },
+            "user": {
+                "email": "user@email.com",
+                "id": "123",
+                "name": "John Doe"
+            },
+            "user_agent": {
+                "original": "rum-2.0"
+            }
+        },
+        {
+            "@timestamp": "2018-08-01T10:00:00.000Z",
+            "agent": {
+                "name": "js-base",
+                "version": "4.8.1"
+            },
+            "client": {
+                "ip": "192.0.0.1"
+            },
+            "labels": {
+                "testTagKey": "testTagValue"
+            },
+            "processor": {
+                "event": "metric",
+                "name": "metric"
+            },
+            "service": {
+                "environment": "prod",
+                "framework": {
+                    "name": "angular",
+                    "version": "2"
+                },
+                "language": {
+                    "name": "javascript",
+                    "version": "6"
+                },
+                "name": "apm-a-rum-test-e2e-general-usecase",
+                "runtime": {
+                    "name": "v8",
+                    "version": "8.0"
+                },
+                "version": "0.0.1"
+            },
+            "span": {
+                "type": "Response"
+            },
+            "span.self_time.count": 1,
+            "span.self_time.sum.us": 1,
+            "transaction": {
+                "name": "general-usecase-initial-p-load",
+                "type": "p-load"
+            },
+            "user": {
+                "email": "user@email.com",
+                "id": "123",
+                "name": "John Doe"
+            },
+            "user_agent": {
+                "original": "rum-2.0"
+            }
+        },
+        {
             "@timestamp": "2018-08-01T10:00:00.004Z",
             "agent": {
                 "name": "js-base",
@@ -157,8 +306,6 @@
             "client": {
                 "ip": "192.0.0.1"
             },
-            "data_stream.dataset": "apm",
-            "data_stream.type": "traces",
             "event": {
                 "outcome": "unknown"
             },
@@ -228,8 +375,6 @@
             "client": {
                 "ip": "192.0.0.1"
             },
-            "data_stream.dataset": "apm",
-            "data_stream.type": "traces",
             "event": {
                 "outcome": "unknown"
             },
@@ -299,8 +444,6 @@
             "client": {
                 "ip": "192.0.0.1"
             },
-            "data_stream.dataset": "apm",
-            "data_stream.type": "traces",
             "destination": {
                 "address": "localhost",
                 "port": 8000
@@ -392,8 +535,6 @@
             "client": {
                 "ip": "192.0.0.1"
             },
-            "data_stream.dataset": "apm",
-            "data_stream.type": "traces",
             "event": {
                 "outcome": "unknown"
             },
@@ -462,8 +603,6 @@
             "client": {
                 "ip": "192.0.0.1"
             },
-            "data_stream.dataset": "apm",
-            "data_stream.type": "traces",
             "destination": {
                 "address": "localhost",
                 "port": 8000
@@ -561,8 +700,6 @@
             "client": {
                 "ip": "192.0.0.1"
             },
-            "data_stream.dataset": "apm",
-            "data_stream.type": "traces",
             "destination": {
                 "address": "localhost",
                 "port": 8003
@@ -660,8 +797,6 @@
             "client": {
                 "ip": "192.0.0.1"
             },
-            "data_stream.dataset": "apm",
-            "data_stream.type": "traces",
             "destination": {
                 "address": "localhost",
                 "port": 8003
@@ -760,8 +895,6 @@
             "client": {
                 "ip": "192.0.0.1"
             },
-            "data_stream.dataset": "apm",
-            "data_stream.type": "traces",
             "event": {
                 "outcome": "success"
             },
@@ -853,179 +986,6 @@
             "client": {
                 "ip": "192.0.0.1"
             },
-            "data_stream.dataset": "apm.internal",
-            "data_stream.type": "metrics",
-            "labels": {
-                "testTagKey": "testTagValue"
-            },
-            "processor": {
-                "event": "metric",
-                "name": "metric"
-            },
-            "service": {
-                "environment": "prod",
-                "framework": {
-                    "name": "angular",
-                    "version": "2"
-                },
-                "language": {
-                    "name": "javascript",
-                    "version": "6"
-                },
-                "name": "apm-a-rum-test-e2e-general-usecase",
-                "runtime": {
-                    "name": "v8",
-                    "version": "8.0"
-                },
-                "version": "0.0.1"
-            },
-            "transaction": {
-                "breakdown": {
-                    "count": 1
-                },
-                "duration": {
-                    "count": 1,
-                    "sum": {
-                        "us": 295
-                    }
-                },
-                "name": "general-usecase-initial-p-load",
-                "type": "p-load"
-            },
-            "user": {
-                "email": "user@email.com",
-                "id": "123",
-                "name": "John Doe"
-            },
-            "user_agent": {
-                "original": "rum-2.0"
-            }
-        },
-        {
-            "@timestamp": "2018-08-01T10:00:00.000Z",
-            "agent": {
-                "name": "js-base",
-                "version": "4.8.1"
-            },
-            "client": {
-                "ip": "192.0.0.1"
-            },
-            "data_stream.dataset": "apm.internal",
-            "data_stream.type": "metrics",
-            "labels": {
-                "testTagKey": "testTagValue"
-            },
-            "processor": {
-                "event": "metric",
-                "name": "metric"
-            },
-            "service": {
-                "environment": "prod",
-                "framework": {
-                    "name": "angular",
-                    "version": "2"
-                },
-                "language": {
-                    "name": "javascript",
-                    "version": "6"
-                },
-                "name": "apm-a-rum-test-e2e-general-usecase",
-                "runtime": {
-                    "name": "v8",
-                    "version": "8.0"
-                },
-                "version": "0.0.1"
-            },
-            "span": {
-                "self_time": {
-                    "count": 1,
-                    "sum": {
-                        "us": 1
-                    }
-                },
-                "type": "Request"
-            },
-            "transaction": {
-                "name": "general-usecase-initial-p-load",
-                "type": "p-load"
-            },
-            "user": {
-                "email": "user@email.com",
-                "id": "123",
-                "name": "John Doe"
-            },
-            "user_agent": {
-                "original": "rum-2.0"
-            }
-        },
-        {
-            "@timestamp": "2018-08-01T10:00:00.000Z",
-            "agent": {
-                "name": "js-base",
-                "version": "4.8.1"
-            },
-            "client": {
-                "ip": "192.0.0.1"
-            },
-            "data_stream.dataset": "apm.internal",
-            "data_stream.type": "metrics",
-            "labels": {
-                "testTagKey": "testTagValue"
-            },
-            "processor": {
-                "event": "metric",
-                "name": "metric"
-            },
-            "service": {
-                "environment": "prod",
-                "framework": {
-                    "name": "angular",
-                    "version": "2"
-                },
-                "language": {
-                    "name": "javascript",
-                    "version": "6"
-                },
-                "name": "apm-a-rum-test-e2e-general-usecase",
-                "runtime": {
-                    "name": "v8",
-                    "version": "8.0"
-                },
-                "version": "0.0.1"
-            },
-            "span": {
-                "self_time": {
-                    "count": 1,
-                    "sum": {
-                        "us": 1
-                    }
-                },
-                "type": "Response"
-            },
-            "transaction": {
-                "name": "general-usecase-initial-p-load",
-                "type": "p-load"
-            },
-            "user": {
-                "email": "user@email.com",
-                "id": "123",
-                "name": "John Doe"
-            },
-            "user_agent": {
-                "original": "rum-2.0"
-            }
-        },
-        {
-            "@timestamp": "2018-08-01T10:00:00.000Z",
-            "agent": {
-                "name": "js-base",
-                "version": "4.8.1"
-            },
-            "client": {
-                "ip": "192.0.0.1"
-            },
-            "data_stream.dataset": "apm.internal",
-            "data_stream.type": "metrics",
             "labels": {
                 "tag1": "value1",
                 "testTagKey": "testTagValue"
@@ -1052,15 +1012,11 @@
                 "version": "0.0.1"
             },
             "span": {
-                "self_time": {
-                    "count": 1,
-                    "sum": {
-                        "us": 124
-                    }
-                },
                 "subtype": "subtype",
                 "type": "Processing"
             },
+            "span.self_time.count": 1,
+            "span.self_time.sum.us": 124,
             "user": {
                 "email": "user@email.com",
                 "id": "123",

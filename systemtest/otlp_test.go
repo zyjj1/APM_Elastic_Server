@@ -35,9 +35,11 @@ import (
 	controller "go.opentelemetry.io/otel/sdk/metric/controller/basic"
 	processor "go.opentelemetry.io/otel/sdk/metric/processor/basic"
 	"go.opentelemetry.io/otel/sdk/metric/selector/simple"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -67,7 +69,12 @@ func TestOTLPGRPCTraces(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	err := sendOTLPTrace(ctx, newOTLPTracerProvider(newOTLPExporter(t, srv)))
+
+	err := sendOTLPTrace(ctx, newOTLPTracerProvider(newOTLPExporter(t, srv), sdktrace.WithResource(
+		resource.Merge(resource.Default(), sdkresource.NewWithAttributes(
+			attribute.Array("resource_attribute_array", []string{"a", "b"}),
+		)),
+	)))
 	require.NoError(t, err)
 
 	result := systemtest.Elasticsearch.ExpectDocs(t, "apm-*", estest.BoolQuery{Filter: []interface{}{
@@ -111,7 +118,7 @@ func TestOTLPGRPCMetrics(t *testing.T) {
 func TestOTLPGRPCAuth(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
 	srv := apmservertest.NewUnstartedServer(t)
-	srv.Config.SecretToken = "abc123"
+	srv.Config.AgentAuth.SecretToken = "abc123"
 	err := srv.Start()
 	require.NoError(t, err)
 
@@ -169,6 +176,124 @@ func TestOTLPClientIP(t *testing.T) {
 	assert.True(t, gjson.GetBytes(result.Hits.Hits[0].RawSource, "client.ip").Exists())
 }
 
+func TestOTLPAnonymous(t *testing.T) {
+	srv := apmservertest.NewUnstartedServer(t)
+	srv.Config.AgentAuth.SecretToken = "abc123" // enable auth & rate limiting
+	srv.Config.AgentAuth.Anonymous = &apmservertest.AnonymousAuthConfig{
+		Enabled:      true,
+		AllowAgent:   []string{"iOS/swift"},
+		AllowService: []string{"allowed_service"},
+	}
+	err := srv.Start()
+	require.NoError(t, err)
+
+	sendEvent := func(telemetrySDKName, telemetrySDKLanguage, serviceName string) error {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var attributes []attribute.KeyValue
+		if serviceName != "" {
+			attributes = append(attributes, attribute.String("service.name", serviceName))
+		}
+		if telemetrySDKName != "" {
+			attributes = append(attributes, attribute.String("telemetry.sdk.name", telemetrySDKName))
+		}
+		if telemetrySDKLanguage != "" {
+			attributes = append(attributes, attribute.String("telemetry.sdk.language", telemetrySDKLanguage))
+		}
+		exporter := newOTLPExporter(t, srv)
+		resource := sdkresource.NewWithAttributes(attributes...)
+		return sendOTLPTrace(ctx, newOTLPTracerProvider(exporter, sdktrace.WithResource(resource)))
+	}
+
+	err = sendEvent("iOS", "swift", "allowed_service")
+	assert.NoError(t, err)
+
+	err = sendEvent("open-telemetry", "go", "allowed_service")
+	assert.Error(t, err)
+	errStatus, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.PermissionDenied, errStatus.Code())
+	assert.Equal(t, `unauthorized: anonymous access not permitted for agent "open-telemetry/go"`, errStatus.Message())
+
+	err = sendEvent("iOS", "swift", "unallowed_service")
+	assert.Error(t, err)
+	errStatus, ok = status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.PermissionDenied, errStatus.Code())
+	assert.Equal(t, `unauthorized: anonymous access not permitted for service "unallowed_service"`, errStatus.Message())
+
+	// If the client does not send telemetry.sdk.*, we default agent name "otlp".
+	// This means it is not possible to bypass the allowed agents list.
+	err = sendEvent("", "", "allowed_service")
+	assert.Error(t, err)
+	errStatus, ok = status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.PermissionDenied, errStatus.Code())
+	assert.Equal(t, `unauthorized: anonymous access not permitted for agent "otlp"`, errStatus.Message())
+
+	// If the client does not send a service name, we default to "unknown".
+	// This means it is not possible to bypass the allowed services list.
+	err = sendEvent("iOS", "swift", "")
+	assert.Error(t, err)
+	errStatus, ok = status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.PermissionDenied, errStatus.Code())
+	assert.Equal(t, `unauthorized: anonymous access not permitted for service "unknown"`, errStatus.Message())
+}
+
+func TestOTLPRateLimit(t *testing.T) {
+	// The configured rate limit.
+	const eventRateLimit = 10
+
+	// The actual rate limit: a 3x "burst multiplier" is applied,
+	// and each gRPC method call is counted towards the event rate
+	// limit as well.
+	const sendEventLimit = (3 * eventRateLimit) / 2
+
+	srv := apmservertest.NewUnstartedServer(t)
+	srv.Config.AgentAuth.SecretToken = "abc123" // enable auth & rate limiting
+	srv.Config.AgentAuth.Anonymous = &apmservertest.AnonymousAuthConfig{
+		Enabled:    true,
+		AllowAgent: []string{"iOS/swift"},
+		RateLimit: &apmservertest.RateLimitConfig{
+			IPLimit:    2,
+			EventLimit: eventRateLimit,
+		},
+	}
+	err := srv.Start()
+	require.NoError(t, err)
+
+	sendEvent := func(ip string) error {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		exporter := newOTLPExporter(t, srv, otlpgrpc.WithHeaders(map[string]string{"x-real-ip": ip}))
+		resource := sdkresource.NewWithAttributes(
+			attribute.String("service.name", "service2"),
+			attribute.String("telemetry.sdk.name", "iOS"),
+			attribute.String("telemetry.sdk.language", "swift"),
+		)
+		return sendOTLPTrace(ctx, newOTLPTracerProvider(exporter, sdktrace.WithResource(resource)))
+	}
+
+	// Check that for the configured IP limit (2), we can handle 3*event_limit without being rate limited.
+	var g errgroup.Group
+	for i := 0; i < sendEventLimit; i++ {
+		g.Go(func() error { return sendEvent("10.11.12.13") })
+		g.Go(func() error { return sendEvent("10.11.12.14") })
+	}
+	err = g.Wait()
+	assert.NoError(t, err)
+
+	// The rate limiter cache only has space for 2 IPs, so the 3rd one reuses an existing
+	// limiter, which will have already been exhausted.
+	err = sendEvent("10.11.12.15")
+	require.Error(t, err)
+	errStatus, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.ResourceExhausted, errStatus.Code())
+	assert.Equal(t, "rate limit exceeded", errStatus.Message())
+}
+
 func newOTLPExporter(t testing.TB, srv *apmservertest.Server, options ...otlpgrpc.Option) *otlp.Exporter {
 	options = append(options, otlpgrpc.WithEndpoint(serverAddr(srv)), otlpgrpc.WithInsecure())
 	driver := otlpgrpc.NewDriver(options...)
@@ -203,8 +328,14 @@ func sendOTLPTrace(ctx context.Context, tracerProvider *sdktrace.TracerProvider)
 	tracer := tracerProvider.Tracer("systemtest")
 	startTime := time.Unix(123, 456)
 	endTime := startTime.Add(time.Second)
-	_, span := tracer.Start(ctx, "operation_name", trace.WithTimestamp(startTime))
+	_, span := tracer.Start(ctx, "operation_name", trace.WithTimestamp(startTime), trace.WithAttributes(
+		attribute.Array("span_attribute_array", []string{"a", "b", "c"}),
+	))
 	span.End(trace.WithTimestamp(endTime))
+	return flushTracerProvider(ctx, tracerProvider)
+}
+
+func flushTracerProvider(ctx context.Context, tracerProvider *sdktrace.TracerProvider) error {
 	if err := tracerProvider.ForceFlush(ctx); err != nil {
 		return err
 	}

@@ -20,7 +20,6 @@ package model
 import (
 	"context"
 
-	"github.com/elastic/apm-server/transform"
 	"github.com/elastic/beats/v7/libbeat/beat"
 )
 
@@ -42,46 +41,14 @@ func (f ProcessBatchFunc) ProcessBatch(ctx context.Context, b *Batch) error {
 	return f(ctx, b)
 }
 
-type Batch struct {
-	Transactions []*Transaction
-	Spans        []*Span
-	Metricsets   []*Metricset
-	Errors       []*Error
-	Profiles     []*PprofProfile
-}
+// Batch is a collection of APM events.
+type Batch []APMEvent
 
-// Reset resets the batch to be empty, but it retains the underlying storage.
-func (b *Batch) Reset() {
-	b.Transactions = b.Transactions[:0]
-	b.Spans = b.Spans[:0]
-	b.Metricsets = b.Metricsets[:0]
-	b.Errors = b.Errors[:0]
-	b.Profiles = b.Profiles[:0]
-}
-
-func (b *Batch) Len() int {
-	if b == nil {
-		return 0
+// Transform transforms all events in the batch, in sequence.
+func (b *Batch) Transform(ctx context.Context) []beat.Event {
+	out := make([]beat.Event, 0, len(*b))
+	for _, event := range *b {
+		out = event.appendBeatEvent(ctx, out)
 	}
-	return len(b.Transactions) + len(b.Spans) + len(b.Metricsets) + len(b.Errors) + len(b.Profiles)
-}
-
-func (b *Batch) Transform(ctx context.Context, cfg *transform.Config) []beat.Event {
-	events := make([]beat.Event, 0, b.Len())
-	for _, event := range b.Transactions {
-		events = event.appendBeatEvents(cfg, events)
-	}
-	for _, event := range b.Spans {
-		events = event.appendBeatEvents(ctx, cfg, events)
-	}
-	for _, event := range b.Metricsets {
-		events = event.appendBeatEvents(cfg, events)
-	}
-	for _, event := range b.Errors {
-		events = event.appendBeatEvents(ctx, cfg, events)
-	}
-	for _, event := range b.Profiles {
-		events = event.appendBeatEvents(cfg, events)
-	}
-	return events
+	return out
 }

@@ -158,15 +158,11 @@ func Handler(requestMetadataFunc RequestMetadataFunc, processor model.BatchProce
 			}
 		}
 
-		modelProfiles := make([]*model.PprofProfile, len(profiles))
-		for i, p := range profiles {
-			modelProfiles[i] = &model.PprofProfile{
-				Metadata: profileMetadata,
-				Profile:  p,
-			}
+		var batch model.Batch
+		for _, profile := range profiles {
+			batch = appendProfileSampleBatch(profile, profileMetadata, batch)
 		}
-
-		if err := processor.ProcessBatch(c.Request.Context(), &model.Batch{Profiles: modelProfiles}); err != nil {
+		if err := processor.ProcessBatch(c.Request.Context(), &batch); err != nil {
 			switch err {
 			case publish.ErrChannelClosed:
 				return nil, requestError{
@@ -181,7 +177,7 @@ func Handler(requestMetadataFunc RequestMetadataFunc, processor model.BatchProce
 			}
 			return nil, err
 		}
-		return &result{Accepted: len(modelProfiles)}, nil
+		return &result{Accepted: len(batch)}, nil
 	}
 	return func(c *request.Context) {
 		result, err := handle(c)

@@ -19,15 +19,12 @@ package model
 
 import (
 	"context"
-	"net"
 	"time"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/monitoring"
 
-	"github.com/elastic/apm-server/datastreams"
-	"github.com/elastic/apm-server/transform"
 	"github.com/elastic/apm-server/utility"
 )
 
@@ -70,10 +67,6 @@ type Span struct {
 	HTTP               *HTTP
 	Destination        *Destination
 	DestinationService *DestinationService
-
-	// RUM records whether or not this is a RUM span,
-	// and should have its stack frames sourcemapped.
-	RUM bool
 
 	Experimental interface{}
 
@@ -168,9 +161,6 @@ func (d *Destination) fields() common.MapStr {
 	var fields mapStr
 	if d.Address != "" {
 		fields.set("address", d.Address)
-		if ip := net.ParseIP(d.Address); ip != nil {
-			fields.set("ip", d.Address)
-		}
 	}
 	if d.Port > 0 {
 		fields.set("port", d.Port)
@@ -189,7 +179,7 @@ func (d *DestinationService) fields() common.MapStr {
 	return common.MapStr(fields)
 }
 
-func (e *Span) appendBeatEvents(ctx context.Context, cfg *transform.Config, events []beat.Event) []beat.Event {
+func (e *Span) toBeatEvent(ctx context.Context) beat.Event {
 	spanTransformations.Inc()
 	if frames := len(e.Stacktrace); frames > 0 {
 		spanStacktraceCounter.Inc()
@@ -198,13 +188,7 @@ func (e *Span) appendBeatEvents(ctx context.Context, cfg *transform.Config, even
 
 	fields := mapStr{
 		"processor": spanProcessorEntry,
-		spanDocType: e.fields(ctx, cfg),
-	}
-
-	if cfg.DataStreams {
-		// Spans are stored in a "traces" data stream along with transactions.
-		fields[datastreams.TypeField] = datastreams.TracesType
-		fields[datastreams.DatasetField] = TracesDataset
+		spanDocType: e.fields(ctx),
 	}
 
 	// first set the generic metadata
@@ -238,13 +222,13 @@ func (e *Span) appendBeatEvents(ctx context.Context, cfg *transform.Config, even
 
 	common.MapStr(fields).Put("event.outcome", e.Outcome)
 
-	return append(events, beat.Event{
+	return beat.Event{
 		Fields:    common.MapStr(fields),
 		Timestamp: e.Timestamp,
-	})
+	}
 }
 
-func (e *Span) fields(ctx context.Context, cfg *transform.Config) common.MapStr {
+func (e *Span) fields(ctx context.Context) common.MapStr {
 	if e == nil {
 		return nil
 	}
@@ -269,7 +253,7 @@ func (e *Span) fields(ctx context.Context, cfg *transform.Config) common.MapStr 
 
 	// TODO(axw) we should be using a merged service object, combining
 	// the stream metadata and event-specific service info.
-	if st := e.Stacktrace.transform(ctx, cfg, e.RUM, &e.Metadata.Service); len(st) > 0 {
+	if st := e.Stacktrace.transform(); len(st) > 0 {
 		fields.set("stacktrace", st)
 	}
 	return common.MapStr(fields)

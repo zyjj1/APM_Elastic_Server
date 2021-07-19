@@ -42,38 +42,36 @@ func TestSetMetricsetName(t *testing.T) {
 		name:      "",
 	}, {
 		metricset: model.Metricset{
-			Samples: []model.Sample{{
-				Name: "transaction.breakdown.count",
-			}},
+			Samples: map[string]model.MetricsetSample{
+				"transaction.breakdown.count": {},
+			},
 		},
 		name: "app",
 	}, {
 		metricset: model.Metricset{
 			Transaction: model.MetricsetTransaction{Type: "request"},
-			Samples: []model.Sample{{
-				Name: "transaction.duration.count",
-			}, {
-				Name: "transaction.breakdown.count",
-			}},
+			Samples: map[string]model.MetricsetSample{
+				"transaction.duration.count":  {},
+				"transaction.breakdown.count": {},
+			},
 		},
 		name: "transaction_breakdown",
 	}, {
 		metricset: model.Metricset{
 			Transaction: model.MetricsetTransaction{Type: "request"},
-			Span:        model.MetricsetSpan{Type: "app"},
-			Samples: []model.Sample{{
-				Name: "span.self_time.count",
-			}},
+			Samples: map[string]model.MetricsetSample{
+				"span.self_time.count": {},
+			},
 		},
 		name: "span_breakdown",
 	}}
 
 	for _, test := range tests {
-		batch := &model.Batch{Metricsets: []*model.Metricset{&test.metricset}}
+		batch := model.Batch{{Metricset: &test.metricset}}
 		processor := modelprocessor.SetMetricsetName{}
-		err := processor.ProcessBatch(context.Background(), batch)
+		err := processor.ProcessBatch(context.Background(), &batch)
 		assert.NoError(t, err)
-		assert.Equal(t, test.name, batch.Metricsets[0].Name)
+		assert.Equal(t, test.name, batch[0].Metricset.Name)
 	}
 
 }

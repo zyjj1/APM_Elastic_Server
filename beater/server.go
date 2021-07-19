@@ -33,7 +33,7 @@ import (
 	"github.com/elastic/beats/v7/libbeat/version"
 
 	"github.com/elastic/apm-server/agentcfg"
-	"github.com/elastic/apm-server/beater/authorization"
+	"github.com/elastic/apm-server/beater/auth"
 	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/beater/interceptors"
 	"github.com/elastic/apm-server/beater/jaeger"
@@ -42,6 +42,7 @@ import (
 	"github.com/elastic/apm-server/model"
 	"github.com/elastic/apm-server/model/modelprocessor"
 	"github.com/elastic/apm-server/publish"
+	"github.com/elastic/apm-server/sourcemap"
 )
 
 // RunServerFunc is a function which runs the APM Server until a
@@ -69,6 +70,10 @@ type ServerParams struct {
 	// for self-instrumentation.
 	Tracer *apm.Tracer
 
+	// SourcemapStore holds a sourcemap.Store, or nil if source
+	// mapping is disabled.
+	SourcemapStore *sourcemap.Store
+
 	// BatchProcessor is the model.BatchProcessor that is used
 	// for publishing events to the output, such as Elasticsearch.
 	BatchProcessor model.BatchProcessor
@@ -84,7 +89,15 @@ type ServerParams struct {
 // should remove the reporter parameter.
 func newBaseRunServer(reporter publish.Reporter) RunServerFunc {
 	return func(ctx context.Context, args ServerParams) error {
-		srv, err := newServer(args.Logger, args.Info, args.Config, args.Tracer, reporter, args.BatchProcessor)
+		srv, err := newServer(
+			args.Logger,
+			args.Info,
+			args.Config,
+			args.Tracer,
+			reporter,
+			args.SourcemapStore,
+			args.BatchProcessor,
+		)
 		if err != nil {
 			return err
 		}
@@ -118,18 +131,21 @@ func newServer(
 	cfg *config.Config,
 	tracer *apm.Tracer,
 	reporter publish.Reporter,
+	sourcemapStore *sourcemap.Store,
 	batchProcessor model.BatchProcessor,
 ) (server, error) {
 	agentcfgFetchReporter := agentcfg.NewReporter(agentcfg.NewFetcher(cfg), batchProcessor, 30*time.Second)
 	ratelimitStore, err := ratelimit.NewStore(
-		cfg.RumConfig.EventRate.LruSize,
-		cfg.RumConfig.EventRate.Limit,
+		cfg.AgentAuth.Anonymous.RateLimit.IPLimit,
+		cfg.AgentAuth.Anonymous.RateLimit.EventLimit,
 		3, // burst multiplier
 	)
 	if err != nil {
 		return server{}, err
 	}
-	httpServer, err := newHTTPServer(logger, info, cfg, tracer, reporter, batchProcessor, agentcfgFetchReporter, ratelimitStore)
+	httpServer, err := newHTTPServer(
+		logger, info, cfg, tracer, reporter, batchProcessor, agentcfgFetchReporter, ratelimitStore, sourcemapStore,
+	)
 	if err != nil {
 		return server{}, err
 	}
@@ -160,16 +176,16 @@ func newGRPCServer(
 	agentcfgFetcher agentcfg.Fetcher,
 	ratelimitStore *ratelimit.Store,
 ) (*grpc.Server, error) {
-	// TODO(axw) share auth builder with beater/api.
-	authBuilder, err := authorization.NewBuilder(cfg.AgentAuth)
+	// TODO(axw) share authenticator with beater/api.
+	authenticator, err := auth.NewAuthenticator(cfg.AgentAuth)
 	if err != nil {
 		return nil, err
 	}
 
 	apmInterceptor := apmgrpc.NewUnaryServerInterceptor(apmgrpc.WithRecovery(), apmgrpc.WithTracer(tracer))
-	authInterceptor := interceptors.Authorization(
-		otlp.MethodAuthorizationHandlers(authBuilder),
-		jaeger.MethodAuthorizationHandlers(authBuilder, jaeger.ElasticAuthTag),
+	authInterceptor := interceptors.Auth(
+		otlp.MethodAuthenticators(authenticator),
+		jaeger.MethodAuthenticators(authenticator, jaeger.ElasticAuthTag),
 	)
 
 	// Note that we intentionally do not use a grpc.Creds ServerOption
@@ -198,7 +214,7 @@ func newGRPCServer(
 	// Add a model processor that rate limits, and checks authorization for the agent and service for each event.
 	batchProcessor = modelprocessor.Chained{
 		model.ProcessBatchFunc(rateLimitBatchProcessor),
-		modelprocessor.MetadataProcessorFunc(verifyAuthorizedFor),
+		modelprocessor.MetadataProcessorFunc(authorizeEventIngest),
 		batchProcessor,
 	}
 

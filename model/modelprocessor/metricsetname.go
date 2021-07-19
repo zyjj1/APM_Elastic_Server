@@ -19,7 +19,6 @@ package modelprocessor
 
 import (
 	"context"
-	"strings"
 
 	"github.com/elastic/apm-server/model"
 )
@@ -39,8 +38,9 @@ type SetMetricsetName struct{}
 // will be given a specific name, while all other metrics will be given the name
 // "app".
 func (SetMetricsetName) ProcessBatch(ctx context.Context, b *model.Batch) error {
-	for _, ms := range b.Metricsets {
-		if ms.Name != "" || len(ms.Samples) == 0 {
+	for _, event := range *b {
+		ms := event.Metricset
+		if ms == nil || ms.Name != "" || len(ms.Samples) == 0 {
 			continue
 		}
 		ms.Name = appMetricsetName
@@ -48,20 +48,10 @@ func (SetMetricsetName) ProcessBatch(ctx context.Context, b *model.Batch) error 
 			// Not a breakdown metricset.
 			continue
 		}
-		if ms.Span.Type != "" {
-			for _, sample := range ms.Samples {
-				if strings.HasPrefix(sample.Name, "span.self_time.") {
-					ms.Name = spanBreakdownMetricsetName
-					break
-				}
-			}
-		} else {
-			for _, sample := range ms.Samples {
-				if strings.HasPrefix(sample.Name, "transaction.breakdown.") {
-					ms.Name = transactionBreakdownMetricsetName
-					break
-				}
-			}
+		if _, ok := ms.Samples["span.self_time.count"]; ok {
+			ms.Name = spanBreakdownMetricsetName
+		} else if _, ok := ms.Samples["transaction.breakdown.count"]; ok {
+			ms.Name = transactionBreakdownMetricsetName
 		}
 	}
 	return nil

@@ -65,6 +65,15 @@ const (
 	outcomeSuccess = "success"
 	outcomeFailure = "failure"
 	outcomeUnknown = "unknown"
+
+	// TODO: handle net.host.connection.subtype, which will
+	// require adding a new field to the model as well.
+
+	AttributeNetworkType        = "net.host.connection.type"
+	AttributeNetworkMCC         = "net.host.carrier.mcc"
+	AttributeNetworkMNC         = "net.host.carrier.mnc"
+	AttributeNetworkCarrierName = "net.host.carrier.name"
+	AttributeNetworkICC         = "net.host.carrier.icc"
 )
 
 // Consumer transforms open-telemetry data to be compatible with elastic APM data
@@ -202,7 +211,7 @@ func (c *Consumer) convertSpan(
 			Outcome:   spanStatusOutcome(otelSpan.Status()),
 		}
 		translateTransaction(otelSpan, otelLibrary, metadata, &transactionBuilder{Transaction: transaction})
-		out.Transactions = append(out.Transactions, transaction)
+		*out = append(*out, model.APMEvent{Transaction: transaction})
 	} else {
 		span = &model.Span{
 			Metadata:  metadata,
@@ -215,7 +224,7 @@ func (c *Consumer) convertSpan(
 			Outcome:   spanStatusOutcome(otelSpan.Status()),
 		}
 		translateSpan(otelSpan, metadata, span)
-		out.Spans = append(out.Spans, span)
+		*out = append(*out, model.APMEvent{Span: span})
 	}
 
 	events := otelSpan.Events()
@@ -261,22 +270,7 @@ func translateTransaction(
 		k := replaceDots(kDots)
 		switch v.Type() {
 		case pdata.AttributeValueTypeArray:
-			array := v.ArrayVal()
-			values := make([]interface{}, array.Len())
-			for i := range values {
-				value := array.At(i)
-				switch value.Type() {
-				case pdata.AttributeValueTypeBool:
-					values[i] = value.BoolVal()
-				case pdata.AttributeValueTypeDouble:
-					values[i] = value.DoubleVal()
-				case pdata.AttributeValueTypeInt:
-					values[i] = value.IntVal()
-				case pdata.AttributeValueTypeString:
-					values[i] = truncate(value.StringVal())
-				}
-			}
-			labels[k] = values
+			labels[k] = ifaceAnyValueArray(v.ArrayVal())
 		case pdata.AttributeValueTypeBool:
 			labels[k] = v.BoolVal()
 		case pdata.AttributeValueTypeDouble:
@@ -350,6 +344,16 @@ func translateTransaction(
 				netPeerName = stringval
 			case conventions.AttributeNetHostName:
 				netHostName = stringval
+			case AttributeNetworkType:
+				tx.Metadata.System.Network.ConnectionType = stringval
+			case AttributeNetworkMCC:
+				tx.Metadata.System.Network.Carrier.MCC = stringval
+			case AttributeNetworkMNC:
+				tx.Metadata.System.Network.Carrier.MNC = stringval
+			case AttributeNetworkCarrierName:
+				tx.Metadata.System.Network.Carrier.Name = stringval
+			case AttributeNetworkICC:
+				tx.Metadata.System.Network.Carrier.ICC = stringval
 
 			// messaging.*
 			case "message_bus.destination", conventions.AttributeMessagingDestination:
@@ -489,6 +493,8 @@ func translateSpan(span pdata.Span, metadata model.Metadata, event *model.Span) 
 
 		k := replaceDots(kDots)
 		switch v.Type() {
+		case pdata.AttributeValueTypeArray:
+			labels[k] = ifaceAnyValueArray(v.ArrayVal())
 		case pdata.AttributeValueTypeBool:
 			labels[k] = v.BoolVal()
 		case pdata.AttributeValueTypeDouble:
@@ -558,6 +564,16 @@ func translateSpan(span pdata.Span, metadata model.Metadata, event *model.Span) 
 					// values containing colons, except for IPv6.
 					netPeerName = stringval
 				}
+			case AttributeNetworkType:
+				event.Metadata.System.Network.ConnectionType = stringval
+			case AttributeNetworkMCC:
+				event.Metadata.System.Network.Carrier.MCC = stringval
+			case AttributeNetworkMNC:
+				event.Metadata.System.Network.Carrier.MNC = stringval
+			case AttributeNetworkCarrierName:
+				event.Metadata.System.Network.Carrier.Name = stringval
+			case AttributeNetworkICC:
+				event.Metadata.System.Network.Carrier.ICC = stringval
 
 			// messaging.*
 			case "message_bus.destination", conventions.AttributeMessagingDestination:
@@ -816,7 +832,7 @@ func convertSpanEvent(
 		if span != nil {
 			addSpanCtxToErr(span, e)
 		}
-		out.Errors = append(out.Errors, e)
+		*out = append(*out, model.APMEvent{Error: e})
 	}
 }
 
