@@ -18,6 +18,7 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -27,64 +28,32 @@ import (
 	"github.com/elastic/beats/v7/libbeat/common"
 )
 
-func TestTransform(t *testing.T) {
-	timestamp := time.Now()
-	metadata := Metadata{
-		Service: Service{Name: "myservice"},
-	}
-	resource := "external-service"
-
-	const (
-		trType   = "request"
-		trName   = "GET /"
-		trResult = "HTTP 2xx"
-
-		spType    = "db"
-		spSubtype = "sql"
-
-		eventOutcome = "success"
-	)
-
+func TestMetricset(t *testing.T) {
 	tests := []struct {
 		Metricset *Metricset
 		Output    common.MapStr
 		Msg       string
 	}{
 		{
-			Metricset: &Metricset{Timestamp: timestamp, Metadata: metadata},
-			Output: common.MapStr{
-				"processor": common.MapStr{"event": "metric", "name": "metric"},
-				"service": common.MapStr{
-					"name": "myservice",
-				},
-			},
-			Msg: "Payload with empty metric.",
+			Metricset: &Metricset{},
+			Output:    common.MapStr{},
+			Msg:       "Payload with empty metric.",
 		},
 		{
-			Metricset: &Metricset{Timestamp: timestamp, Metadata: metadata, Name: "raj"},
+			Metricset: &Metricset{Name: "raj"},
 			Output: common.MapStr{
-				"processor":      common.MapStr{"event": "metric", "name": "metric"},
 				"metricset.name": "raj",
-				"service": common.MapStr{
-					"name": "myservice",
-				},
 			},
 			Msg: "Payload with metricset name.",
 		},
 		{
 			Metricset: &Metricset{
-				Metadata:  metadata,
-				Labels:    common.MapStr{"a_b": "a.b.value"},
-				Timestamp: timestamp,
 				Samples: map[string]MetricsetSample{
 					"a.counter":  {Value: 612},
 					"some.gauge": {Value: 9.16},
 				},
 			},
 			Output: common.MapStr{
-				"processor":  common.MapStr{"event": "metric", "name": "metric"},
-				"service":    common.MapStr{"name": "myservice"},
-				"labels":     common.MapStr{"a_b": "a.b.value"},
 				"a.counter":  612.0,
 				"some.gauge": 9.16,
 			},
@@ -92,105 +61,25 @@ func TestTransform(t *testing.T) {
 		},
 		{
 			Metricset: &Metricset{
-				Timestamp:   timestamp,
-				Metadata:    metadata,
-				Span:        MetricsetSpan{Type: spType, Subtype: spSubtype},
-				Transaction: MetricsetTransaction{Type: trType, Name: trName},
-				Samples: map[string]MetricsetSample{
-					"span.self_time.count": {Value: 123},
-				},
-			},
-			Output: common.MapStr{
-				"processor":   common.MapStr{"event": "metric", "name": "metric"},
-				"service":     common.MapStr{"name": "myservice"},
-				"transaction": common.MapStr{"type": trType, "name": trName},
-				"span": common.MapStr{
-					"type": spType, "subtype": spSubtype,
-				},
-				"span.self_time.count": 123.0,
-			},
-			Msg: "Payload with breakdown metrics.",
-		},
-		{
-			Metricset: &Metricset{
-				Timestamp: timestamp,
-				Metadata:  metadata,
-				Event:     MetricsetEventCategorization{Outcome: eventOutcome},
-				Transaction: MetricsetTransaction{
-					Type:   trType,
-					Name:   trName,
-					Result: trResult,
-					Root:   true,
-				},
 				TimeseriesInstanceID: "foo",
-				Samples: map[string]MetricsetSample{
-					"transaction.duration.histogram": {
-						Type:   "histogram",
-						Value:  666, // ignored for histogram type
-						Counts: []int64{1, 2, 3},
-						Values: []float64{4.5, 6.0, 9.0},
-					},
-				},
-				DocCount: 6,
+				DocCount:             6,
 			},
 			Output: common.MapStr{
-				"processor":  common.MapStr{"event": "metric", "name": "metric"},
-				"service":    common.MapStr{"name": "myservice"},
-				"event":      common.MapStr{"outcome": eventOutcome},
 				"timeseries": common.MapStr{"instance": "foo"},
-				"transaction": common.MapStr{
-					"type":   trType,
-					"name":   trName,
-					"result": trResult,
-					"root":   true,
-				},
-				"transaction.duration.histogram": common.MapStr{
-					"counts": []int64{1, 2, 3},
-					"values": []float64{4.5, 6.0, 9.0},
-				},
-				"_metric_descriptions": common.MapStr{
-					"transaction.duration.histogram": common.MapStr{
-						"type": "histogram",
-					},
-				},
 				"_doc_count": int64(6),
 			},
-			Msg: "Payload with transaction duration.",
+			Msg: "Timeseries instance and _doc_count",
 		},
 		{
 			Metricset: &Metricset{
-				Timestamp: timestamp,
-				Metadata:  metadata,
-				Span: MetricsetSpan{Type: spType, Subtype: spSubtype, DestinationService: DestinationService{
-					Resource: resource,
-				}},
-				Samples: map[string]MetricsetSample{
-					"destination.service.response_time.count":  {Value: 40},
-					"destination.service.response_time.sum.us": {Value: 500000},
-				},
-			},
-			Output: common.MapStr{
-				"processor": common.MapStr{"event": "metric", "name": "metric"},
-				"service":   common.MapStr{"name": "myservice"},
-				"span": common.MapStr{
-					"type": spType, "subtype": spSubtype,
-					"destination": common.MapStr{"service": common.MapStr{"resource": resource}},
-				},
-				"destination.service.response_time.count":  40.0,
-				"destination.service.response_time.sum.us": 500000.0,
-			},
-			Msg: "Payload with destination service.",
-		},
-		{
-			Metricset: &Metricset{
-				Timestamp: timestamp,
-				Metadata:  metadata,
 				Samples: map[string]MetricsetSample{
 					"latency_histogram": {
-						Type:   "histogram",
-						Unit:   "s",
-						Counts: []int64{1, 2, 3},
-						Values: []float64{1.1, 2.2, 3.3},
+						Type: "histogram",
+						Unit: "s",
+						Histogram: Histogram{
+							Counts: []int64{1, 2, 3},
+							Values: []float64{1.1, 2.2, 3.3},
+						},
 					},
 					"just_type": {
 						Type:  "counter",
@@ -203,8 +92,6 @@ func TestTransform(t *testing.T) {
 				},
 			},
 			Output: common.MapStr{
-				"processor": common.MapStr{"event": "metric", "name": "metric"},
-				"service":   common.MapStr{"name": "myservice"},
 				"latency_histogram": common.MapStr{
 					"counts": []int64{1, 2, 3},
 					"values": []float64{1.1, 2.2, 3.3},
@@ -229,8 +116,84 @@ func TestTransform(t *testing.T) {
 	}
 
 	for idx, test := range tests {
-		outputEvent := test.Metricset.toBeatEvent()
+		event := APMEvent{Metricset: test.Metricset}
+		outputEvent := event.BeatEvent(context.Background())
 		assert.Equal(t, test.Output, outputEvent.Fields, fmt.Sprintf("Failed at idx %v; %s", idx, test.Msg))
-		assert.Equal(t, timestamp, outputEvent.Timestamp, fmt.Sprintf("Bad timestamp at idx %v; %s", idx, test.Msg))
 	}
+}
+
+func TestTransformMetricsetTransaction(t *testing.T) {
+	event := APMEvent{
+		Processor: MetricsetProcessor,
+		Transaction: &Transaction{
+			Name:           "transaction_name",
+			Type:           "transaction_type",
+			Result:         "transaction_result",
+			BreakdownCount: 123,
+			DurationHistogram: Histogram{
+				Counts: []int64{1, 2, 3},
+				Values: []float64{4.5, 6.0, 9.0},
+			},
+		},
+		Metricset: &Metricset{Name: "transaction"},
+	}
+	beatEvent := event.BeatEvent(context.Background())
+	assert.Equal(t, common.MapStr{
+		"processor":      common.MapStr{"name": "metric", "event": "metric"},
+		"metricset.name": "transaction",
+		"transaction": common.MapStr{
+			"name":            "transaction_name",
+			"type":            "transaction_type",
+			"result":          "transaction_result",
+			"breakdown.count": 123,
+			"duration.histogram": common.MapStr{
+				"counts": []int64{1, 2, 3},
+				"values": []float64{4.5, 6.0, 9.0},
+			},
+		},
+	}, beatEvent.Fields)
+}
+
+func TestTransformMetricsetSpan(t *testing.T) {
+	event := APMEvent{
+		Processor: MetricsetProcessor,
+		Span: &Span{
+			Type:    "span_type",
+			Subtype: "span_subtype",
+			SelfTime: AggregatedDuration{
+				Count: 123,
+				Sum:   time.Millisecond,
+			},
+			DestinationService: &DestinationService{
+				Resource: "destination_service_resource",
+				ResponseTime: AggregatedDuration{
+					Count: 456,
+					Sum:   time.Second,
+				},
+			},
+		},
+		Metricset: &Metricset{Name: "span"},
+	}
+	beatEvent := event.BeatEvent(context.Background())
+	assert.Equal(t, common.MapStr{
+		"processor":      common.MapStr{"name": "metric", "event": "metric"},
+		"metricset.name": "span",
+		"span": common.MapStr{
+			"type":    "span_type",
+			"subtype": "span_subtype",
+			"self_time": common.MapStr{
+				"count":  123,
+				"sum.us": int64(1000),
+			},
+			"destination": common.MapStr{
+				"service": common.MapStr{
+					"resource": "destination_service_resource",
+					"response_time": common.MapStr{
+						"count":  456,
+						"sum.us": int64(1000000),
+					},
+				},
+			},
+		},
+	}, beatEvent.Fields)
 }

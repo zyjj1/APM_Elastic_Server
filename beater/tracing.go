@@ -27,6 +27,7 @@ import (
 
 	"github.com/elastic/apm-server/agentcfg"
 	"github.com/elastic/apm-server/beater/api"
+	"github.com/elastic/apm-server/beater/auth"
 	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/beater/ratelimit"
 	"github.com/elastic/apm-server/model"
@@ -64,14 +65,21 @@ func newTracerServer(listener net.Listener, logger *logp.Logger) (*tracerServer,
 	if err != nil {
 		return nil, err
 	}
+	authenticator, err := auth.NewAuthenticator(config.AgentAuth{})
+	if err != nil {
+		return nil, err
+	}
 	mux, err := api.NewMux(
 		beat.Info{},
 		cfg,
 		nopReporter,
 		processBatch,
+		authenticator,
 		agentcfg.NewFetcher(cfg),
 		ratelimitStore,
-		nil, // no sourcemap store
+		nil,                         // no sourcemap store
+		false,                       // not managed
+		func() bool { return true }, // ready for publishing
 	)
 	if err != nil {
 		return nil, err
@@ -109,9 +117,6 @@ func (s *tracerServer) serve(ctx context.Context, batchProcessor model.BatchProc
 		case <-ctx.Done():
 			return ctx.Err()
 		case req := <-s.requests:
-			// Disable tracing for requests that come through the
-			// tracer server, to avoid recursive tracing.
-			req.ctx = context.WithValue(req.ctx, disablePublisherTracingKey{}, true)
 			req.res <- batchProcessor.ProcessBatch(req.ctx, req.batch)
 		}
 	}

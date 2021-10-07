@@ -27,22 +27,23 @@ import (
 	"github.com/elastic/beats/v7/libbeat/common"
 )
 
+func TestSpanTransformEmpty(t *testing.T) {
+	var event APMEvent
+	event.Span = &Span{}
+	beatEvent := event.BeatEvent(context.Background())
+	assert.Empty(t, beatEvent.Fields)
+}
+
 func TestSpanTransform(t *testing.T) {
 	path := "test/path"
 	start := 0.65
-	serviceName, serviceVersion, env := "myService", "1.2", "staging"
-	service := Service{Name: serviceName, Version: serviceVersion, Environment: env}
-	hexID, parentID, traceID := "0147258369012345", "abcdef0123456789", "01234567890123456789abcdefa"
+	hexID := "0147258369012345"
 	subtype := "amqp"
 	action := "publish"
-	timestamp := time.Date(2019, 1, 3, 15, 17, 4, 908.596*1e6,
-		time.FixedZone("+0100", 3600))
+	duration := time.Millisecond * 1500
+	timestamp := time.Date(2019, 1, 3, 15, 17, 4, 908.596*1e6, time.FixedZone("+0100", 3600))
 	timestampUs := timestamp.UnixNano() / 1000
-	method, statusCode, url := "get", 200, "http://localhost"
 	instance, statement, dbType, user, rowsAffected := "db01", "select *", "sql", "jane", 5
-	metadataLabels := common.MapStr{"label.a": "a", "label.b": "b", "c": 1}
-	metadata := Metadata{Service: service, Labels: metadataLabels}
-	address, port := "127.0.0.1", 8080
 	destServiceType, destServiceName, destServiceResource := "db", "elasticsearch", "elasticsearch"
 
 	tests := []struct {
@@ -51,56 +52,16 @@ func TestSpanTransform(t *testing.T) {
 		Msg    string
 	}{
 		{
-			Msg:  "Span without a Stacktrace",
-			Span: Span{Timestamp: timestamp, Metadata: metadata},
-			Output: common.MapStr{
-				"processor": common.MapStr{"event": "span", "name": "transaction"},
-				"service":   common.MapStr{"name": serviceName, "environment": env, "version": serviceVersion},
-				"span": common.MapStr{
-					"duration": common.MapStr{"us": 0},
-					"name":     "",
-					"type":     "",
-				},
-				"event":     common.MapStr{"outcome": ""},
-				"labels":    common.MapStr{"label_a": "a", "label_b": "b", "c": 1},
-				"timestamp": common.MapStr{"us": timestampUs},
-			},
-		},
-		{
-			Msg:  "Span with outcome",
-			Span: Span{Timestamp: timestamp, Metadata: metadata, Outcome: "success"},
-			Output: common.MapStr{
-				"processor": common.MapStr{"event": "span", "name": "transaction"},
-				"service":   common.MapStr{"name": serviceName, "environment": env, "version": serviceVersion},
-				"span": common.MapStr{
-					"duration": common.MapStr{"us": 0},
-					"name":     "",
-					"type":     "",
-				},
-				"timestamp": common.MapStr{"us": timestampUs},
-				"labels":    common.MapStr{"label_a": "a", "label_b": "b", "c": 1},
-				"event":     common.MapStr{"outcome": "success"},
-			},
-		},
-		{
 			Msg: "Full Span",
 			Span: Span{
-				Metadata:            metadata,
 				ID:                  hexID,
-				TraceID:             traceID,
-				ParentID:            parentID,
 				Name:                "myspan",
 				Type:                "myspantype",
 				Subtype:             subtype,
 				Action:              action,
-				Timestamp:           timestamp,
 				Start:               &start,
-				Outcome:             "unknown",
 				RepresentativeCount: 5,
-				Duration:            1.20,
 				Stacktrace:          Stacktrace{{AbsPath: path}},
-				Labels:              common.MapStr{"label_a": 12},
-				HTTP:                &HTTP{Method: method, StatusCode: statusCode, URL: url},
 				DB: &DB{
 					Instance:     instance,
 					Statement:    statement,
@@ -108,18 +69,19 @@ func TestSpanTransform(t *testing.T) {
 					UserName:     user,
 					RowsAffected: &rowsAffected,
 				},
-				Destination: &Destination{Address: address, Port: port},
 				DestinationService: &DestinationService{
 					Type:     destServiceType,
 					Name:     destServiceName,
 					Resource: destServiceResource,
 				},
-				Message: &Message{QueueName: "users"},
+				Message:   &Message{QueueName: "users"},
+				Composite: &Composite{Count: 10, Sum: 1.1, CompressionStrategy: "exact_match"},
 			},
 			Output: common.MapStr{
+				"processor": common.MapStr{"name": "transaction", "event": "span"},
 				"span": common.MapStr{
 					"id":       hexID,
-					"duration": common.MapStr{"us": 1200},
+					"duration": common.MapStr{"us": int(duration.Microseconds())},
 					"name":     "myspan",
 					"start":    common.MapStr{"us": 650},
 					"type":     "myspantype",
@@ -136,11 +98,6 @@ func TestSpanTransform(t *testing.T) {
 						"user":          common.MapStr{"name": user},
 						"rows_affected": rowsAffected,
 					},
-					"http": common.MapStr{
-						"url":      common.MapStr{"original": url},
-						"response": common.MapStr{"status_code": statusCode},
-						"method":   "get",
-					},
 					"destination": common.MapStr{
 						"service": common.MapStr{
 							"type":     destServiceType,
@@ -149,26 +106,73 @@ func TestSpanTransform(t *testing.T) {
 						},
 					},
 					"message": common.MapStr{"queue": common.MapStr{"name": "users"}},
+					"composite": common.MapStr{
+						"count":                10,
+						"sum":                  common.MapStr{"us": 1100},
+						"compression_strategy": "exact_match",
+					},
 				},
-				"labels":      common.MapStr{"label_a": 12, "label_b": "b", "c": 1},
-				"processor":   common.MapStr{"event": "span", "name": "transaction"},
-				"service":     common.MapStr{"name": serviceName, "environment": env, "version": serviceVersion},
-				"timestamp":   common.MapStr{"us": timestampUs},
-				"trace":       common.MapStr{"id": traceID},
-				"parent":      common.MapStr{"id": parentID},
-				"destination": common.MapStr{"address": address, "port": port},
-				"event":       common.MapStr{"outcome": "unknown"},
-				"http": common.MapStr{
-					"response":       common.MapStr{"status_code": statusCode},
-					"request.method": "get",
-				},
-				"url.original": url,
+				"timestamp": common.MapStr{"us": int(timestampUs)},
 			},
 		},
 	}
 
 	for _, test := range tests {
-		output := test.Span.toBeatEvent(context.Background())
+		event := APMEvent{
+			Processor: SpanProcessor,
+			Span:      &test.Span,
+			Timestamp: timestamp,
+			Event:     Event{Duration: duration},
+		}
+		output := event.BeatEvent(context.Background())
 		assert.Equal(t, test.Output, output.Fields, test.Msg)
 	}
+}
+
+func TestSpanHTTPFields(t *testing.T) {
+	event := APMEvent{
+		Processor: SpanProcessor,
+		Span:      &Span{},
+		HTTP: HTTP{
+			Version: "2.0",
+			Request: &HTTPRequest{
+				Method: "get",
+			},
+			Response: &HTTPResponse{
+				StatusCode: 200,
+			},
+		},
+		URL: URL{Original: "http://localhost"},
+	}
+
+	output := event.BeatEvent(context.Background())
+	assert.Equal(t, common.MapStr{
+		"processor": common.MapStr{
+			"name":  "transaction",
+			"event": "span",
+		},
+		"http": common.MapStr{
+			"version": event.HTTP.Version,
+			"request": common.MapStr{
+				"method": event.HTTP.Request.Method,
+			},
+			"response": common.MapStr{
+				"status_code": event.HTTP.Response.StatusCode,
+			},
+		},
+		"url": common.MapStr{
+			"original": event.URL.Original,
+		},
+		"span": common.MapStr{
+			"duration":          common.MapStr{"us": 0},
+			"http.url.original": event.URL.Original,
+			"http": common.MapStr{
+				"version": event.HTTP.Version,
+				"method":  event.HTTP.Request.Method,
+				"response": common.MapStr{
+					"status_code": event.HTTP.Response.StatusCode,
+				},
+			},
+		},
+	}, output.Fields)
 }

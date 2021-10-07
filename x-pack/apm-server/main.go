@@ -6,27 +6,28 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
+	"sync"
 
+	"github.com/dgraph-io/badger/v2"
 	"github.com/pkg/errors"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/elastic/beats/v7/libbeat/esleg/eslegclient"
-	"github.com/elastic/beats/v7/libbeat/licenser"
 	"github.com/elastic/beats/v7/libbeat/logp"
 	"github.com/elastic/beats/v7/libbeat/monitoring"
-	libes "github.com/elastic/beats/v7/libbeat/outputs/elasticsearch"
 	"github.com/elastic/beats/v7/libbeat/paths"
 
 	"github.com/elastic/apm-server/beater"
-	"github.com/elastic/apm-server/elasticsearch"
 	"github.com/elastic/apm-server/model"
 	"github.com/elastic/apm-server/x-pack/apm-server/aggregation/spanmetrics"
 	"github.com/elastic/apm-server/x-pack/apm-server/aggregation/txmetrics"
 	"github.com/elastic/apm-server/x-pack/apm-server/cmd"
 	"github.com/elastic/apm-server/x-pack/apm-server/sampling"
-	"github.com/elastic/apm-server/x-pack/apm-server/sampling/pubsub"
+	"github.com/elastic/apm-server/x-pack/apm-server/sampling/eventstorage"
+)
+
+const (
+	tailSamplingStorageDir = "tail_sampling"
 )
 
 var (
@@ -35,6 +36,10 @@ var (
 	// Note: this registry is created in github.com/elastic/apm-server/sampling. That package
 	// will hopefully disappear in the future, when agents no longer send unsampled transactions.
 	samplingMonitoringRegistry = monitoring.Default.GetRegistry("apm-server.sampling")
+
+	// badgerDB holds the badger database to use when tail-based sampling is configured.
+	badgerMu sync.Mutex
+	badgerDB *badger.DB
 )
 
 type namedProcessor struct {
@@ -94,66 +99,21 @@ func newProcessors(args beater.ServerParams) ([]namedProcessor, error) {
 	return processors, nil
 }
 
-// licensePlatinumCovered fails if license is neither a valid trial nor a valid platinum license.
-func licensePlatinumCovered(client *eslegclient.Connection) error {
-	log := logp.NewLogger("elasticsearch")
-	fetcher := licenser.NewElasticFetcher(client)
-	license, err := fetcher.Fetch()
-	if err != nil {
-		return fmt.Errorf("could not connect to a compatible version of Elasticsearch: %w", err)
-	}
-	if licenser.IsExpired(license) {
-		log.Errorf("%s license is expired", license.Type)
-		const errorMessage = "Elasticsearch license is not active, please check Elasticsearch's licensing information at https://www.elastic.co/subscriptions."
-		return errors.New(errorMessage)
-	}
-	licenseToCover := licenser.Platinum
-	log.Infof("Checking license for tail-based sampling covers %s", licenseToCover)
-	if license.Cover(licenseToCover) || license.Type == licenser.Trial {
-		return nil
-	}
-	return fmt.Errorf("invalid license found, tail-based sampling requires a %s or a valid trial license and received %s",
-		licenseToCover, license.Type,
-	)
-}
-
 func newTailSamplingProcessor(args beater.ServerParams) (*sampling.Processor, error) {
-	// Tail-based sampling is a Platinum-licensed feature.
-	//
-	// FIXME(axw) each time libes.RegisterGlobalCallback is called an additional global
-	// callback is registered with Elasticsearch, which fetches the license
-	// and checks it. The root command already calls libes.RegisterGlobalCallback for
-	// license basic or above. We need to make this overridable to avoid redundant checks.
-	libes.RegisterGlobalCallback(licensePlatinumCovered)
+	if !args.Config.DataStreams.Enabled {
+		return nil, errors.New("tail-based sampling requires data streams")
+	}
 
 	tailSamplingConfig := args.Config.Sampling.Tail
-	es, err := elasticsearch.NewClient(tailSamplingConfig.ESConfig)
+	es, err := args.NewElasticsearchClient(tailSamplingConfig.ESConfig)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create Elasticsearch client for tail-sampling")
 	}
 
-	var sampledTracesDataStream sampling.DataStreamConfig
-	if args.Managed {
-		// Data stream and ILM policy are managed by Fleet.
-		sampledTracesDataStream = sampling.DataStreamConfig{
-			Type:      "traces",
-			Dataset:   "sampled",
-			Namespace: args.Namespace,
-		}
-	} else {
-		sampledTracesDataStream = sampling.DataStreamConfig{
-			Type:      "apm",
-			Dataset:   "sampled",
-			Namespace: "traces",
-		}
-		if err := pubsub.SetupDataStream(context.Background(), es,
-			"apm-sampled-traces", // Index template
-			"apm-sampled-traces", // ILM policy
-			"apm-sampled-traces", // Index pattern
-		); err != nil {
-			return nil, errors.Wrap(err, "failed to create data stream for tail-sampling")
-		}
-		args.Logger.Infof("Created tail-sampling data stream index template")
+	storageDir := paths.Resolve(paths.Data, tailSamplingStorageDir)
+	badgerDB, err := getBadgerDB(storageDir)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get Badger database")
 	}
 
 	policies := make([]sampling.Policy, len(tailSamplingConfig.Policies))
@@ -178,15 +138,33 @@ func newTailSamplingProcessor(args beater.ServerParams) (*sampling.Processor, er
 			IngestRateDecayFactor: tailSamplingConfig.IngestRateDecayFactor,
 		},
 		RemoteSamplingConfig: sampling.RemoteSamplingConfig{
-			Elasticsearch:           es,
-			SampledTracesDataStream: sampledTracesDataStream,
+			Elasticsearch: es,
+			SampledTracesDataStream: sampling.DataStreamConfig{
+				Type:      "traces",
+				Dataset:   "apm.sampled",
+				Namespace: args.Namespace,
+			},
 		},
 		StorageConfig: sampling.StorageConfig{
-			StorageDir:        paths.Resolve(paths.Data, tailSamplingConfig.StorageDir),
+			DB:                badgerDB,
+			StorageDir:        storageDir,
 			StorageGCInterval: tailSamplingConfig.StorageGCInterval,
 			TTL:               tailSamplingConfig.TTL,
 		},
 	})
+}
+
+func getBadgerDB(storageDir string) (*badger.DB, error) {
+	badgerMu.Lock()
+	defer badgerMu.Unlock()
+	if badgerDB == nil {
+		db, err := eventstorage.OpenBadger(storageDir, -1)
+		if err != nil {
+			return nil, err
+		}
+		badgerDB = db
+	}
+	return badgerDB, nil
 }
 
 // runServerWithProcessors runs the APM Server and the given list of processors.
@@ -244,12 +222,34 @@ func wrapRunServer(runServer beater.RunServerFunc) beater.RunServerFunc {
 	}
 }
 
+// closeBadger is called at process exit time to close the badger.DB opened
+// by the tail-based sampling processor constructor, if any. This is never
+// called concurrently with opening badger.DB/accessing the badgerDB global,
+// so it does not need to hold badgerMu.
+func closeBadger() error {
+	if badgerDB != nil {
+		return badgerDB.Close()
+	}
+	return nil
+}
+
 var rootCmd = cmd.NewXPackRootCommand(beater.NewCreator(beater.CreatorParams{
 	WrapRunServer: wrapRunServer,
 }))
 
-func main() {
+func Main() error {
 	if err := rootCmd.Execute(); err != nil {
+		closeBadger()
+		return err
+	}
+	if err := closeBadger(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func main() {
+	if err := Main(); err != nil {
 		os.Exit(1)
 	}
 }

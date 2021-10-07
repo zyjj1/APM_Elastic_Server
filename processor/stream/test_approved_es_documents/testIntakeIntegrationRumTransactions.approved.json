@@ -7,7 +7,7 @@
                 "version": "0.0.0"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "event": {
                 "outcome": "unknown"
@@ -15,6 +15,11 @@
             "http": {
                 "request": {
                     "referrer": "http://localhost:8000/test/e2e/"
+                }
+            },
+            "network": {
+                "connection": {
+                    "type": "5G"
                 }
             },
             "processor": {
@@ -44,10 +49,6 @@
                     "tbt": 3.4
                 },
                 "id": "611f4fa950f04631",
-                "page": {
-                    "referer": "http://localhost:8000/test/e2e/",
-                    "url": "http://localhost:8000/test/e2e/general-usecase/"
-                },
                 "sampled": true,
                 "span_count": {
                     "started": 1
@@ -73,10 +74,15 @@
                 "version": "0.0.0"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "event": {
                 "outcome": "unknown"
+            },
+            "network": {
+                "connection": {
+                    "type": "5G"
+                }
             },
             "parent": {
                 "id": "611f4fa950f04631"
@@ -89,15 +95,14 @@
                 "name": "apm-agent-js",
                 "version": "1.0.0"
             },
+            "source": {
+                "ip": "192.0.0.1"
+            },
             "span": {
                 "duration": {
                     "us": 643000
                 },
-                "http": {
-                    "url": {
-                        "original": "http://localhost:8000/test/e2e/general-usecase/span"
-                    }
-                },
+                "http.url.original": "http://localhost:8000/test/e2e/general-usecase/span",
                 "id": "aaaaaaaaaaaaaaaa",
                 "name": "transaction",
                 "stacktrace": [
@@ -136,7 +141,9 @@
             "transaction": {
                 "id": "611f4fa950f04631"
             },
-            "url.original": "http://localhost:8000/test/e2e/general-usecase/span",
+            "url": {
+                "original": "http://localhost:8000/test/e2e/general-usecase/span"
+            },
             "user_agent": {
                 "original": "rum-2.0"
             }

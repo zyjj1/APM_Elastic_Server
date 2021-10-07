@@ -23,8 +23,8 @@ import (
 	"regexp"
 	"strings"
 
-	"go.opentelemetry.io/collector/consumer/pdata"
-	"go.opentelemetry.io/collector/translator/conventions"
+	"go.opentelemetry.io/collector/model/pdata"
+	semconv "go.opentelemetry.io/collector/model/semconv/v1.5.0"
 
 	"github.com/elastic/apm-server/model"
 	"github.com/elastic/beats/v7/libbeat/common"
@@ -38,80 +38,80 @@ var (
 	serviceNameInvalidRegexp = regexp.MustCompile("[^a-zA-Z0-9 _-]")
 )
 
-func translateResourceMetadata(resource pdata.Resource, out *model.Metadata) {
+func translateResourceMetadata(resource pdata.Resource, out *model.APMEvent) {
 	var exporterVersion string
 	resource.Attributes().Range(func(k string, v pdata.AttributeValue) bool {
 		switch k {
 		// service.*
-		case conventions.AttributeServiceName:
+		case semconv.AttributeServiceName:
 			out.Service.Name = cleanServiceName(v.StringVal())
-		case conventions.AttributeServiceVersion:
+		case semconv.AttributeServiceVersion:
 			out.Service.Version = truncate(v.StringVal())
-		case conventions.AttributeServiceInstance:
+		case semconv.AttributeServiceInstanceID:
 			out.Service.Node.Name = truncate(v.StringVal())
 
 		// deployment.*
-		case conventions.AttributeDeploymentEnvironment:
+		case semconv.AttributeDeploymentEnvironment:
 			out.Service.Environment = truncate(v.StringVal())
 
 		// telemetry.sdk.*
-		case conventions.AttributeTelemetrySDKName:
-			out.Service.Agent.Name = truncate(v.StringVal())
-		case conventions.AttributeTelemetrySDKLanguage:
+		case semconv.AttributeTelemetrySDKName:
+			out.Agent.Name = truncate(v.StringVal())
+		case semconv.AttributeTelemetrySDKVersion:
+			out.Agent.Version = truncate(v.StringVal())
+		case semconv.AttributeTelemetrySDKLanguage:
 			out.Service.Language.Name = truncate(v.StringVal())
-		case conventions.AttributeTelemetrySDKVersion:
-			out.Service.Agent.Version = truncate(v.StringVal())
 
 		// cloud.*
-		case conventions.AttributeCloudProvider:
+		case semconv.AttributeCloudProvider:
 			out.Cloud.Provider = truncate(v.StringVal())
-		case conventions.AttributeCloudAccount:
+		case semconv.AttributeCloudAccountID:
 			out.Cloud.AccountID = truncate(v.StringVal())
-		case conventions.AttributeCloudRegion:
+		case semconv.AttributeCloudRegion:
 			out.Cloud.Region = truncate(v.StringVal())
-		case conventions.AttributeCloudAvailabilityZone:
+		case semconv.AttributeCloudAvailabilityZone:
 			out.Cloud.AvailabilityZone = truncate(v.StringVal())
-		case conventions.AttributeCloudPlatform:
+		case semconv.AttributeCloudPlatform:
 			out.Cloud.ServiceName = truncate(v.StringVal())
 
 		// container.*
-		case conventions.AttributeContainerName:
-			out.System.Container.Name = truncate(v.StringVal())
-		case conventions.AttributeContainerID:
-			out.System.Container.ID = truncate(v.StringVal())
-		case conventions.AttributeContainerImage:
-			out.System.Container.ImageName = truncate(v.StringVal())
-		case conventions.AttributeContainerTag:
-			out.System.Container.ImageTag = truncate(v.StringVal())
+		case semconv.AttributeContainerName:
+			out.Container.Name = truncate(v.StringVal())
+		case semconv.AttributeContainerID:
+			out.Container.ID = truncate(v.StringVal())
+		case semconv.AttributeContainerImageName:
+			out.Container.ImageName = truncate(v.StringVal())
+		case semconv.AttributeContainerImageTag:
+			out.Container.ImageTag = truncate(v.StringVal())
 		case "container.runtime":
-			out.System.Container.Runtime = truncate(v.StringVal())
+			out.Container.Runtime = truncate(v.StringVal())
 
 		// k8s.*
-		case conventions.AttributeK8sNamespace:
-			out.System.Kubernetes.Namespace = truncate(v.StringVal())
-		case conventions.AttributeK8sNodeName:
-			out.System.Kubernetes.NodeName = truncate(v.StringVal())
-		case conventions.AttributeK8sPod:
-			out.System.Kubernetes.PodName = truncate(v.StringVal())
-		case conventions.AttributeK8sPodUID:
-			out.System.Kubernetes.PodUID = truncate(v.StringVal())
+		case semconv.AttributeK8SNamespaceName:
+			out.Kubernetes.Namespace = truncate(v.StringVal())
+		case semconv.AttributeK8SNodeName:
+			out.Kubernetes.NodeName = truncate(v.StringVal())
+		case semconv.AttributeK8SPodName:
+			out.Kubernetes.PodName = truncate(v.StringVal())
+		case semconv.AttributeK8SPodUID:
+			out.Kubernetes.PodUID = truncate(v.StringVal())
 
 		// host.*
-		case conventions.AttributeHostName:
-			out.System.DetectedHostname = truncate(v.StringVal())
-		case conventions.AttributeHostID:
-			out.System.ID = truncate(v.StringVal())
-		case conventions.AttributeHostType:
-			out.System.Type = truncate(v.StringVal())
+		case semconv.AttributeHostName:
+			out.Host.Hostname = truncate(v.StringVal())
+		case semconv.AttributeHostID:
+			out.Host.ID = truncate(v.StringVal())
+		case semconv.AttributeHostType:
+			out.Host.Type = truncate(v.StringVal())
 		case "host.arch":
-			out.System.Architecture = truncate(v.StringVal())
+			out.Host.Architecture = truncate(v.StringVal())
 
 		// process.*
-		case conventions.AttributeProcessID:
+		case semconv.AttributeProcessPID:
 			out.Process.Pid = int(v.IntVal())
-		case conventions.AttributeProcessCommandLine:
+		case semconv.AttributeProcessCommandLine:
 			out.Process.CommandLine = truncate(v.StringVal())
-		case conventions.AttributeProcessExecutablePath:
+		case semconv.AttributeProcessExecutablePath:
 			out.Process.Executable = truncate(v.StringVal())
 		case "process.runtime.name":
 			out.Service.Runtime.Name = truncate(v.StringVal())
@@ -119,10 +119,10 @@ func translateResourceMetadata(resource pdata.Resource, out *model.Metadata) {
 			out.Service.Runtime.Version = truncate(v.StringVal())
 
 		// os.*
-		case conventions.AttributeOSType:
-			out.System.Platform = strings.ToLower(truncate(v.StringVal()))
-		case conventions.AttributeOSDescription:
-			out.System.FullPlatform = truncate(v.StringVal())
+		case semconv.AttributeOSType:
+			out.Host.OS.Platform = strings.ToLower(truncate(v.StringVal()))
+		case semconv.AttributeOSDescription:
+			out.Host.OS.Full = truncate(v.StringVal())
 
 		// Legacy OpenCensus attributes.
 		case "opencensus.exporterversion":
@@ -141,13 +141,13 @@ func translateResourceMetadata(resource pdata.Resource, out *model.Metadata) {
 	//
 	// "One of these following values should be used (lowercase): linux, macos, unix, windows.
 	// If the OS you’re dealing with is not in the list, the field should not be populated."
-	switch out.System.Platform {
+	switch out.Host.OS.Platform {
 	case "windows", "linux":
-		out.System.OSType = out.System.Platform
+		out.Host.OS.Type = out.Host.OS.Platform
 	case "darwin":
-		out.System.OSType = "macos"
+		out.Host.OS.Type = "macos"
 	case "aix", "hpux", "solaris":
-		out.System.OSType = "unix"
+		out.Host.OS.Type = "unix"
 	}
 
 	if strings.HasPrefix(exporterVersion, "Jaeger") {
@@ -158,17 +158,17 @@ func translateResourceMetadata(resource pdata.Resource, out *model.Metadata) {
 			out.Service.Language.Name = versionParts[1]
 		}
 		if v := versionParts[len(versionParts)-1]; v != "" {
-			out.Service.Agent.Version = v
+			out.Agent.Version = v
 		}
-		out.Service.Agent.Name = AgentNameJaeger
+		out.Agent.Name = AgentNameJaeger
 
 		// Translate known Jaeger labels.
 		if clientUUID, ok := out.Labels["client-uuid"].(string); ok {
-			out.Service.Agent.EphemeralID = clientUUID
+			out.Agent.EphemeralID = clientUUID
 			delete(out.Labels, "client-uuid")
 		}
 		if systemIP, ok := out.Labels["ip"].(string); ok {
-			out.System.IP = net.ParseIP(systemIP)
+			out.Host.IP = net.ParseIP(systemIP)
 			delete(out.Labels, "ip")
 		}
 	}
@@ -177,16 +177,16 @@ func translateResourceMetadata(resource pdata.Resource, out *model.Metadata) {
 		// service.name is a required field.
 		out.Service.Name = "unknown"
 	}
-	if out.Service.Agent.Name == "" {
-		// service.agent.name is a required field.
-		out.Service.Agent.Name = "otlp"
+	if out.Agent.Name == "" {
+		// agent.name is a required field.
+		out.Agent.Name = "otlp"
 	}
-	if out.Service.Agent.Version == "" {
-		// service.agent.version is a required field.
-		out.Service.Agent.Version = "unknown"
+	if out.Agent.Version == "" {
+		// agent.version is a required field.
+		out.Agent.Version = "unknown"
 	}
 	if out.Service.Language.Name != "" {
-		out.Service.Agent.Name = fmt.Sprintf("%s/%s", out.Service.Agent.Name, out.Service.Language.Name)
+		out.Agent.Name = fmt.Sprintf("%s/%s", out.Agent.Name, out.Service.Language.Name)
 	} else {
 		out.Service.Language.Name = "unknown"
 	}
@@ -218,4 +218,10 @@ func ifaceAnyValueArray(array pdata.AnyValueArray) []interface{} {
 		values[i] = ifaceAttributeValue(array.At(i))
 	}
 	return values
+}
+
+// initEventLabels initializes an event-specific label map, either making a copy
+// of commonLabels if it is non-nil, or otherwise creating a new map.
+func initEventLabels(commonLabels common.MapStr) common.MapStr {
+	return commonLabels.Clone()
 }

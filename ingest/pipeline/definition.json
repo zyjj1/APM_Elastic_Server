@@ -26,11 +26,6 @@
         },
         {
           "pipeline": {
-            "name": "apm_convert_destination_address"
-          }
-        },
-        {
-          "pipeline": {
             "name": "apm_error_grouping_name",
             "if": "ctx.processor?.event == 'error'"
           }
@@ -39,6 +34,39 @@
           "pipeline": {
             "name": "apm_metrics_dynamic_template",
             "if": "ctx.processor?.event == 'metric'"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "apm_data_stream_migration",
+    "body": {
+      "description": "Migrate APM events to data streams",
+      "processors": [
+        {
+          "script": {
+            "if": "ctx.processor?.event == 'span' || ctx.processor?.event == 'transaction'",
+            "source": "ctx.data_stream = [\"type\": \"traces\", \"dataset\": \"apm\", \"namespace\": \"migrated\"]\n"
+          }
+        },
+        {
+          "script": {
+            "if": "ctx.processor?.event == 'error'",
+            "source": "ctx.data_stream = [\"type\": \"logs\", \"dataset\": \"apm.error\", \"namespace\": \"migrated\"]\n"
+          }
+        },
+        {
+          "script": {
+            "if": "ctx.processor?.event == 'metric'",
+            "source": "String dataset;\nif (ctx[\"metricset.name\"] != \"app\") {\n  dataset = \"apm.internal\";\n} else {\n  String serviceName = ctx.service.name;\n  serviceName = serviceName.toLowerCase();\n  serviceName = /[\\\\\\/*?\"<>| ,#:-]/.matcher(serviceName).replaceAll('_');\n  dataset = \"apm.app.\" + serviceName;\n}\nctx.data_stream = [\"type\": \"metrics\", \"dataset\": dataset, \"namespace\": \"migrated\"];\n"
+          }
+        },
+        {
+          "set": {
+            "if": "ctx.data_stream != null",
+            "field": "_index",
+            "value": "{{data_stream.type}}-{{data_stream.dataset}}-{{data_stream.namespace}}"
           }
         }
       ]
@@ -101,23 +129,6 @@
     }
   },
   {
-    "id": "apm_convert_destination_address",
-    "body": {
-      "description": "Convert destination.address to an IP, storing in destination.ip",
-      "processors": [
-        {
-          "convert": {
-            "field": "destination.address",
-            "target_field": "destination.ip",
-            "type": "ip",
-            "ignore_missing": true,
-            "ignore_failure": true
-          }
-        }
-      ]
-    }
-  },
-  {
     "id": "apm_remove_span_metadata",
     "body": {
       "description": "Removes metadata fields available already on the parent transaction, to save storage",
@@ -159,7 +170,7 @@
         {
           "set": {
             "field": "error.grouping_name",
-            "copy_from": "error.log.message",
+            "value": "{{error.log.message}}",
             "if": "ctx.error?.log?.message != null"
           }
         }

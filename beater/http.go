@@ -19,22 +19,19 @@ package beater
 
 import (
 	"context"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 
-	"go.elastic.co/apm"
-	"go.elastic.co/apm/module/apmhttp"
+	"github.com/libp2p/go-reuseport"
+	"go.uber.org/zap"
 	"golang.org/x/net/netutil"
 
-	"github.com/elastic/apm-server/agentcfg"
 	"github.com/elastic/apm-server/beater/api"
 	"github.com/elastic/apm-server/beater/config"
-	"github.com/elastic/apm-server/beater/ratelimit"
-	"github.com/elastic/apm-server/model"
-	"github.com/elastic/apm-server/model/modelprocessor"
 	"github.com/elastic/apm-server/publish"
-	"github.com/elastic/apm-server/sourcemap"
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/common/transport/tlscommon"
 	"github.com/elastic/beats/v7/libbeat/logp"
@@ -47,42 +44,26 @@ type httpServer struct {
 	logger       *logp.Logger
 	reporter     publish.Reporter
 	grpcListener net.Listener
+	httpListener net.Listener
 }
 
 func newHTTPServer(
 	logger *logp.Logger,
 	info beat.Info,
 	cfg *config.Config,
-	tracer *apm.Tracer,
+	handler http.Handler,
 	reporter publish.Reporter,
-	batchProcessor model.BatchProcessor,
-	agentcfgFetcher agentcfg.Fetcher,
-	ratelimitStore *ratelimit.Store,
-	sourcemapStore *sourcemap.Store,
+	listener net.Listener,
 ) (*httpServer, error) {
 
-	// Add a model processor that rate limits, and checks authorization for the agent and service for each event.
-	batchProcessor = modelprocessor.Chained{
-		model.ProcessBatchFunc(rateLimitBatchProcessor),
-		modelprocessor.MetadataProcessorFunc(authorizeEventIngest),
-		batchProcessor,
-	}
-
-	mux, err := api.NewMux(info, cfg, reporter, batchProcessor, agentcfgFetcher, ratelimitStore, sourcemapStore)
-	if err != nil {
-		return nil, err
-	}
-
 	server := &http.Server{
-		Addr: cfg.Host,
-		Handler: apmhttp.Wrap(mux,
-			apmhttp.WithServerRequestIgnorer(doNotTrace),
-			apmhttp.WithTracer(tracer),
-		),
+		Addr:           cfg.Host,
+		Handler:        handler,
 		IdleTimeout:    cfg.IdleTimeout,
 		ReadTimeout:    cfg.ReadTimeout,
 		WriteTimeout:   cfg.WriteTimeout,
 		MaxHeaderBytes: cfg.MaxHeaderSize,
+		ErrorLog:       newErrorLog(logger),
 	}
 
 	if cfg.TLS.IsEnabled() {
@@ -102,21 +83,10 @@ func newHTTPServer(
 		return nil, err
 	}
 
-	return &httpServer{server, cfg, logger, reporter, grpcListener}, nil
+	return &httpServer{server, cfg, logger, reporter, grpcListener, listener}, nil
 }
 
 func (h *httpServer) start() error {
-	lis, err := h.listen()
-	if err != nil {
-		return err
-	}
-	addr := lis.Addr()
-	if addr.Network() == "tcp" {
-		h.logger.Infof("Listening on: %s", addr)
-	} else {
-		h.logger.Infof("Listening on: %s:%s", addr.Network(), addr.String())
-	}
-
 	if h.cfg.RumConfig.Enabled {
 		h.logger.Info("RUM endpoints enabled!")
 		for _, s := range h.cfg.RumConfig.AllowOrigins {
@@ -129,29 +99,24 @@ func (h *httpServer) start() error {
 		h.logger.Info("RUM endpoints disabled.")
 	}
 
-	if h.cfg.MaxConnections > 0 {
-		lis = netutil.LimitListener(lis, h.cfg.MaxConnections)
-		h.logger.Infof("Connection limit set to: %d", h.cfg.MaxConnections)
-	}
-
 	if !h.cfg.DataStreams.Enabled {
 		// Create the "onboarding" document, which contains the server's
 		// listening address. We only do this if data streams are not enabled,
 		// as onboarding documents are incompatible with data streams.
 		// Onboarding documents should be replaced by Fleet status later.
-		notifyListening(context.Background(), addr, h.reporter)
+		notifyListening(context.Background(), h.httpListener.Addr(), h.reporter)
 	}
 
 	if h.cfg.TLS.IsEnabled() {
 		h.logger.Info("SSL enabled.")
-		return h.ServeTLS(lis, "", "")
+		return h.ServeTLS(h.httpListener, "", "")
 	}
 	if h.cfg.AgentAuth.SecretToken != "" {
 		h.logger.Warn("Secret token is set, but SSL is not enabled.")
 	}
 	h.logger.Info("SSL disabled.")
 
-	return h.Serve(lis)
+	return h.Serve(h.httpListener)
 }
 
 func (h *httpServer) stop() {
@@ -165,23 +130,59 @@ func (h *httpServer) stop() {
 }
 
 // listen starts the listener for bt.config.Host.
-func (h *httpServer) listen() (net.Listener, error) {
-	if url, err := url.Parse(h.cfg.Host); err == nil && url.Scheme == "unix" {
-		return net.Listen("unix", url.Path)
+func listen(cfg *config.Config, logger *logp.Logger) (net.Listener, error) {
+	var listener net.Listener
+	url, err := url.Parse(cfg.Host)
+	if err == nil && url.Scheme == "unix" {
+		// SO_REUSEPORT does not support unix sockets
+		listener, err = net.Listen("unix", url.Path)
+	} else {
+		addr := cfg.Host
+		if _, _, err := net.SplitHostPort(addr); err != nil {
+			// Tack on a port if SplitHostPort fails on what should be a
+			// tcp network address. If splitting failed because there were
+			// already too many colons, one more won't change that.
+			addr = net.JoinHostPort(addr, config.DefaultPort)
+		}
+		listener, err = reuseport.Listen("tcp", addr)
+	}
+	if err != nil {
+		return nil, err
 	}
 
-	const network = "tcp"
-	addr := h.cfg.Host
-	if _, _, err := net.SplitHostPort(addr); err != nil {
-		// Tack on a port if SplitHostPort fails on what should be a
-		// tcp network address. If splitting failed because there were
-		// already too many colons, one more won't change that.
-		addr = net.JoinHostPort(addr, config.DefaultPort)
+	addr := listener.Addr()
+	if network := addr.Network(); network == "tcp" {
+		logger.Infof("Listening on: %s", addr)
+	} else {
+		logger.Infof("Listening on: %s:%s", network, addr.String())
 	}
-	return net.Listen(network, addr)
+	if cfg.MaxConnections > 0 {
+		logger.Infof("Connection limit set to: %d", cfg.MaxConnections)
+		listener = netutil.LimitListener(listener, cfg.MaxConnections)
+	}
+	return listener, nil
 }
 
 func doNotTrace(req *http.Request) bool {
 	// Don't trace root url (healthcheck) requests.
 	return req.URL.Path == api.RootPath
+}
+
+// newErrorLog returns a standard library log.Logger that sends
+// logs to logger with error level.
+func newErrorLog(logger *logp.Logger) *log.Logger {
+	logger = logger.Named("http")
+	logger = logger.WithOptions(zap.AddCallerSkip(3))
+	w := errorLogWriter{logger}
+	return log.New(w, "", 0)
+}
+
+type errorLogWriter struct {
+	logger *logp.Logger
+}
+
+func (w errorLogWriter) Write(p []byte) (int, error) {
+	message := strings.TrimSpace(string(p))
+	w.logger.Error(message)
+	return len(p), nil
 }

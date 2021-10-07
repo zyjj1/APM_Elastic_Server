@@ -18,57 +18,46 @@
 package model
 
 import (
-	"context"
 	"time"
 
-	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/common"
-	"github.com/elastic/beats/v7/libbeat/monitoring"
-
-	"github.com/elastic/apm-server/utility"
-)
-
-const (
-	spanDocType = "span"
 )
 
 var (
-	spanMetrics           = monitoring.Default.NewRegistry("apm-server.processor.span")
-	spanTransformations   = monitoring.NewInt(spanMetrics, "transformations")
-	spanStacktraceCounter = monitoring.NewInt(spanMetrics, "stacktraces")
-	spanFrameCounter      = monitoring.NewInt(spanMetrics, "frames")
-	spanProcessorEntry    = common.MapStr{"name": "transaction", "event": spanDocType}
+	// SpanProcessor is the Processor value that should be assigned to span events.
+	SpanProcessor = Processor{Name: "transaction", Event: "span"}
 )
 
 type Span struct {
-	Metadata      Metadata
-	ID            string
-	TransactionID string
-	ParentID      string
-	ChildIDs      []string
-	TraceID       string
+	ID string
 
-	Timestamp time.Time
+	// Name holds the span name: "SELECT FROM table_name", etc.
+	Name string
+
+	// Type holds the span type: "external", "db", etc.
+	Type string
+
+	// Subtype holds the span subtype: "http", "sql", etc.
+	Subtype string
+
+	// Action holds the span action: "query", "execute", etc.
+	Action string
+
+	// Start holds the span's offset from the transaction timestamp in milliseconds.
+	//
+	// TODO(axw) drop in 8.0. See https://github.com/elastic/apm-server/issues/6000)
+	Start *float64
+
+	// SelfTime holds the aggregated span durations, for breakdown metrics.
+	SelfTime AggregatedDuration
 
 	Message    *Message
-	Name       string
-	Outcome    string
-	Start      *float64
-	Duration   float64
 	Stacktrace Stacktrace
 	Sync       *bool
-	Labels     common.MapStr
-
-	Type    string
-	Subtype string
-	Action  string
 
 	DB                 *DB
-	HTTP               *HTTP
-	Destination        *Destination
 	DestinationService *DestinationService
-
-	Experimental interface{}
+	Composite          *Composite
 
 	// RepresentativeCount holds the approximate number of spans that
 	// this span represents for aggregation. This will only be set when
@@ -88,27 +77,21 @@ type DB struct {
 	RowsAffected *int
 }
 
-// HTTP contains information about the outgoing http request information of a span event
-//
-// TODO(axw) combine this and "Http", which is used by transaction and error, into one type.
-type HTTP struct {
-	URL        string
-	StatusCode int
-	Method     string
-	Response   *MinimalResp
-}
-
-// Destination contains contextual data about the destination of a span, such as address and port
-type Destination struct {
-	Address string
-	Port    int
-}
-
 // DestinationService contains information about the destination service of a span event
 type DestinationService struct {
 	Type     string // Deprecated
 	Name     string // Deprecated
 	Resource string
+
+	// ResponseTime holds aggregated span durations for the destination service resource.
+	ResponseTime AggregatedDuration
+}
+
+// Composite holds details on a group of spans compressed into one.
+type Composite struct {
+	Count               int
+	Sum                 float64 // milliseconds
+	CompressionStrategy string
 }
 
 func (db *DB) fields() common.MapStr {
@@ -127,47 +110,6 @@ func (db *DB) fields() common.MapStr {
 	return common.MapStr(fields)
 }
 
-func (http *HTTP) fields(ecsOnly bool) common.MapStr {
-	if http == nil {
-		return nil
-	}
-	var fields, url mapStr
-	if !ecsOnly {
-		if url.maybeSetString("original", http.URL) {
-			fields.set("url", common.MapStr(url))
-		}
-	}
-	response := http.Response.Fields(ecsOnly)
-	if http.StatusCode > 0 {
-		if response == nil {
-			response = common.MapStr{"status_code": http.StatusCode}
-		} else if http.Response.StatusCode == 0 {
-			response["status_code"] = http.StatusCode
-		}
-	}
-	fields.maybeSetMapStr("response", response)
-	if ecsOnly {
-		fields.maybeSetString("request.method", http.Method)
-	} else {
-		fields.maybeSetString("method", http.Method)
-	}
-	return common.MapStr(fields)
-}
-
-func (d *Destination) fields() common.MapStr {
-	if d == nil {
-		return nil
-	}
-	var fields mapStr
-	if d.Address != "" {
-		fields.set("address", d.Address)
-	}
-	if d.Port > 0 {
-		fields.set("port", d.Port)
-	}
-	return common.MapStr(fields)
-}
-
 func (d *DestinationService) fields() common.MapStr {
 	if d == nil {
 		return nil
@@ -176,85 +118,54 @@ func (d *DestinationService) fields() common.MapStr {
 	fields.maybeSetString("type", d.Type)
 	fields.maybeSetString("name", d.Name)
 	fields.maybeSetString("resource", d.Resource)
+	fields.maybeSetMapStr("response_time", d.ResponseTime.fields())
 	return common.MapStr(fields)
 }
 
-func (e *Span) toBeatEvent(ctx context.Context) beat.Event {
-	spanTransformations.Inc()
-	if frames := len(e.Stacktrace); frames > 0 {
-		spanStacktraceCounter.Inc()
-		spanFrameCounter.Add(int64(frames))
-	}
-
-	fields := mapStr{
-		"processor": spanProcessorEntry,
-		spanDocType: e.fields(ctx),
-	}
-
-	// first set the generic metadata
-	e.Metadata.set(&fields, e.Labels)
-
-	// then add event specific information
-	var trace, transaction, parent mapStr
-	if trace.maybeSetString("id", e.TraceID) {
-		fields.set("trace", common.MapStr(trace))
-	}
-	if transaction.maybeSetString("id", e.TransactionID) {
-		fields.set("transaction", common.MapStr(transaction))
-	}
-	if parent.maybeSetString("id", e.ParentID) {
-		fields.set("parent", common.MapStr(parent))
-	}
-	if len(e.ChildIDs) > 0 {
-		var child mapStr
-		child.set("id", e.ChildIDs)
-		fields.set("child", common.MapStr(child))
-	}
-	fields.maybeSetMapStr("timestamp", utility.TimeAsMicros(e.Timestamp))
-	if e.Experimental != nil {
-		fields.set("experimental", e.Experimental)
-	}
-	fields.maybeSetMapStr("destination", e.Destination.fields())
-	fields.maybeSetMapStr("http", e.HTTP.fields(true))
-	if e.HTTP != nil {
-		fields.maybeSetString("url.original", e.HTTP.URL)
-	}
-
-	common.MapStr(fields).Put("event.outcome", e.Outcome)
-
-	return beat.Event{
-		Fields:    common.MapStr(fields),
-		Timestamp: e.Timestamp,
-	}
-}
-
-func (e *Span) fields(ctx context.Context) common.MapStr {
-	if e == nil {
+func (c *Composite) fields() common.MapStr {
+	if c == nil {
 		return nil
 	}
 	var fields mapStr
-	fields.set("name", e.Name)
-	fields.set("type", e.Type)
-	fields.maybeSetString("id", e.ID)
-	fields.maybeSetString("subtype", e.Subtype)
-	fields.maybeSetString("action", e.Action)
-	fields.maybeSetBool("sync", e.Sync)
-	if e.Start != nil {
-		fields.set("start", utility.MillisAsMicros(*e.Start))
-	}
-	fields.set("duration", utility.MillisAsMicros(e.Duration))
+	sumDuration := time.Duration(c.Sum * float64(time.Millisecond))
+	fields.set("sum", common.MapStr{"us": int(sumDuration.Microseconds())})
+	fields.set("count", c.Count)
+	fields.set("compression_strategy", c.CompressionStrategy)
 
-	fields.maybeSetMapStr("db", e.DB.fields())
-	fields.maybeSetMapStr("http", e.HTTP.fields(false))
-	fields.maybeSetMapStr("message", e.Message.Fields())
-	if destinationServiceFields := e.DestinationService.fields(); len(destinationServiceFields) > 0 {
-		common.MapStr(fields).Put("destination.service", destinationServiceFields)
-	}
-
-	// TODO(axw) we should be using a merged service object, combining
-	// the stream metadata and event-specific service info.
-	if st := e.Stacktrace.transform(); len(st) > 0 {
-		fields.set("stacktrace", st)
-	}
 	return common.MapStr(fields)
+}
+
+func (e *Span) setFields(fields *mapStr, apmEvent *APMEvent) {
+	var span mapStr
+	span.maybeSetString("name", e.Name)
+	span.maybeSetString("type", e.Type)
+	span.maybeSetString("id", e.ID)
+	span.maybeSetString("subtype", e.Subtype)
+	span.maybeSetString("action", e.Action)
+	span.maybeSetBool("sync", e.Sync)
+	if e.Start != nil {
+		start := time.Duration(*e.Start * float64(time.Millisecond))
+		span.set("start", common.MapStr{"us": int(start.Microseconds())})
+	}
+	if apmEvent.Processor == SpanProcessor {
+		// TODO(axw) set `event.duration` in 8.0, and remove this field.
+		// See https://github.com/elastic/apm-server/issues/5999
+		span.set("duration", common.MapStr{"us": int(apmEvent.Event.Duration.Microseconds())})
+	}
+	span.maybeSetMapStr("db", e.DB.fields())
+	span.maybeSetMapStr("message", e.Message.Fields())
+	span.maybeSetMapStr("composite", e.Composite.fields())
+	if destinationServiceFields := e.DestinationService.fields(); len(destinationServiceFields) > 0 {
+		destinationMap, ok := span["destination"].(common.MapStr)
+		if !ok {
+			destinationMap = make(common.MapStr)
+			span.set("destination", destinationMap)
+		}
+		destinationMap["service"] = destinationServiceFields
+	}
+	if st := e.Stacktrace.transform(); len(st) > 0 {
+		span.set("stacktrace", st)
+	}
+	span.maybeSetMapStr("self_time", e.SelfTime.fields())
+	fields.maybeSetMapStr("span", common.MapStr(span))
 }

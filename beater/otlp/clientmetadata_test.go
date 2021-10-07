@@ -34,35 +34,52 @@ func TestSetClientMetadata(t *testing.T) {
 	ip5678 := net.ParseIP("5.6.7.8")
 
 	for _, test := range []struct {
-		ctx        context.Context
-		meta       model.Metadata
-		expectedIP net.IP
+		ctx      context.Context
+		in       model.APMEvent
+		expected model.APMEvent
 	}{{
-		ctx:        context.Background(),
-		meta:       model.Metadata{Client: model.Client{IP: ip1234}},
-		expectedIP: ip1234,
+		ctx: context.Background(),
+		in: model.APMEvent{
+			Client: model.Client{IP: ip1234},
+		},
+		expected: model.APMEvent{
+			Client: model.Client{IP: ip1234},
+		},
 	}, {
 		ctx: context.Background(),
-		meta: model.Metadata{
-			Service: model.Service{Agent: model.Agent{Name: "iOS/swift"}},
-			Client:  model.Client{IP: ip1234},
+		in: model.APMEvent{
+			Agent:  model.Agent{Name: "iOS/swift"},
+			Client: model.Client{IP: ip1234},
 		},
-		expectedIP: ip1234,
+		expected: model.APMEvent{
+			Agent:  model.Agent{Name: "iOS/swift"},
+			Client: model.Client{IP: ip1234},
+		},
 	}, {
-		ctx:  context.Background(),
-		meta: model.Metadata{Service: model.Service{Agent: model.Agent{Name: "iOS/swift"}}},
+		ctx: context.Background(),
+		in: model.APMEvent{
+			Agent: model.Agent{Name: "iOS/swift"},
+		},
+		expected: model.APMEvent{
+			Agent: model.Agent{Name: "iOS/swift"},
+		},
 	}, {
 		ctx: interceptors.ContextWithClientMetadata(context.Background(), interceptors.ClientMetadataValues{
-			SourceIP: ip5678,
+			SourceAddr: &net.TCPAddr{IP: ip1234, Port: 4321},
+			ClientIP:   ip5678,
 		}),
-		meta:       model.Metadata{Service: model.Service{Agent: model.Agent{Name: "iOS/swift"}}},
-		expectedIP: ip5678,
+		in: model.APMEvent{
+			Agent: model.Agent{Name: "iOS/swift"},
+		},
+		expected: model.APMEvent{
+			Agent:  model.Agent{Name: "iOS/swift"},
+			Client: model.Client{IP: ip5678},
+			Source: model.Source{IP: ip1234, Port: 4321},
+		},
 	}} {
-		metaCopy := test.meta
-		err := otlp.SetClientMetadata(test.ctx, &metaCopy)
+		batch := model.Batch{test.in}
+		err := otlp.SetClientMetadata(test.ctx, &batch)
 		assert.NoError(t, err)
-
-		test.meta.Client.IP = test.expectedIP
-		assert.Equal(t, test.meta, metaCopy)
+		assert.Equal(t, test.expected, batch[0])
 	}
 }

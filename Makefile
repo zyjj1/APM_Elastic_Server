@@ -137,7 +137,7 @@ go-generate:
 	@$(GO) generate . ./ingest/pipeline
 
 notice: NOTICE.txt
-NOTICE.txt: $(PYTHON) go.mod
+NOTICE.txt: $(PYTHON) go.mod tools/go.mod
 	@$(PYTHON) script/generate_notice.py . ./x-pack/apm-server
 
 .PHONY: add-headers
@@ -175,7 +175,6 @@ copy-docs:
 	@cp tests/system/error.approved.json docs/data/elasticsearch/generated/errors.json
 	@cp tests/system/transaction.approved.json docs/data/elasticsearch/generated/transactions.json
 	@cp tests/system/spans.approved.json docs/data/elasticsearch/generated/spans.json
-	@cp tests/system/metricset.approved.json docs/data/elasticsearch/generated/metricsets.json
 
 ##############################################################################
 # Beats synchronisation.
@@ -191,18 +190,9 @@ update-beats: update-beats-module update
 .PHONY: update-beats-module
 update-beats-module:
 	$(GO) get -d -u $(BEATS_MODULE)@$(BEATS_VERSION) && $(GO) mod tidy
-	diff -u .go-version $$($(GO) list -m -f {{.Dir}} $(BEATS_MODULE))/.go-version \
-		|| { code=$$?; echo ".go-version out of sync with Beats"; exit $$code; }
-
-##############################################################################
-# Kibana synchronisation.
-##############################################################################
-
-.PHONY: are-kibana-objects-updated
-are-kibana-objects-updated: $(PYTHON) build/index-pattern.json
-	@$(PYTHON) ./script/are_kibana_saved_objects_updated.py --branch ${BEATS_VERSION} build/index-pattern.json
-build/index-pattern.json: $(PYTHON) apm-server
-	@./apm-server --strict.perms=false export index-pattern > $@
+	cp -f $$($(GO) list -m -f {{.Dir}} $(BEATS_MODULE))/.go-version .go-version
+	find . -maxdepth 2 -name Dockerfile -exec sed -i'.bck' -E -e "s#(FROM golang):[0-9]+\.[0-9]+\.[0-9]+#\1:$$(cat .go-version)#g" {} \;
+	sed -i'.bck' -E -e "s#(:go-version): [0-9]+\.[0-9]+\.[0-9]+#\1: $$(cat .go-version)#g" docs/version.asciidoc
 
 ##############################################################################
 # Linting, style-checking, license header checks, etc.
@@ -272,13 +262,9 @@ $(BIN_MAGE): go.mod
 $(MAGE): magefile.go $(BIN_MAGE)
 	$(BIN_MAGE) -compile=$@
 
-$(STATICCHECK): go.mod
-	$(GO) build -o $@ honnef.co/go/tools/cmd/staticcheck
-
 .PHONY: $(GENPACKAGE)
 $(GENPACKAGE):
 	@$(GO) build -o $@ github.com/elastic/apm-server/apmpackage/cmd/gen-package
-
 
 $(GOLINT): go.mod
 	$(GO) build -o $@ golang.org/x/lint/golint
@@ -286,14 +272,17 @@ $(GOLINT): go.mod
 $(GOIMPORTS): go.mod
 	$(GO) build -o $@ golang.org/x/tools/cmd/goimports
 
-$(GOLICENSER): go.mod
-	$(GO) build -o $@ github.com/elastic/go-licenser
+$(STATICCHECK): tools/go.mod
+	$(GO) build -o $@ -modfile=$< honnef.co/go/tools/cmd/staticcheck
 
-$(REVIEWDOG): go.mod
-	$(GO) build -o $@ github.com/reviewdog/reviewdog/cmd/reviewdog
+$(GOLICENSER): tools/go.mod
+	$(GO) build -o $@ -modfile=$< github.com/elastic/go-licenser
 
-$(ELASTICPACKAGE): go.mod
-	$(GO) build -o $@ github.com/elastic/elastic-package
+$(REVIEWDOG): tools/go.mod
+	$(GO) build -o $@ -modfile=$< github.com/reviewdog/reviewdog/cmd/reviewdog
+
+$(ELASTICPACKAGE): tools/go.mod
+	$(GO) build -o $@ -modfile=$< github.com/elastic/elastic-package
 
 $(PYTHON): $(PYTHON_BIN)
 $(PYTHON_BIN): $(PYTHON_BIN)/activate

@@ -9,7 +9,7 @@
             "id": "container-id"
         },
         "ecs": {
-            "version": "1.10.0"
+            "version": "1.12.0"
         },
         "event": {
             "ingested": "2020-08-11T09:55:04.391451Z",
@@ -105,7 +105,7 @@
             "id": "container-id"
         },
         "ecs": {
-            "version": "1.10.0"
+            "version": "1.12.0"
         },
         "event": {
             "ingested": "2020-08-11T09:55:04.391568Z",
@@ -179,7 +179,6 @@
             "id": "85925e55b43f4341",
             "name": "GET /api/types",
             "result": "200",
-            "sampled": false,
             "span_count": {
                 "started": 0
             },
@@ -201,7 +200,7 @@
             "id": "container-id"
         },
         "ecs": {
-            "version": "1.10.0"
+            "version": "1.12.0"
         },
         "event": {
             "ingested": "2020-08-11T09:55:04.391639Z",
@@ -310,7 +309,7 @@
             "id": "container-id"
         },
         "ecs": {
-            "version": "1.10.0"
+            "version": "1.12.0"
         },
         "event": {
             "ingested": "2020-08-11T09:55:04.338986Z",
@@ -362,11 +361,7 @@
                     ]
                 },
                 "method": "POST",
-                "referrer": "http://localhost:8000/test/e2e/",
-                "socket": {
-                    "encrypted": true,
-                    "remote_address": "8.8.8.8"
-                }
+                "referrer": "http://localhost:8000/test/e2e/"
             },
             "response": {
                 "finished": true,
@@ -469,10 +464,6 @@
                 }
             },
             "name": "GET /api/types",
-            "page": {
-                "referer": "http://localhost:8000/test/e2e/",
-                "url": "http://localhost:8000/test/e2e/general-usecase/"
-            },
             "result": "success",
             "sampled": true,
             "span_count": {

@@ -19,6 +19,7 @@ package beater
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -27,9 +28,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/elastic/beats/v7/libbeat/common/fleetmode"
 	"github.com/elastic/beats/v7/libbeat/common/transport"
 	"github.com/elastic/beats/v7/libbeat/common/transport/tlscommon"
+	"github.com/elastic/beats/v7/libbeat/monitoring"
 	"github.com/elastic/go-ucfg"
 
 	"github.com/pkg/errors"
@@ -38,30 +39,26 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
-	"github.com/elastic/beats/v7/libbeat/cfgfile"
 	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/common/reload"
 	"github.com/elastic/beats/v7/libbeat/esleg/eslegclient"
 	"github.com/elastic/beats/v7/libbeat/instrumentation"
+	"github.com/elastic/beats/v7/libbeat/licenser"
 	"github.com/elastic/beats/v7/libbeat/logp"
-	"github.com/elastic/beats/v7/libbeat/management"
 	esoutput "github.com/elastic/beats/v7/libbeat/outputs/elasticsearch"
+	"github.com/elastic/beats/v7/libbeat/processors"
 	"github.com/elastic/beats/v7/libbeat/publisher/pipetool"
 
 	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/elasticsearch"
 	"github.com/elastic/apm-server/ingest/pipeline"
-	kibana_client "github.com/elastic/apm-server/kibana"
+	"github.com/elastic/apm-server/kibana"
 	logs "github.com/elastic/apm-server/log"
 	"github.com/elastic/apm-server/model"
 	"github.com/elastic/apm-server/model/modelprocessor"
 	"github.com/elastic/apm-server/publish"
 	"github.com/elastic/apm-server/sampling"
 	"github.com/elastic/apm-server/sourcemap"
-)
-
-var (
-	errSetupDashboardRemoved = errors.New("setting 'setup.dashboards' has been removed")
 )
 
 // CreatorParams holds parameters for creating beat.Beaters.
@@ -88,15 +85,13 @@ func NewCreator(args CreatorParams) beat.Creator {
 		} else {
 			logger = logp.NewLogger(logs.Beater)
 		}
-		if err := checkConfig(logger); err != nil {
-			return nil, err
-		}
 		bt := &beater{
-			rawConfig:     ucfg,
-			stopped:       false,
-			logger:        logger,
-			wrapRunServer: args.WrapRunServer,
-			waitPublished: newWaitPublishedAcker(),
+			rawConfig:            ucfg,
+			stopped:              false,
+			logger:               logger,
+			wrapRunServer:        args.WrapRunServer,
+			waitPublished:        publish.NewWaitPublishedAcker(),
+			outputConfigReloader: newChanReloader(),
 		}
 
 		var err error
@@ -121,25 +116,28 @@ func NewCreator(args CreatorParams) beat.Creator {
 			if b.Manager != nil && b.Manager.Enabled() {
 				return nil, errors.New("data streams must be enabled when the server is managed")
 			}
-		} else if bt.config.DataStreams.Enabled && !fleetmode.Enabled() {
-			// not supported only available for development purposes
-			bt.logger.Errorf("Started apm-server with data streams enabled but no active fleet management mode was specified")
 		}
 
-		if err := bt.registerPipelineCallback(b); err != nil {
-			return nil, err
+		if b.Manager != nil && b.Manager.Enabled() {
+			// Subscribe to output changes for reconfiguring apm-server's Elasticsearch
+			// clients, which use the Elasticsearch output config by default. We install
+			// this during beat creation to ensure output config reloads are not missed;
+			// reloads will be blocked until the chanReloader is served by beater.run.
+			b.OutputConfigReloader = bt.outputConfigReloader
 		}
 
+		bt.registerPipelineSetupCallback(b)
 		return bt, nil
 	}
 }
 
 type beater struct {
-	rawConfig     *common.Config
-	config        *config.Config
-	logger        *logp.Logger
-	wrapRunServer func(RunServerFunc) RunServerFunc
-	waitPublished *waitPublishedAcker
+	rawConfig            *common.Config
+	config               *config.Config
+	logger               *logp.Logger
+	wrapRunServer        func(RunServerFunc) RunServerFunc
+	waitPublished        *publish.WaitPublishedAcker
+	outputConfigReloader *chanReloader
 
 	mutex      sync.Mutex // guards stopServer and stopped
 	stopServer func()
@@ -151,103 +149,123 @@ type beater struct {
 func (bt *beater) Run(b *beat.Beat) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done, err := bt.start(ctx, cancel, b)
-	if err != nil {
+	if err := bt.run(ctx, cancel, b); err != nil {
 		return err
 	}
-	<-done
 	bt.waitPublished.Wait(ctx)
 	return nil
 }
 
-func (bt *beater) start(ctx context.Context, cancelContext context.CancelFunc, b *beat.Beat) (<-chan struct{}, error) {
-	done := make(chan struct{})
+func (bt *beater) run(ctx context.Context, cancelContext context.CancelFunc, b *beat.Beat) error {
+	tracer, tracerServer, err := initTracing(b, bt.config, bt.logger)
+	if err != nil {
+		return err
+	}
+	if tracerServer != nil {
+		defer tracerServer.Close()
+	}
+	if tracer != nil {
+		defer tracer.Close()
+	}
+
+	reloader := reloader{
+		runServerContext: ctx,
+		args: sharedServerRunnerParams{
+			Beat:          b,
+			WrapRunServer: bt.wrapRunServer,
+			Logger:        bt.logger,
+			Tracer:        tracer,
+			TracerServer:  tracerServer,
+			Acker:         bt.waitPublished,
+		},
+	}
+
+	stopped := make(chan struct{})
+	stopServer := func() {
+		defer close(stopped)
+		if bt.config.ShutdownTimeout > 0 {
+			time.AfterFunc(bt.config.ShutdownTimeout, cancelContext)
+		}
+		reloader.stop()
+	}
+	if !bt.setStopServerFunc(stopServer) {
+		// Server has already been stopped.
+		stopServer()
+		return nil
+	}
+
+	g, ctx := errgroup.WithContext(context.Background())
+	g.Go(func() error {
+		<-stopped
+		return nil
+	})
+	if b.Manager != nil && b.Manager.Enabled() {
+		// Managed by Agent: register input and output reloaders to reconfigure the server.
+		reload.Register.MustRegisterList("inputs", &reloader)
+		g.Go(func() error {
+			return bt.outputConfigReloader.serve(
+				ctx, reload.ReloadableFunc(reloader.reloadOutput),
+			)
+		})
+	} else {
+		// Management disabled, use statically defined config.
+		reloader.namespace = "default"
+		reloader.rawConfig = bt.rawConfig
+		if b.Config != nil {
+			reloader.outputConfig = b.Config.Output
+		}
+		if err := reloader.reload(); err != nil {
+			return err
+		}
+	}
+	return g.Wait()
+}
+
+// setStopServerFunc sets a function to call when the server is stopped.
+//
+// setStopServerFunc returns false if the server has already been stopped.
+func (bt *beater) setStopServerFunc(stopServer func()) bool {
 	bt.mutex.Lock()
 	defer bt.mutex.Unlock()
 	if bt.stopped {
-		close(done)
-		return done, nil
+		return false
 	}
+	bt.stopServer = stopServer
+	return true
+}
 
-	tracer, tracerServer, err := initTracing(b, bt.config, bt.logger)
+type reloader struct {
+	runServerContext context.Context
+	args             sharedServerRunnerParams
+
+	mu           sync.Mutex
+	namespace    string
+	rawConfig    *common.Config
+	outputConfig common.ConfigNamespace
+	fleetConfig  *config.Fleet
+	runner       *serverRunner
+}
+
+func (r *reloader) stop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.runner != nil {
+		r.runner.cancelRunServerContext()
+		<-r.runner.done
+		r.runner = nil
+	}
+}
+
+// Reload is invoked when the initial, or updated, integration policy, is received.
+func (r *reloader) Reload(configs []*reload.ConfigWithMeta) error {
+	if n := len(configs); n != 1 {
+		return fmt.Errorf("only 1 input supported, got %d", n)
+	}
+	cfg := configs[0]
+
+	integrationConfig, err := config.NewIntegrationConfig(cfg.Config)
 	if err != nil {
-		return nil, err
-	}
-	closeTracer := func() error { return nil }
-	if tracer != nil {
-		closeTracer = func() error {
-			tracer.Close()
-			if tracerServer != nil {
-				return tracerServer.Close()
-			}
-			return nil
-		}
-	}
-
-	sharedArgs := sharedServerRunnerParams{
-		Beat:          b,
-		WrapRunServer: bt.wrapRunServer,
-		Logger:        bt.logger,
-		Tracer:        tracer,
-		TracerServer:  tracerServer,
-		Acker:         bt.waitPublished,
-	}
-
-	if b.Manager != nil && b.Manager.Enabled() {
-		// Management enabled, register reloadable inputs.
-		creator := &serverCreator{context: ctx, args: sharedArgs}
-		inputs := cfgfile.NewRunnerList(management.DebugK, creator, b.Publisher)
-		bt.stopServer = func() {
-			defer close(done)
-			defer closeTracer()
-			if bt.config.ShutdownTimeout > 0 {
-				time.AfterFunc(bt.config.ShutdownTimeout, cancelContext)
-			}
-			inputs.Stop()
-		}
-		reload.Register.MustRegisterList("inputs", inputs)
-
-	} else {
-		// Management disabled, use statically defined config.
-		s, err := newServerRunner(ctx, serverRunnerParams{
-			sharedServerRunnerParams: sharedArgs,
-			Pipeline:                 b.Publisher,
-			Namespace:                "default",
-			RawConfig:                bt.rawConfig,
-		})
-		if err != nil {
-			return nil, err
-		}
-		bt.stopServer = func() {
-			if bt.config.ShutdownTimeout > 0 {
-				time.AfterFunc(bt.config.ShutdownTimeout, cancelContext)
-			}
-			s.Stop()
-		}
-		s.Start()
-		go func() {
-			defer close(done)
-			defer closeTracer()
-			s.Wait()
-		}()
-	}
-	return done, nil
-}
-
-type serverCreator struct {
-	context context.Context
-	args    sharedServerRunnerParams
-}
-
-func (s *serverCreator) CheckConfig(cfg *common.Config) error {
-	_, err := config.NewIntegrationConfig(cfg)
-	return err
-}
-
-func (s *serverCreator) Create(p beat.PipelineConnector, rawConfig *common.Config) (cfgfile.Runner, error) {
-	integrationConfig, err := config.NewIntegrationConfig(rawConfig)
-	if err != nil {
-		return nil, err
+		return err
 	}
 	var namespace string
 	if integrationConfig.DataStream != nil {
@@ -255,13 +273,64 @@ func (s *serverCreator) Create(p beat.PipelineConnector, rawConfig *common.Confi
 	}
 	apmServerCommonConfig := integrationConfig.APMServer
 	apmServerCommonConfig.Merge(common.MustNewConfigFrom(`{"data_streams.enabled": true}`))
-	return newServerRunner(s.context, serverRunnerParams{
-		sharedServerRunnerParams: s.args,
-		Namespace:                namespace,
-		Pipeline:                 p,
-		RawConfig:                apmServerCommonConfig,
-		FleetConfig:              &integrationConfig.Fleet,
+
+	r.mu.Lock()
+	r.namespace = namespace
+	r.rawConfig = apmServerCommonConfig
+	r.fleetConfig = &integrationConfig.Fleet
+	r.mu.Unlock()
+	return r.reload()
+}
+
+func (r *reloader) reloadOutput(config *reload.ConfigWithMeta) error {
+	var outputConfig common.ConfigNamespace
+	if config != nil {
+		if err := config.Config.Unpack(&outputConfig); err != nil {
+			return err
+		}
+	}
+	r.mu.Lock()
+	r.outputConfig = outputConfig
+	r.mu.Unlock()
+	return r.reload()
+}
+
+func (r *reloader) reload() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.rawConfig == nil {
+		// APM Server config not loaded yet.
+		return nil
+	}
+
+	runner, err := newServerRunner(r.runServerContext, serverRunnerParams{
+		sharedServerRunnerParams: r.args,
+		Namespace:                r.namespace,
+		RawConfig:                r.rawConfig,
+		FleetConfig:              r.fleetConfig,
+		OutputConfig:             r.outputConfig,
 	})
+	if err != nil {
+		return err
+	}
+	// Start listening before we stop the existing runner (if any), to ensure zero downtime.
+	listener, err := listen(runner.config, runner.logger)
+	if err != nil {
+		return err
+	}
+	go func() {
+		defer listener.Close()
+		if err := runner.run(listener); err != nil {
+			r.args.Logger.Error(err)
+		}
+	}()
+	// If the old runner exists, cancel it
+	if r.runner != nil {
+		r.runner.cancelRunServerContext()
+		<-r.runner.done
+	}
+	r.runner = runner
+	return nil
 }
 
 type serverRunner struct {
@@ -274,30 +343,29 @@ type serverRunner struct {
 	// immediately when the Stop method is invoked.
 	runServerContext       context.Context
 	cancelRunServerContext context.CancelFunc
+	done                   chan struct{}
 
-	stopOnce sync.Once
-	wg       sync.WaitGroup
-
-	pipeline      beat.PipelineConnector
-	acker         *waitPublishedAcker
-	namespace     string
-	config        *config.Config
-	rawConfig     *common.Config
-	fleetConfig   *config.Fleet
-	beat          *beat.Beat
-	logger        *logp.Logger
-	tracer        *apm.Tracer
-	tracerServer  *tracerServer
-	wrapRunServer func(RunServerFunc) RunServerFunc
+	pipeline                  beat.PipelineConnector
+	acker                     *publish.WaitPublishedAcker
+	namespace                 string
+	config                    *config.Config
+	rawConfig                 *common.Config
+	elasticsearchOutputConfig *common.Config
+	fleetConfig               *config.Fleet
+	beat                      *beat.Beat
+	logger                    *logp.Logger
+	tracer                    *apm.Tracer
+	tracerServer              *tracerServer
+	wrapRunServer             func(RunServerFunc) RunServerFunc
 }
 
 type serverRunnerParams struct {
 	sharedServerRunnerParams
 
-	Namespace   string
-	Pipeline    beat.PipelineConnector
-	RawConfig   *common.Config
-	FleetConfig *config.Fleet
+	Namespace    string
+	RawConfig    *common.Config
+	FleetConfig  *config.Fleet
+	OutputConfig common.ConfigNamespace
 }
 
 type sharedServerRunnerParams struct {
@@ -306,11 +374,16 @@ type sharedServerRunnerParams struct {
 	Logger        *logp.Logger
 	Tracer        *apm.Tracer
 	TracerServer  *tracerServer
-	Acker         *waitPublishedAcker
+	Acker         *publish.WaitPublishedAcker
 }
 
 func newServerRunner(ctx context.Context, args serverRunnerParams) (*serverRunner, error) {
-	cfg, err := config.NewConfig(args.RawConfig, elasticsearchOutputConfig(args.Beat))
+	var esOutputConfig *common.Config
+	if args.OutputConfig.Name() == "elasticsearch" {
+		esOutputConfig = args.OutputConfig.Config()
+	}
+
+	cfg, err := config.NewConfig(args.RawConfig, esOutputConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -320,52 +393,46 @@ func newServerRunner(ctx context.Context, args serverRunnerParams) (*serverRunne
 		backgroundContext:      ctx,
 		runServerContext:       runServerContext,
 		cancelRunServerContext: cancel,
+		done:                   make(chan struct{}),
 
-		config:        cfg,
-		rawConfig:     args.RawConfig,
-		fleetConfig:   args.FleetConfig,
-		acker:         args.Acker,
-		pipeline:      args.Pipeline,
-		namespace:     args.Namespace,
-		beat:          args.Beat,
-		logger:        args.Logger,
-		tracer:        args.Tracer,
-		tracerServer:  args.TracerServer,
-		wrapRunServer: args.WrapRunServer,
+		config:                    cfg,
+		rawConfig:                 args.RawConfig,
+		elasticsearchOutputConfig: esOutputConfig,
+		fleetConfig:               args.FleetConfig,
+		acker:                     args.Acker,
+		pipeline:                  args.Beat.Publisher,
+		namespace:                 args.Namespace,
+		beat:                      args.Beat,
+		logger:                    args.Logger,
+		tracer:                    args.Tracer,
+		tracerServer:              args.TracerServer,
+		wrapRunServer:             args.WrapRunServer,
 	}, nil
 }
 
-func (s *serverRunner) String() string {
-	return "APMServer"
-}
+func (s *serverRunner) run(listener net.Listener) error {
+	defer close(s.done)
 
-// Stop stops the server.
-func (s *serverRunner) Stop() {
-	s.stopOnce.Do(s.cancelRunServerContext)
-	s.Wait()
-}
-
-// Wait waits for the server to stop.
-func (s *serverRunner) Wait() {
-	s.wg.Wait()
-}
-
-// Start starts the server.
-func (s *serverRunner) Start() {
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		s.run()
-	}()
-}
-
-func (s *serverRunner) run() error {
 	// Send config to telemetry.
 	recordAPMServerConfig(s.config)
+
 	publisherConfig := &publish.PublisherConfig{
-		Info:      s.beat.Info,
 		Pipeline:  s.config.Pipeline,
 		Namespace: s.namespace,
+	}
+	if !s.config.DataStreams.Enabled {
+		// Logs are only supported with data streams;
+		// add a beat.Processor which drops them.
+		dropLogsProcessor, err := newDropLogsBeatProcessor()
+		if err != nil {
+			return err
+		}
+		publisherConfig.Processor = dropLogsProcessor
+	}
+
+	var kibanaClient kibana.Client
+	if s.config.Kibana.Enabled {
+		kibanaClient = kibana.NewConnectingClient(&s.config.Kibana)
 	}
 
 	cfg := ucfg.Config(*s.rawConfig)
@@ -374,16 +441,62 @@ func (s *serverRunner) run() error {
 	if eac := os.Getenv("ELASTIC_AGENT_CLOUD"); eac != "" && s.config.Kibana.Enabled {
 		// Don't block server startup sending the config.
 		go func() {
-			c := kibana_client.NewConnectingClient(&s.config.Kibana)
-			if err := kibana_client.SendConfig(s.runServerContext, c, parentCfg); err != nil {
+			if err := kibana.SendConfig(s.runServerContext, kibanaClient, parentCfg); err != nil {
 				s.logger.Infof("failed to upload config to kibana: %v", err)
 			}
 		}()
 	}
 
+	g, ctx := errgroup.WithContext(s.runServerContext)
+
+	// Ensure the libbeat output and go-elasticsearch clients do not index
+	// any events to Elasticsearch before the integration is ready.
+	publishReady := make(chan struct{})
+	g.Go(func() error {
+		defer close(publishReady)
+		err := s.waitReady(ctx, kibanaClient)
+		return errors.Wrap(err, "error waiting for server to be ready")
+	})
+	callbackUUID, err := esoutput.RegisterConnectCallback(func(*eslegclient.Connection) error {
+		select {
+		case <-publishReady:
+			return nil
+		default:
+		}
+		return errors.New("not ready for publishing events")
+	})
+	if err != nil {
+		return err
+	}
+	defer esoutput.DeregisterConnectCallback(callbackUUID)
+	newElasticsearchClient := func(cfg *elasticsearch.Config) (elasticsearch.Client, error) {
+		httpTransport, err := elasticsearch.NewHTTPTransport(cfg)
+		if err != nil {
+			return nil, err
+		}
+		transport := &waitReadyRoundTripper{Transport: httpTransport, ready: publishReady}
+		return elasticsearch.NewClientParams(elasticsearch.ClientParams{
+			Config:    cfg,
+			Transport: transport,
+		})
+	}
+
+	// Register a libbeat elasticsearch output connect callback which
+	// ensures the pipeline is installed. The callback does nothing
+	// when data streams are in use.
+	pipelineCallback := newPipelineElasticsearchConnectCallback(s.config)
+	callbackUUID, err = esoutput.RegisterConnectCallback(pipelineCallback)
+	if err != nil {
+		return err
+	}
+	defer esoutput.DeregisterConnectCallback(callbackUUID)
+
 	var sourcemapStore *sourcemap.Store
 	if s.config.RumConfig.Enabled && s.config.RumConfig.SourceMapping.Enabled {
-		store, err := newSourcemapStore(s.beat.Info, s.config.RumConfig.SourceMapping, s.fleetConfig)
+		store, err := newSourcemapStore(
+			s.beat.Info, s.config.RumConfig.SourceMapping, s.fleetConfig,
+			newElasticsearchClient,
+		)
 		if err != nil {
 			return err
 		}
@@ -404,8 +517,13 @@ func (s *serverRunner) run() error {
 
 	// Create the runServer function. We start with newBaseRunServer, and then
 	// wrap depending on the configuration in order to inject behaviour.
+	//
+	// The reporter is passed into newBaseRunServer for legacy event publishers
+	// that bypass the model processor framework, i.e. sourcemap uploads, and
+	// onboarding docs. Because these bypass the model processor framework, we
+	// must augment the reporter to set common `observer` and `ecs.version` fields.
 	reporter := publisher.Send
-	runServer := newBaseRunServer(reporter)
+	runServer := newBaseRunServer(listener, augmentedReporter(reporter, s.beat.Info))
 	if s.tracerServer != nil {
 		runServer = runServerWithTracerServer(runServer, s.tracerServer, s.tracer)
 	}
@@ -416,37 +534,128 @@ func (s *serverRunner) run() error {
 	}
 	runServer = s.wrapRunServerWithPreprocessors(runServer)
 
-	var batchProcessor model.BatchProcessor = &reporterBatchProcessor{reporter}
+	batchProcessor := make(modelprocessor.Chained, 0, 3)
 	if !s.config.Sampling.KeepUnsampled {
 		// The server has been configured to discard unsampled
 		// transactions. Make sure this is done just before calling
 		// the publisher to avoid affecting aggregations.
-		batchProcessor = modelprocessor.Chained{
-			sampling.NewDiscardUnsampledBatchProcessor(), batchProcessor,
-		}
+		batchProcessor = append(batchProcessor,
+			sampling.NewDiscardUnsampledBatchProcessor(),
+		)
 	}
+	batchProcessor = append(batchProcessor,
+		modelprocessor.DroppedSpansStatsDiscarder{},
+		s.newFinalBatchProcessor(publisher),
+	)
 
-	if err := runServer(s.runServerContext, ServerParams{
-		Info:           s.beat.Info,
-		Config:         s.config,
-		Managed:        s.beat.Manager != nil && s.beat.Manager.Enabled(),
-		Namespace:      s.namespace,
-		Logger:         s.logger,
-		Tracer:         s.tracer,
-		BatchProcessor: batchProcessor,
-		SourcemapStore: sourcemapStore,
-	}); err != nil {
+	g.Go(func() error {
+		return runServer(ctx, ServerParams{
+			Info:                   s.beat.Info,
+			Config:                 s.config,
+			Managed:                s.beat.Manager != nil && s.beat.Manager.Enabled(),
+			Namespace:              s.namespace,
+			Logger:                 s.logger,
+			Tracer:                 s.tracer,
+			BatchProcessor:         batchProcessor,
+			SourcemapStore:         sourcemapStore,
+			PublishReady:           publishReady,
+			NewElasticsearchClient: newElasticsearchClient,
+		})
+	})
+	if err := g.Wait(); err != nil {
 		return err
 	}
 	return publisher.Stop(s.backgroundContext)
 }
 
+// waitReady waits until the server is ready to index events.
+func (s *serverRunner) waitReady(ctx context.Context, kibanaClient kibana.Client) error {
+	var preconditions []func(context.Context) error
+	var esOutputClient elasticsearch.Client
+	if s.elasticsearchOutputConfig != nil {
+		esConfig := elasticsearch.DefaultConfig()
+		err := s.elasticsearchOutputConfig.Unpack(&esConfig)
+		if err != nil {
+			return err
+		}
+		esOutputClient, err = elasticsearch.NewClient(esConfig)
+		if err != nil {
+			return err
+		}
+	}
+
+	// libbeat and go-elasticsearch both ensure a minimum level of Basic.
+	//
+	// If any configured features require a higher license level, add a
+	// precondition which checks this.
+	if esOutputClient != nil {
+		requiredLicenseLevel := licenser.Basic
+		licensedFeature := ""
+		if s.config.Sampling.Tail.Enabled {
+			requiredLicenseLevel = licenser.Platinum
+			licensedFeature = "tail-based sampling"
+		}
+		if requiredLicenseLevel > licenser.Basic {
+			preconditions = append(preconditions, func(ctx context.Context) error {
+				license, err := elasticsearch.GetLicense(ctx, esOutputClient)
+				if err != nil {
+					return errors.Wrap(err, "error getting Elasticsearch licensing information")
+				}
+				if licenser.IsExpired(license) {
+					return errors.New("Elasticsearch license is expired")
+				}
+				if license.Type == licenser.Trial || license.Cover(requiredLicenseLevel) {
+					return nil
+				}
+				return fmt.Errorf(
+					"invalid license level %s: %s requires license level %s",
+					license.Type, licensedFeature, requiredLicenseLevel,
+				)
+			})
+		}
+	}
+
+	// When running standalone with data streams enabled, by default we will add
+	// a precondition that ensures the integration is installed.
+	fleetManaged := s.beat.Manager != nil && s.beat.Manager.Enabled()
+	if !fleetManaged && s.config.DataStreams.Enabled && s.config.DataStreams.WaitForIntegration {
+		if kibanaClient == nil && esOutputClient == nil {
+			return errors.New("cannot wait for integration without either Kibana or Elasticsearch config")
+		}
+		preconditions = append(preconditions, func(ctx context.Context) error {
+			return checkIntegrationInstalled(ctx, kibanaClient, esOutputClient, s.logger)
+		})
+	}
+
+	if len(preconditions) == 0 {
+		return nil
+	}
+	check := func(ctx context.Context) error {
+		for _, pre := range preconditions {
+			if err := pre(ctx); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return waitReady(ctx, s.config.WaitReadyInterval, s.tracer, s.logger, check)
+}
+
+// newFinalBatchProcessor returns the final model.BatchProcessor that publishes events.
+func (s *serverRunner) newFinalBatchProcessor(p *publish.Publisher) model.BatchProcessor {
+	return p
+}
+
 func (s *serverRunner) wrapRunServerWithPreprocessors(runServer RunServerFunc) RunServerFunc {
 	processors := []model.BatchProcessor{
-		modelprocessor.SetSystemHostname{},
+		modelprocessor.SetHostHostname{},
 		modelprocessor.SetServiceNodeName{},
 		modelprocessor.SetMetricsetName{},
 		modelprocessor.SetGroupingKey{},
+		modelprocessor.SetErrorMessage{},
+		newObserverBatchProcessor(s.beat.Info),
+		model.ProcessBatchFunc(ecsVersionBatchProcessor),
+		modelprocessor.NewEventCounter(monitoring.Default.GetRegistry("apm-server")),
 	}
 	if s.config.DefaultServiceEnvironment != "" {
 		processors = append(processors, &modelprocessor.SetDefaultServiceEnvironment{
@@ -461,32 +670,6 @@ func (s *serverRunner) wrapRunServerWithPreprocessors(runServer RunServerFunc) R
 	return WrapRunServerWithProcessors(runServer, processors...)
 }
 
-// checkConfig verifies the global configuration doesn't use unsupported settings
-//
-// TODO(axw) remove this, nobody expects dashboard setup from apm-server.
-func checkConfig(logger *logp.Logger) error {
-	cfg, err := cfgfile.Load("", nil)
-	if err != nil {
-		// responsibility for failing to load configuration lies elsewhere
-		// this is not reachable after going through normal beat creation
-		return nil
-	}
-
-	var s struct {
-		Dashboards *common.Config `config:"setup.dashboards"`
-	}
-	if err := cfg.Unpack(&s); err != nil {
-		return err
-	}
-	if s.Dashboards != nil {
-		if s.Dashboards.Enabled() {
-			return errSetupDashboardRemoved
-		}
-		logger.Warn(errSetupDashboardRemoved)
-	}
-	return nil
-}
-
 // elasticsearchOutputConfig returns nil if the output is not elasticsearch
 func elasticsearchOutputConfig(b *beat.Beat) *common.Config {
 	if hasElasticsearchOutput(b) {
@@ -499,14 +682,13 @@ func hasElasticsearchOutput(b *beat.Beat) bool {
 	return b.Config != nil && b.Config.Output.Name() == "elasticsearch"
 }
 
-// registerPipelineCallback registers an Elasticsearch connection callback
-// that ensures the configured pipeline is installed, if configured to do
-// so. If data streams are enabled, then pipeline registration is always
-// disabled and `setup --pipelines` will return an error.
-func (bt *beater) registerPipelineCallback(b *beat.Beat) error {
+// registerPipelineCallback registers a callback which is invoked when
+// `setup --pipelines` is called, to either register pipelines or return
+// an error depending on the configuration.
+func (bt *beater) registerPipelineSetupCallback(b *beat.Beat) {
 	if !hasElasticsearchOutput(b) {
 		bt.logger.Info("Output is not Elasticsearch: pipeline registration disabled")
-		return nil
+		return
 	}
 
 	if bt.config.DataStreams.Enabled {
@@ -514,12 +696,12 @@ func (bt *beater) registerPipelineCallback(b *beat.Beat) error {
 		b.OverwritePipelinesCallback = func(esConfig *common.Config) error {
 			return errors.New("index pipeline setup must be performed externally when using data streams, by installing the 'apm' integration package")
 		}
-		return nil
+		return
 	}
 
 	if !bt.config.Register.Ingest.Pipeline.Enabled {
 		bt.logger.Info("Pipeline registration disabled")
-		return nil
+		return
 	}
 
 	bt.logger.Info("Registering pipeline callback")
@@ -528,17 +710,27 @@ func (bt *beater) registerPipelineCallback(b *beat.Beat) error {
 
 	// ensure setup cmd is working properly
 	b.OverwritePipelinesCallback = func(esConfig *common.Config) error {
-		conn, err := eslegclient.NewConnectedClient(esConfig)
+		conn, err := eslegclient.NewConnectedClient(esConfig, b.Info.Beat)
 		if err != nil {
 			return err
 		}
 		return pipeline.RegisterPipelines(conn, overwrite, path)
 	}
-	// ensure pipelines are registered when new ES connection is established.
-	_, err := esoutput.RegisterConnectCallback(func(conn *eslegclient.Connection) error {
+}
+
+// newPipelineElasticsearchConnectCallback returns an Elasticsearch connect
+// callback that ensures the configured pipeline is installed, if configured
+// to do so. If data streams are enabled, then pipeline registration is always
+// disabled.
+func newPipelineElasticsearchConnectCallback(cfg *config.Config) esoutput.ConnectCallback {
+	return func(conn *eslegclient.Connection) error {
+		if cfg.DataStreams.Enabled || !cfg.Register.Ingest.Pipeline.Enabled {
+			return nil
+		}
+		overwrite := cfg.Register.Ingest.Pipeline.Overwrite
+		path := cfg.Register.Ingest.Pipeline.Path
 		return pipeline.RegisterPipelines(conn, overwrite, path)
-	})
-	return err
+	}
 }
 
 func initTracing(b *beat.Beat, cfg *config.Config, logger *logp.Logger) (*apm.Tracer, *tracerServer, error) {
@@ -607,6 +799,7 @@ func (bt *beater) Stop() {
 		"stopping apm-server... waiting maximum of %v seconds for queues to drain",
 		bt.config.ShutdownTimeout.Seconds(),
 	)
+	bt.outputConfigReloader.cancel()
 	bt.stopServer()
 	bt.stopped = true
 }
@@ -626,7 +819,12 @@ func runServerWithTracerServer(runServer RunServerFunc, tracerServer *tracerServ
 	}
 }
 
-func newSourcemapStore(beatInfo beat.Info, cfg config.SourceMapping, fleetCfg *config.Fleet) (*sourcemap.Store, error) {
+func newSourcemapStore(
+	beatInfo beat.Info,
+	cfg config.SourceMapping,
+	fleetCfg *config.Fleet,
+	newElasticsearchClient func(*elasticsearch.Config) (elasticsearch.Client, error),
+) (*sourcemap.Store, error) {
 	if fleetCfg != nil {
 		var (
 			c  = *http.DefaultClient
@@ -640,7 +838,6 @@ func newSourcemapStore(beatInfo beat.Info, cfg config.SourceMapping, fleetCfg *c
 			}
 		}
 
-		// Default for es is 90s :shrug:
 		timeout := 30 * time.Second
 		dialer := transport.NetDialer(timeout)
 		tlsDialer := transport.TLSDialer(dialer, tlsConfig, timeout)
@@ -655,7 +852,7 @@ func newSourcemapStore(beatInfo beat.Info, cfg config.SourceMapping, fleetCfg *c
 		c.Transport = apmhttp.WrapRoundTripper(rt)
 		return sourcemap.NewFleetStore(&c, fleetCfg, cfg.Metadata, cfg.Cache.Expiration)
 	}
-	c, err := elasticsearch.NewClient(cfg.ESConfig)
+	c, err := newElasticsearchClient(cfg.ESConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -677,13 +874,103 @@ func WrapRunServerWithProcessors(runServer RunServerFunc, processors ...model.Ba
 	}
 }
 
-type disablePublisherTracingKey struct{}
-
-type reporterBatchProcessor struct {
-	reporter publish.Reporter
+// augmentedReporter wraps publish.Reporter such that the events it reports have
+// `observer` and `ecs.version` fields injected.
+func augmentedReporter(reporter publish.Reporter, info beat.Info) publish.Reporter {
+	observerBatchProcessor := newObserverBatchProcessor(info)
+	return func(ctx context.Context, req publish.PendingReq) error {
+		orig := req.Transformable
+		req.Transformable = transformerFunc(func(ctx context.Context) []beat.Event {
+			// Merge common fields into each event.
+			events := orig.Transform(ctx)
+			batch := make(model.Batch, 1)
+			observerBatchProcessor(ctx, &batch)
+			ecsVersionBatchProcessor(ctx, &batch)
+			for _, event := range events {
+				event.Fields.Put("ecs.version", batch[0].ECSVersion)
+				event.Fields.DeepUpdate(common.MapStr{"observer": batch[0].Observer.Fields()})
+			}
+			return events
+		})
+		return reporter(ctx, req)
+	}
 }
 
-func (p *reporterBatchProcessor) ProcessBatch(ctx context.Context, batch *model.Batch) error {
-	disableTracing, _ := ctx.Value(disablePublisherTracingKey{}).(bool)
-	return p.reporter(ctx, publish.PendingReq{Transformable: batch, Trace: !disableTracing})
+type transformerFunc func(context.Context) []beat.Event
+
+func (f transformerFunc) Transform(ctx context.Context) []beat.Event {
+	return f(ctx)
+}
+
+func newDropLogsBeatProcessor() (beat.ProcessorList, error) {
+	return processors.New(processors.PluginConfig{
+		common.MustNewConfigFrom(map[string]interface{}{
+			"drop_event": map[string]interface{}{
+				"when": map[string]interface{}{
+					"contains": map[string]interface{}{
+						"processor.event": "log",
+					},
+				},
+			},
+		}),
+	})
+}
+
+// chanReloader implements libbeat/common/reload.Reloadable, converting
+// Reload calls into requests send to a channel consumed by serve.
+type chanReloader struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	ch     chan reloadRequest
+}
+
+func newChanReloader() *chanReloader {
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan reloadRequest)
+	return &chanReloader{ctx, cancel, ch}
+}
+
+type reloadRequest struct {
+	cfg    *reload.ConfigWithMeta
+	result chan<- error
+}
+
+// Reload sends a reload request to r.ch, which is consumed by another
+// goroutine running r.serve. Reload blocks until serve has handled the
+// reload request, or until the reloader's context has been cancelled.
+func (r *chanReloader) Reload(cfg *reload.ConfigWithMeta) error {
+	result := make(chan error, 1)
+	select {
+	case <-r.ctx.Done():
+		return r.ctx.Err()
+	case r.ch <- reloadRequest{cfg: cfg, result: result}:
+	}
+	select {
+	case <-r.ctx.Done():
+		return r.ctx.Err()
+	case err := <-result:
+		return err
+	}
+}
+
+// serve handles reload requests enqueued by Reload, returning when either
+// ctx or r.ctx are cancelled.
+func (r *chanReloader) serve(ctx context.Context, reloader reload.Reloadable) error {
+	for {
+		select {
+		case <-r.ctx.Done():
+			return r.ctx.Err()
+		case <-ctx.Done():
+			return ctx.Err()
+		case req := <-r.ch:
+			err := reloader.Reload(req.cfg)
+			select {
+			case <-r.ctx.Done():
+				return r.ctx.Err()
+			case <-ctx.Done():
+				return ctx.Err()
+			case req.result <- err:
+			}
+		}
+	}
 }

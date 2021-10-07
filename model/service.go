@@ -21,7 +21,8 @@ import (
 	"github.com/elastic/beats/v7/libbeat/common"
 )
 
-//Service bundles together information related to the monitored service and the agent used for monitoring
+// Service bundles together information related to the monitored service and
+// the agent used for monitoring
 type Service struct {
 	Name        string
 	Version     string
@@ -29,8 +30,17 @@ type Service struct {
 	Language    Language
 	Runtime     Runtime
 	Framework   Framework
-	Agent       Agent
 	Node        ServiceNode
+
+	Origin *ServiceOrigin
+}
+
+// ServiceOrigin holds information about the service that originated a
+// transaction.
+type ServiceOrigin struct {
+	ID      string
+	Name    string
+	Version string
 }
 
 //Language has an optional version and name
@@ -49,13 +59,6 @@ type Runtime struct {
 type Framework struct {
 	Name    string
 	Version string
-}
-
-//Agent has an optional version, name and an ephemeral id
-type Agent struct {
-	Name        string
-	Version     string
-	EphemeralID string
 }
 
 type ServiceNode struct {
@@ -97,6 +100,14 @@ func (s *Service) Fields() common.MapStr {
 		svc.set("framework", common.MapStr(framework))
 	}
 
+	if s.Origin != nil {
+		var origin mapStr
+		origin.maybeSetString("name", s.Origin.Name)
+		origin.maybeSetString("version", s.Origin.Version)
+		origin.maybeSetString("id", s.Origin.ID)
+		svc.maybeSetMapStr("origin", common.MapStr(origin))
+	}
+
 	return common.MapStr(svc)
 }
 
@@ -105,12 +116,4 @@ func (n *ServiceNode) fields() common.MapStr {
 		return common.MapStr{"name": n.Name}
 	}
 	return nil
-}
-
-func (a *Agent) fields() common.MapStr {
-	var agent mapStr
-	agent.maybeSetString("name", a.Name)
-	agent.maybeSetString("version", a.Version)
-	agent.maybeSetString("ephemeral_id", a.EphemeralID)
-	return common.MapStr(agent)
 }

@@ -12,10 +12,7 @@
                     "continent_name": "Oceania",
                     "country_iso_code": "AU",
                     "country_name": "Australia",
-                    "location": {
-                        "lat": -31.9674,
-                        "lon": 115.8621
-                    },
+                    "location": "dynamic",
                     "region_iso_code": "AU-WA",
                     "region_name": "Western Australia"
                 },
@@ -44,7 +41,8 @@
                 "name": "rum-js-test"
             },
             "source": {
-                "ip": "220.244.41.16"
+                "ip": "127.0.0.1",
+                "port": "dynamic"
             },
             "timestamp": {
                 "us": "dynamic"

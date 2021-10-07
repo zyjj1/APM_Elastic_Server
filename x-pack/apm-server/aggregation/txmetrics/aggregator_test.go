@@ -83,8 +83,14 @@ func TestProcessTransformablesOverflow(t *testing.T) {
 	// as we have configured the txmetrics with a maximum of two buckets.
 	batch := make(model.Batch, 20)
 	for i := 0; i < len(batch); i += 2 {
-		batch[i].Transaction = &model.Transaction{Name: "foo", RepresentativeCount: 1}
-		batch[i+1].Transaction = &model.Transaction{Name: "bar", RepresentativeCount: 1}
+		batch[i] = model.APMEvent{
+			Processor:   model.TransactionProcessor,
+			Transaction: &model.Transaction{Name: "foo", RepresentativeCount: 1},
+		}
+		batch[i+1] = model.APMEvent{
+			Processor:   model.TransactionProcessor,
+			Transaction: &model.Transaction{Name: "bar", RepresentativeCount: 1},
+		}
 	}
 	err = agg.ProcessBatch(context.Background(), &batch)
 	require.NoError(t, err)
@@ -92,11 +98,14 @@ func TestProcessTransformablesOverflow(t *testing.T) {
 
 	// The third transaction group will return a metricset for immediate publication.
 	for i := 0; i < 2; i++ {
-		batch = append(batch, model.APMEvent{Transaction: &model.Transaction{
-			Name:                "baz",
-			Duration:            float64(time.Minute / time.Millisecond),
-			RepresentativeCount: 1,
-		}})
+		batch = append(batch, model.APMEvent{
+			Processor: model.TransactionProcessor,
+			Event:     model.Event{Duration: time.Minute},
+			Transaction: &model.Transaction{
+				Name:                "baz",
+				RepresentativeCount: 1,
+			},
+		})
 	}
 	err = agg.ProcessBatch(context.Background(), &batch)
 	require.NoError(t, err)
@@ -104,22 +113,21 @@ func TestProcessTransformablesOverflow(t *testing.T) {
 	assert.Len(t, metricsets, 2)
 
 	for _, m := range metricsets {
-		assert.Equal(t, &model.Metricset{
-			Name:     "transaction",
-			Metadata: model.Metadata{},
-			Transaction: model.MetricsetTransaction{
+		assert.Equal(t, model.APMEvent{
+			Processor: model.MetricsetProcessor,
+			Metricset: &model.Metricset{
+				Name:                 "transaction",
+				TimeseriesInstanceID: ":baz:bc30224a3738a508",
+				DocCount:             1,
+			},
+			Transaction: &model.Transaction{
 				Name: "baz",
 				Root: true,
-			},
-			Samples: map[string]model.MetricsetSample{
-				"transaction.duration.histogram": {
-					Type:   "histogram",
+				DurationHistogram: model.Histogram{
 					Counts: []int64{1},
 					Values: []float64{float64(time.Minute / time.Microsecond)},
 				},
 			},
-			TimeseriesInstanceID: ":baz:bc30224a3738a508",
-			DocCount:             1,
 		}, m)
 	}
 
@@ -150,18 +158,24 @@ func TestAggregatorRun(t *testing.T) {
 	require.NoError(t, err)
 
 	for i := 0; i < 1000; i++ {
-		metricset := agg.AggregateTransaction(&model.Transaction{
-			Name:                "T-1000",
-			RepresentativeCount: 1,
+		metricset := agg.AggregateTransaction(model.APMEvent{
+			Processor: model.TransactionProcessor,
+			Transaction: &model.Transaction{
+				Name:                "T-1000",
+				RepresentativeCount: 1,
+			},
 		})
-		require.Nil(t, metricset)
+		require.Zero(t, metricset)
 	}
 	for i := 0; i < 800; i++ {
-		metricset := agg.AggregateTransaction(&model.Transaction{
-			Name:                "T-800",
-			RepresentativeCount: 1,
+		metricset := agg.AggregateTransaction(model.APMEvent{
+			Processor: model.TransactionProcessor,
+			Transaction: &model.Transaction{
+				Name:                "T-800",
+				RepresentativeCount: 1,
+			},
 		})
-		require.Nil(t, metricset)
+		require.Zero(t, metricset)
 	}
 
 	go agg.Run()
@@ -175,9 +189,9 @@ func TestAggregatorRun(t *testing.T) {
 	})
 
 	assert.Equal(t, "T-1000", metricsets[0].Transaction.Name)
-	assert.Equal(t, []int64{1000}, metricsets[0].Samples["transaction.duration.histogram"].Counts)
+	assert.Equal(t, []int64{1000}, metricsets[0].Transaction.DurationHistogram.Counts)
 	assert.Equal(t, "T-800", metricsets[1].Transaction.Name)
-	assert.Equal(t, []int64{800}, metricsets[1].Samples["transaction.duration.histogram"].Counts)
+	assert.Equal(t, []int64{800}, metricsets[1].Transaction.DurationHistogram.Counts)
 
 	select {
 	case <-batches:
@@ -215,11 +229,14 @@ func TestAggregatorRunPublishErrors(t *testing.T) {
 	defer agg.Stop(context.Background())
 
 	for i := 0; i < 2; i++ {
-		metricset := agg.AggregateTransaction(&model.Transaction{
-			Name:                "T-1000",
-			RepresentativeCount: 1,
+		metricset := agg.AggregateTransaction(model.APMEvent{
+			Processor: model.TransactionProcessor,
+			Transaction: &model.Transaction{
+				Name:                "T-1000",
+				RepresentativeCount: 1,
+			},
 		})
-		require.Nil(t, metricset)
+		require.Zero(t, metricset)
 		expectBatch(t, batches)
 	}
 
@@ -247,16 +264,25 @@ func TestAggregateRepresentativeCount(t *testing.T) {
 
 	// Record a transaction group so subsequent calls yield immediate metricsets,
 	// and to demonstrate that fractional transaction counts are accumulated.
-	agg.AggregateTransaction(&model.Transaction{Name: "fnord", RepresentativeCount: 1})
-	agg.AggregateTransaction(&model.Transaction{Name: "fnord", RepresentativeCount: 1.5})
+	agg.AggregateTransaction(model.APMEvent{
+		Processor:   model.TransactionProcessor,
+		Transaction: &model.Transaction{Name: "fnord", RepresentativeCount: 1},
+	})
+	agg.AggregateTransaction(model.APMEvent{
+		Processor:   model.TransactionProcessor,
+		Transaction: &model.Transaction{Name: "fnord", RepresentativeCount: 1.5},
+	})
 
 	// For non-positive RepresentativeCounts, no metrics will be accumulated.
 	for _, representativeCount := range []float64{-1, 0} {
-		m := agg.AggregateTransaction(&model.Transaction{
-			Name:                "foo",
-			RepresentativeCount: representativeCount,
+		m := agg.AggregateTransaction(model.APMEvent{
+			Processor: model.TransactionProcessor,
+			Transaction: &model.Transaction{
+				Name:                "foo",
+				RepresentativeCount: representativeCount,
+			},
 		})
-		assert.Nil(t, m)
+		assert.Zero(t, m)
 	}
 
 	for _, test := range []struct {
@@ -272,29 +298,31 @@ func TestAggregateRepresentativeCount(t *testing.T) {
 		representativeCount: 1.50, // round half away from zero
 		expectedCount:       2,
 	}} {
-		m := agg.AggregateTransaction(&model.Transaction{
-			Name:                "foo",
-			RepresentativeCount: test.representativeCount,
+		m := agg.AggregateTransaction(model.APMEvent{
+			Processor: model.TransactionProcessor,
+			Transaction: &model.Transaction{
+				Name:                "foo",
+				RepresentativeCount: test.representativeCount,
+			},
 		})
-		require.NotNil(t, m)
+		require.NotNil(t, m.Metricset)
 
 		m.Timestamp = time.Time{}
-		assert.Equal(t, &model.Metricset{
-			Name:                 "transaction",
-			Metadata:             model.Metadata{},
-			TimeseriesInstanceID: ":foo:1db641f187113b17",
-			Transaction: model.MetricsetTransaction{
+		assert.Equal(t, model.APMEvent{
+			Processor: model.MetricsetProcessor,
+			Metricset: &model.Metricset{
+				Name:                 "transaction",
+				TimeseriesInstanceID: ":foo:1db641f187113b17",
+				DocCount:             test.expectedCount,
+			},
+			Transaction: &model.Transaction{
 				Name: "foo",
 				Root: true,
-			},
-			Samples: map[string]model.MetricsetSample{
-				"transaction.duration.histogram": {
-					Type:   "histogram",
+				DurationHistogram: model.Histogram{
 					Counts: []int64{test.expectedCount},
 					Values: []float64{0},
 				},
 			},
-			DocCount: test.expectedCount,
 		}, m)
 	}
 
@@ -308,8 +336,10 @@ func TestAggregateRepresentativeCount(t *testing.T) {
 	batch := expectBatch(t, batches)
 	metricsets := batchMetricsets(t, batch)
 	require.Len(t, metricsets, 1)
-	require.Len(t, metricsets[0].Samples, 1)
-	assert.Equal(t, []int64{3 /*round(1+1.5)*/}, metricsets[0].Samples["transaction.duration.histogram"].Counts)
+	require.Nil(t, metricsets[0].Metricset.Samples)
+	require.NotNil(t, metricsets[0].Transaction)
+	durationHistogram := metricsets[0].Transaction.DurationHistogram
+	assert.Equal(t, []int64{3 /*round(1+1.5)*/}, durationHistogram.Counts)
 }
 
 func TestHDRHistogramSignificantFigures(t *testing.T) {
@@ -331,10 +361,6 @@ func testHDRHistogramSignificantFigures(t *testing.T, sigfigs int) {
 		})
 		require.NoError(t, err)
 
-		durationMillis := func(d time.Duration) float64 {
-			return float64(d) / float64(time.Millisecond)
-		}
-
 		// The following values will be recorded in either 1, 2, 3, 4, or 5
 		// buckets according to the configured number of significant figures.
 		for _, duration := range []time.Duration{
@@ -344,12 +370,15 @@ func testHDRHistogramSignificantFigures(t *testing.T, sigfigs int) {
 			101110 * time.Microsecond,
 			101111 * time.Microsecond,
 		} {
-			metricset := agg.AggregateTransaction(&model.Transaction{
-				Name:                "T-1000",
-				Duration:            durationMillis(duration),
-				RepresentativeCount: 1,
+			metricset := agg.AggregateTransaction(model.APMEvent{
+				Processor: model.TransactionProcessor,
+				Event:     model.Event{Duration: duration},
+				Transaction: &model.Transaction{
+					Name:                "T-1000",
+					RepresentativeCount: 1,
+				},
 			})
-			require.Nil(t, metricset)
+			require.Zero(t, metricset)
 		}
 
 		go agg.Run()
@@ -359,11 +388,11 @@ func testHDRHistogramSignificantFigures(t *testing.T, sigfigs int) {
 		metricsets := batchMetricsets(t, batch)
 		require.Len(t, metricsets, 1)
 
-		require.Len(t, metricsets[0].Samples, 1)
-		require.Contains(t, metricsets[0].Samples, "transaction.duration.histogram")
-		sample := metricsets[0].Samples["transaction.duration.histogram"]
-		assert.Len(t, sample.Counts, len(sample.Values))
-		assert.Len(t, sample.Counts, sigfigs)
+		require.Nil(t, metricsets[0].Metricset.Samples)
+		require.NotNil(t, metricsets[0].Transaction)
+		durationHistogram := metricsets[0].Transaction.DurationHistogram
+		assert.Len(t, durationHistogram.Counts, len(durationHistogram.Values))
+		assert.Len(t, durationHistogram.Counts, sigfigs)
 	})
 }
 
@@ -379,77 +408,80 @@ func TestAggregationFields(t *testing.T) {
 	go agg.Run()
 	defer agg.Stop(context.Background())
 
-	input := model.Transaction{RepresentativeCount: 1}
+	input := model.APMEvent{
+		Processor:   model.TransactionProcessor,
+		Transaction: &model.Transaction{RepresentativeCount: 1},
+	}
 	inputFields := []*string{
-		&input.Name,
-		&input.Outcome,
-		&input.Result,
-		&input.Type,
-		&input.Metadata.Service.Agent.Name,
-		&input.Metadata.Service.Environment,
-		&input.Metadata.Service.Name,
-		&input.Metadata.Service.Version,
-		&input.Metadata.System.Container.ID,
-		&input.Metadata.System.Kubernetes.PodName,
+		&input.Transaction.Name,
+		&input.Transaction.Result,
+		&input.Transaction.Type,
+		&input.Event.Outcome,
+		&input.Agent.Name,
+		&input.Service.Environment,
+		&input.Service.Name,
+		&input.Service.Version,
+		&input.Container.ID,
+		&input.Kubernetes.PodName,
 	}
 
-	var expected []*model.Metricset
+	var expected []model.APMEvent
 	addExpectedCount := func(expectedCount int64) {
-		expected = append(expected, &model.Metricset{
+		expectedEvent := input
+		expectedEvent.Transaction = nil
+		expectedEvent.Event.Outcome = input.Event.Outcome
+		expectedEvent.Processor = model.MetricsetProcessor
+		expectedEvent.Metricset = &model.Metricset{
 			Name:     "transaction",
-			Metadata: input.Metadata,
-			Event: model.MetricsetEventCategorization{
-				Outcome: input.Outcome,
-			},
-			Transaction: model.MetricsetTransaction{
-				Name:   input.Name,
-				Type:   input.Type,
-				Result: input.Result,
-				Root:   input.ParentID == "",
-			},
-			Samples: map[string]model.MetricsetSample{
-				"transaction.duration.histogram": {
-					Type:   "histogram",
-					Counts: []int64{expectedCount},
-					Values: []float64{0},
-				},
-			},
 			DocCount: expectedCount,
-		})
+		}
+		expectedEvent.Transaction = &model.Transaction{
+			Name:   input.Transaction.Name,
+			Type:   input.Transaction.Type,
+			Result: input.Transaction.Result,
+			Root:   input.Parent.ID == "",
+			DurationHistogram: model.Histogram{
+				Counts: []int64{expectedCount},
+				Values: []float64{0},
+			},
+		}
+		expected = append(expected, expectedEvent)
 	}
 	for _, field := range inputFields {
 		for _, value := range []string{"something", "anything"} {
 			*field = value
-			assert.Nil(t, agg.AggregateTransaction(&input))
-			assert.Nil(t, agg.AggregateTransaction(&input))
+			assert.Zero(t, agg.AggregateTransaction(input))
+			assert.Zero(t, agg.AggregateTransaction(input))
 			addExpectedCount(2)
 		}
 	}
 
-	// Hostname is complex: if any kubernetes fields are set, then
-	// it is taken from Kubernetes.Node.Name, and DetectedHostname
-	// is ignored.
-	input.Metadata.System.Kubernetes.PodName = ""
-	for _, value := range []string{"something", "anything"} {
-		input.Metadata.System.DetectedHostname = value
-		assert.Nil(t, agg.AggregateTransaction(&input))
-		assert.Nil(t, agg.AggregateTransaction(&input))
-		addExpectedCount(2)
-	}
+	if false {
+		// Hostname is complex: if any kubernetes fields are set, then
+		// it is taken from Kubernetes.Node.Name, and DetectedHostname
+		// is ignored.
+		input.Kubernetes.PodName = ""
+		for _, value := range []string{"something", "anything"} {
+			input.Host.Hostname = value
+			assert.Zero(t, agg.AggregateTransaction(input))
+			assert.Zero(t, agg.AggregateTransaction(input))
+			addExpectedCount(2)
+		}
 
-	// ParentID only impacts aggregation as far as grouping root and
-	// non-root traces.
-	for _, value := range []string{"something", "anything"} {
-		input.ParentID = value
-		assert.Nil(t, agg.AggregateTransaction(&input))
-		assert.Nil(t, agg.AggregateTransaction(&input))
+		// Parent.ID only impacts aggregation as far as grouping root and
+		// non-root traces.
+		for _, value := range []string{"something", "anything"} {
+			input.Parent.ID = value
+			assert.Zero(t, agg.AggregateTransaction(input))
+			assert.Zero(t, agg.AggregateTransaction(input))
+		}
+		addExpectedCount(4)
 	}
-	addExpectedCount(4)
 
 	batch := expectBatch(t, batches)
 	metricsets := batchMetricsets(t, batch)
-	for _, ms := range metricsets {
-		ms.TimeseriesInstanceID = ""
+	for _, event := range metricsets {
+		event.Metricset.TimeseriesInstanceID = ""
 	}
 	assert.ElementsMatch(t, expected, metricsets)
 }
@@ -463,15 +495,18 @@ func BenchmarkAggregateTransaction(b *testing.B) {
 	})
 	require.NoError(b, err)
 
-	tx := &model.Transaction{
-		Name:                "T-1000",
-		Duration:            1,
-		RepresentativeCount: 1,
+	event := model.APMEvent{
+		Processor: model.TransactionProcessor,
+		Event:     model.Event{Duration: time.Millisecond},
+		Transaction: &model.Transaction{
+			Name:                "T-1000",
+			RepresentativeCount: 1,
+		},
 	}
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			agg.AggregateTransaction(tx)
+			agg.AggregateTransaction(event)
 		}
 	})
 }
@@ -502,15 +537,15 @@ func expectBatch(t *testing.T, ch <-chan model.Batch) model.Batch {
 	panic("unreachable")
 }
 
-func batchMetricsets(t testing.TB, batch model.Batch) []*model.Metricset {
-	var metricsets []*model.Metricset
+func batchMetricsets(t testing.TB, batch model.Batch) []model.APMEvent {
+	var metricsets []model.APMEvent
 	for _, event := range batch {
 		if event.Metricset == nil {
 			continue
 		}
-		require.NotZero(t, event.Metricset.Timestamp)
-		event.Metricset.Timestamp = time.Time{}
-		metricsets = append(metricsets, event.Metricset)
+		require.NotZero(t, event.Timestamp)
+		event.Timestamp = time.Time{}
+		metricsets = append(metricsets, event)
 	}
 	return metricsets
 }

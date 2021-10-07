@@ -18,30 +18,11 @@
 package modeldecoder
 
 import (
-	"time"
-
 	"github.com/elastic/apm-server/model"
 )
 
 // Input holds the input required for decoding an event.
 type Input struct {
-	// RequestTime is the time at which the event was received
-	// by the server. This is used to set the timestamp for
-	// events sent by RUM.
-	RequestTime time.Time
-
-	// Metadata holds metadata that may be added to the event.
-	Metadata model.Metadata
-
-	// Config holds configuration for decoding.
-	//
-	// TODO(axw) define a Decoder type which encapsulates
-	// static configuration defined in one location, removing
-	// the possibility of inconsistent configuration.
-	Config Config
-}
-
-// Config holds static configuration which applies to all decoding.
-type Config struct {
-	Experimental bool
+	// Base holds the base for decoding events.
+	Base model.APMEvent
 }

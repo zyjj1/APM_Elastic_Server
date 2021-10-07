@@ -221,8 +221,7 @@ func (a *Aggregator) publish(ctx context.Context) error {
 	for hash, entries := range a.inactive.m {
 		for _, entry := range entries {
 			totalCount, counts, values := entry.transactionMetrics.histogramBuckets()
-			metricset := makeMetricset(entry.transactionAggregationKey, hash, now, totalCount, counts, values)
-			batch = append(batch, model.APMEvent{Metricset: &metricset})
+			batch = append(batch, makeMetricset(entry.transactionAggregationKey, hash, now, totalCount, counts, values))
 		}
 		delete(a.inactive.m, hash)
 	}
@@ -240,11 +239,11 @@ func (a *Aggregator) publish(ctx context.Context) error {
 // included in the same batch.
 func (a *Aggregator) ProcessBatch(ctx context.Context, b *model.Batch) error {
 	for _, event := range *b {
-		if event.Transaction == nil {
+		if event.Processor != model.TransactionProcessor {
 			continue
 		}
-		if metricset := a.AggregateTransaction(event.Transaction); metricset != nil {
-			*b = append(*b, model.APMEvent{Metricset: metricset})
+		if metricsetEvent := a.AggregateTransaction(event); metricsetEvent.Metricset != nil {
+			*b = append(*b, metricsetEvent)
 		}
 	}
 	return nil
@@ -253,20 +252,19 @@ func (a *Aggregator) ProcessBatch(ctx context.Context, b *model.Batch) error {
 // AggregateTransaction aggregates transaction metrics.
 //
 // If the transaction cannot be aggregated due to the maximum number
-// of transaction groups being exceeded, then a *model.Metricset will
+// of transaction groups being exceeded, then a metricset APMEvent will
 // be returned which should be published immediately, along with the
-// transaction. Otherwise, the returned metricset will be nil.
-func (a *Aggregator) AggregateTransaction(tx *model.Transaction) *model.Metricset {
-	if tx.RepresentativeCount <= 0 {
-		return nil
+// transaction. Otherwise, the returned event will be the zero value.
+func (a *Aggregator) AggregateTransaction(event model.APMEvent) model.APMEvent {
+	if event.Transaction.RepresentativeCount <= 0 {
+		return model.APMEvent{}
 	}
 
-	key := a.makeTransactionAggregationKey(tx)
+	key := a.makeTransactionAggregationKey(event)
 	hash := key.hash()
-	count := transactionCount(tx)
-	duration := time.Duration(tx.Duration * float64(time.Millisecond))
-	if a.updateTransactionMetrics(key, hash, tx.RepresentativeCount, duration) {
-		return nil
+	count := transactionCount(event.Transaction)
+	if a.updateTransactionMetrics(key, hash, event.Transaction.RepresentativeCount, event.Event.Duration) {
+		return model.APMEvent{}
 	}
 	// Too many aggregation keys: could not update metrics, so immediately
 	// publish a single-value metric document.
@@ -277,9 +275,8 @@ unique transaction names.`[1:],
 	)
 	atomic.AddInt64(&a.metrics.overflowed, 1)
 	counts := []int64{int64(math.Round(count))}
-	values := []float64{float64(durationMicros(duration))}
-	metricset := makeMetricset(key, hash, time.Now(), counts[0], counts, values)
-	return &metricset
+	values := []float64{float64(event.Event.Duration.Microseconds())}
+	return makeMetricset(key, hash, time.Now(), counts[0], counts, values)
 }
 
 func (a *Aggregator) updateTransactionMetrics(key transactionAggregationKey, hash uint64, count float64, duration time.Duration) bool {
@@ -325,8 +322,8 @@ func (a *Aggregator) updateTransactionMetrics(key transactionAggregationKey, has
 	entry.transactionAggregationKey = key
 	if entry.transactionMetrics.histogram == nil {
 		entry.transactionMetrics.histogram = hdrhistogram.New(
-			durationMicros(minDuration),
-			durationMicros(maxDuration),
+			minDuration.Microseconds(),
+			maxDuration.Microseconds(),
 			a.config.HDRHistogramSignificantFigures,
 		)
 	} else {
@@ -339,74 +336,70 @@ func (a *Aggregator) updateTransactionMetrics(key transactionAggregationKey, has
 	return true
 }
 
-func (a *Aggregator) makeTransactionAggregationKey(tx *model.Transaction) transactionAggregationKey {
+func (a *Aggregator) makeTransactionAggregationKey(event model.APMEvent) transactionAggregationKey {
 	return transactionAggregationKey{
-		traceRoot:          tx.ParentID == "",
-		transactionName:    tx.Name,
-		transactionOutcome: tx.Outcome,
-		transactionResult:  tx.Result,
-		transactionType:    tx.Type,
+		traceRoot:         event.Parent.ID == "",
+		transactionName:   event.Transaction.Name,
+		transactionResult: event.Transaction.Result,
+		transactionType:   event.Transaction.Type,
+		eventOutcome:      event.Event.Outcome,
 
-		agentName:          tx.Metadata.Service.Agent.Name,
-		serviceEnvironment: tx.Metadata.Service.Environment,
-		serviceName:        tx.Metadata.Service.Name,
-		serviceVersion:     tx.Metadata.Service.Version,
+		agentName:          event.Agent.Name,
+		serviceEnvironment: event.Service.Environment,
+		serviceName:        event.Service.Name,
+		serviceVersion:     event.Service.Version,
 
-		hostname:          tx.Metadata.System.DetectedHostname,
-		containerID:       tx.Metadata.System.Container.ID,
-		kubernetesPodName: tx.Metadata.System.Kubernetes.PodName,
+		hostname:          event.Host.Hostname,
+		containerID:       event.Container.ID,
+		kubernetesPodName: event.Kubernetes.PodName,
 	}
 }
 
-// makeMetricset makes a Metricset from key, counts, and values, with timestamp ts.
+// makeMetricset makes a metricset event from key, counts, and values, with timestamp ts.
 func makeMetricset(
 	key transactionAggregationKey, hash uint64, ts time.Time, totalCount int64, counts []int64, values []float64,
-) model.Metricset {
-	out := model.Metricset{
-		Timestamp: ts,
-		Name:      metricsetName,
-		Metadata: model.Metadata{
-			Service: model.Service{
-				Name:        key.serviceName,
-				Version:     key.serviceVersion,
-				Environment: key.serviceEnvironment,
-				Agent:       model.Agent{Name: key.agentName},
-			},
-			System: model.System{
-				DetectedHostname: key.hostname,
-				Container:        model.Container{ID: key.containerID},
-				Kubernetes:       model.Kubernetes{PodName: key.kubernetesPodName},
-			},
-		},
-		Event: model.MetricsetEventCategorization{
-			Outcome: key.transactionOutcome,
-		},
-		Transaction: model.MetricsetTransaction{
-			Name:   key.transactionName,
-			Type:   key.transactionType,
-			Result: key.transactionResult,
-			Root:   key.traceRoot,
-		},
-		Samples: map[string]model.MetricsetSample{
-			"transaction.duration.histogram": {
-				Type:   model.MetricTypeHistogram,
-				Counts: counts,
-				Values: values,
-			},
-		},
-		DocCount: totalCount,
-	}
-
-	// Record an timeseries instance ID, which should be uniquely identify the aggregation key.
+) model.APMEvent {
+	// Record a timeseries instance ID, which should be uniquely identify the aggregation key.
 	var timeseriesInstanceID strings.Builder
 	timeseriesInstanceID.WriteString(key.serviceName)
 	timeseriesInstanceID.WriteRune(':')
 	timeseriesInstanceID.WriteString(key.transactionName)
 	timeseriesInstanceID.WriteRune(':')
 	timeseriesInstanceID.WriteString(fmt.Sprintf("%x", hash))
-	out.TimeseriesInstanceID = timeseriesInstanceID.String()
 
-	return out
+	return model.APMEvent{
+		Timestamp:  ts,
+		Agent:      model.Agent{Name: key.agentName},
+		Container:  model.Container{ID: key.containerID},
+		Kubernetes: model.Kubernetes{PodName: key.kubernetesPodName},
+		Service: model.Service{
+			Name:        key.serviceName,
+			Version:     key.serviceVersion,
+			Environment: key.serviceEnvironment,
+		},
+		Host: model.Host{
+			Hostname: key.hostname,
+		},
+		Event: model.Event{
+			Outcome: key.eventOutcome,
+		},
+		Processor: model.MetricsetProcessor,
+		Metricset: &model.Metricset{
+			Name:                 metricsetName,
+			DocCount:             totalCount,
+			TimeseriesInstanceID: timeseriesInstanceID.String(),
+		},
+		Transaction: &model.Transaction{
+			Name:   key.transactionName,
+			Type:   key.transactionType,
+			Result: key.transactionResult,
+			Root:   key.traceRoot,
+			DurationHistogram: model.Histogram{
+				Counts: counts,
+				Values: values,
+			},
+		},
+	}
 }
 
 type metrics struct {
@@ -428,6 +421,7 @@ type metricsMapEntry struct {
 	transactionMetrics
 }
 
+// NOTE(axw) the dimensions should be kept in sync with docs/metricset-indices.asciidoc,
 type transactionAggregationKey struct {
 	traceRoot          bool
 	agentName          string
@@ -438,9 +432,9 @@ type transactionAggregationKey struct {
 	serviceName        string
 	serviceVersion     string
 	transactionName    string
-	transactionOutcome string
 	transactionResult  string
 	transactionType    string
+	eventOutcome       string
 }
 
 func (k *transactionAggregationKey) hash() uint64 {
@@ -456,9 +450,9 @@ func (k *transactionAggregationKey) hash() uint64 {
 	h.WriteString(k.serviceName)
 	h.WriteString(k.serviceVersion)
 	h.WriteString(k.transactionName)
-	h.WriteString(k.transactionOutcome)
 	h.WriteString(k.transactionResult)
 	h.WriteString(k.transactionType)
+	h.WriteString(k.eventOutcome)
 	return h.Sum64()
 }
 
@@ -468,7 +462,7 @@ type transactionMetrics struct {
 
 func (m *transactionMetrics) recordDuration(d time.Duration, n float64) {
 	count := int64(math.Round(n * histogramCountScale))
-	m.histogram.RecordValuesAtomic(durationMicros(d), count)
+	m.histogram.RecordValuesAtomic(d.Microseconds(), count)
 }
 
 func (m *transactionMetrics) histogramBuckets() (totalCount int64, counts []int64, values []float64) {
@@ -497,8 +491,4 @@ func transactionCount(tx *model.Transaction) float64 {
 		return tx.RepresentativeCount
 	}
 	return 1
-}
-
-func durationMicros(d time.Duration) int64 {
-	return int64(d / time.Microsecond)
 }

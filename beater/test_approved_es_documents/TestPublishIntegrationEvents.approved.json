@@ -14,7 +14,7 @@
                 "id": "8ec7ceb990749e79b37f6dc6cd3628633618d6ce412553a552a0fa6b69419ad4"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "error": {
                 "culprit": "opbeans.controllers.DTInterceptor.preHandle(DTInterceptor.java:73)",
@@ -182,11 +182,7 @@
                             "opbeans-java:3000"
                         ]
                     },
-                    "method": "POST",
-                    "socket": {
-                        "encrypted": true,
-                        "remote_address": "12.53.12.1"
-                    }
+                    "method": "POST"
                 },
                 "response": {
                     "finished": true,
@@ -216,9 +212,9 @@
                 "organization_uuid": "9f0e9d64-c185-4d21-a6f4-4673ed561ec8",
                 "segment": 5
             },
+            "message": "Request method 'POST' not supported",
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -260,7 +256,7 @@
                 "version": "4.3.0"
             },
             "source": {
-                "ip": "192.168.0.1"
+                "ip": "12.53.12.1"
             },
             "timestamp": {
                 "us": 1571657444929001
@@ -300,7 +296,7 @@
                 "id": "8ec7ceb990749e79b37f6dc6cd3628633618d6ce412553a552a0fa6b69419ad4"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "event": {
                 "outcome": "success"
@@ -315,9 +311,19 @@
                 }
             },
             "http": {
-                "request.method": "GET",
+                "request": {
+                    "method": "GET"
+                },
                 "response": {
-                    "status_code": 200
+                    "decoded_body_size": 401,
+                    "encoded_body_size": 356,
+                    "headers": {
+                        "Content-Type": [
+                            "application/json"
+                        ]
+                    },
+                    "status_code": 302,
+                    "transfer_size": 300.12
                 }
             },
             "kubernetes": {
@@ -337,7 +343,6 @@
             },
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -402,13 +407,11 @@
                                 "application/json"
                             ]
                         },
-                        "status_code": 200,
+                        "status_code": 302,
                         "transfer_size": 300.12
-                    },
-                    "url": {
-                        "original": "http://localhost:8000"
                     }
                 },
+                "http.url.original": "http://localhost:8000",
                 "id": "1234567890aaaade",
                 "name": "GET users-authenticated",
                 "stacktrace": [
@@ -449,7 +452,9 @@
             "transaction": {
                 "id": "1234567890987654"
             },
-            "url.original": "http://localhost:8000"
+            "url": {
+                "original": "http://localhost:8000"
+            }
         },
         {
             "@timestamp": "2019-10-21T11:30:44.929Z",
@@ -465,7 +470,7 @@
                 "id": "8ec7ceb990749e79b37f6dc6cd3628633618d6ce412553a552a0fa6b69419ad4"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "event": {
                 "outcome": "success"
@@ -513,11 +518,7 @@
                             "MozillaChromeEdge"
                         ]
                     },
-                    "method": "POST",
-                    "socket": {
-                        "encrypted": true,
-                        "remote_address": "12.53.12.1:8080"
-                    }
+                    "method": "POST"
                 },
                 "response": {
                     "decoded_body_size": 401.9,
@@ -553,7 +554,6 @@
             },
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -654,16 +654,12 @@
                 "name": "java",
                 "version": "1.10.0"
             },
-            "byte_counter": 1,
             "container": {
                 "id": "8ec7ceb990749e79b37f6dc6cd3628633618d6ce412553a552a0fa6b69419ad4"
             },
-            "dotted.float.gauge": 6.12,
-            "double_gauge": 3.141592653589793,
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
-            "float_gauge": 9.16,
             "host": {
                 "architecture": "amd64",
                 "hostname": "node-name",
@@ -673,7 +669,6 @@
                     "platform": "Linux"
                 }
             },
-            "integer_gauge": 42767,
             "kubernetes": {
                 "namespace": "default",
                 "node": {
@@ -691,12 +686,9 @@
                 "segment": 5,
                 "success": true
             },
-            "long_gauge": 3147483648,
             "metricset.name": "span_breakdown",
-            "negative.d.o.t.t.e.d": -1022,
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -734,22 +726,19 @@
                 },
                 "version": "4.3.0"
             },
-            "short_counter": 227,
             "span": {
+                "self_time": {
+                    "count": 1,
+                    "sum.us": 633
+                },
                 "subtype": "mysql",
                 "type": "db"
             },
-            "span.self_time.count": 1,
-            "span.self_time.sum.us": 633.288,
             "transaction": {
+                "breakdown.count": 12,
                 "name": "GET/",
                 "type": "request"
-            },
-            "transaction.breakdown.count": 12,
-            "transaction.duration.count": 2,
-            "transaction.duration.sum.us": 12,
-            "transaction.self_time.count": 2,
-            "transaction.self_time.sum.us": 10
+            }
         }
     ]
 }

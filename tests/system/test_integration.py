@@ -78,16 +78,6 @@ class Test(ElasticTest):
 
         self.check_backend_error_sourcemap(index_error, count=4)
 
-    def test_load_docs_with_template_and_add_metricset(self):
-        # NOTE(axw) this test is redundant with systemtest.TestApprovedMetrics,
-        # but we use the output of this test for generating documentation.
-        self.load_docs_with_template(self.get_metricset_payload_path(), self.intake_url, 'metric', 5)
-        self.assert_no_logged_warnings()
-
-        # compare existing ES documents for metricsets with new ones
-        metricset_docs = self.wait_for_events('metric', 5, index=index_metric)
-        self.approve_docs('metricset', metricset_docs)
-
 
 @integration_test
 class EnrichEventIntegrationTest(ClientSideElasticTest):
@@ -304,39 +294,3 @@ class ExpvarCustomUrlIntegrationTest(ExpvarBaseTest):
         """expvar enabled, should 200"""
         r = self.get_debug_vars()
         assert r.status_code == 200, r.status_code
-
-
-@integration_test
-class ExperimentalBaseTest(ElasticTest):
-    def check_experimental_key_indexed(self, experimental):
-        self.load_docs_with_template(self.get_payload_path("experimental.ndjson"),
-                                     self.intake_url, 'transaction', 2)
-        wait_until(lambda: self.log_contains("events have been published"), max_timeout=10)
-        time.sleep(2)
-        self.assert_no_logged_warnings()
-
-        for idx in [index_transaction, index_span, index_error]:
-            # ensure documents exist
-            rs = self.es.search(index=idx)
-            assert rs['hits']['total']['value'] == 1
-
-            # check whether or not top level key `experimental` has been indexed
-            rs = self.es.search(index=idx, body={"query": {"exists": {"field": 'experimental'}}})
-            ct = 1 if experimental else 0
-            assert rs['hits']['total']['value'] == ct, idx
-
-
-@integration_test
-class ProductionModeTest(ExperimentalBaseTest):
-    config_overrides = {"mode": "production", "queue_flush": 2048}
-
-    def test_experimental_key_indexed(self):
-        self.check_experimental_key_indexed(False)
-
-
-@integration_test
-class ExperimentalModeTest(ExperimentalBaseTest):
-    config_overrides = {"mode": "experimental", "queue_flush": 2048}
-
-    def test_experimental_key_indexed(self):
-        self.check_experimental_key_indexed(True)

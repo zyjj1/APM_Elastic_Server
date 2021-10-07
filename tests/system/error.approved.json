@@ -9,7 +9,7 @@
             "id": "container-id"
         },
         "ecs": {
-            "version": "1.10.0"
+            "version": "1.12.0"
         },
         "error": {
             "grouping_key": "d6b3f958dfea98dc9ed2b57d5f0c48bb",
@@ -41,6 +41,7 @@
             "tag1": "one",
             "tag2": 2
         },
+        "message": "Cannot read property 'baz' of undefined",
         "observer": {
             "ephemeral_id": "f1838cde-80dd-4af5-b7ac-ffc2d3fccc9d",
             "hostname": "ix.lan",
@@ -108,7 +109,7 @@
             "id": "container-id"
         },
         "ecs": {
-            "version": "1.10.0"
+            "version": "1.12.0"
         },
         "error": {
             "culprit": "my.module.function_name",
@@ -263,10 +264,6 @@
                         }
                     }
                 ]
-            },
-            "page": {
-                "referer": "http://localhost:8000/test/e2e/",
-                "url": "http://localhost:8000/test/e2e/general-usecase/"
             }
         },
         "event": {
@@ -312,11 +309,7 @@
                     ]
                 },
                 "method": "POST",
-                "referrer": "http://localhost:8000/test/e2e/",
-                "socket": {
-                    "encrypted": true,
-                    "remote_address": "8.8.8.8"
-                }
+                "referrer": "http://localhost:8000/test/e2e/"
             },
             "response": {
                 "finished": true,
@@ -342,6 +335,7 @@
             "tag1": "one",
             "tag2": 2
         },
+        "message": "My service could not talk to the database named foobar",
         "observer": {
             "ephemeral_id": "f1838cde-80dd-4af5-b7ac-ffc2d3fccc9d",
             "hostname": "ix.lan",
@@ -422,7 +416,7 @@
             "id": "container-id"
         },
         "ecs": {
-            "version": "1.10.0"
+            "version": "1.12.0"
         },
         "error": {
             "exception": [
@@ -510,7 +504,7 @@
             "id": "container-id"
         },
         "ecs": {
-            "version": "1.10.0"
+            "version": "1.12.0"
         },
         "error": {
             "exception": [
@@ -544,6 +538,7 @@
             "tag1": "one",
             "tag2": 2
         },
+        "message": "foo is not defined",
         "observer": {
             "ephemeral_id": "f1838cde-80dd-4af5-b7ac-ffc2d3fccc9d",
             "hostname": "ix.lan",

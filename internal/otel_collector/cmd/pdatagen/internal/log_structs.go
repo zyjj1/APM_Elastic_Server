@@ -17,14 +17,16 @@ package internal
 var logFile = &File{
 	Name: "log",
 	imports: []string{
-		`otlplogs "go.opentelemetry.io/collector/internal/data/protogen/logs/v1"`,
+		`"sort"`,
+		``,
+		`otlplogs "go.opentelemetry.io/collector/model/internal/data/protogen/logs/v1"`,
 	},
 	testImports: []string{
 		`"testing"`,
 		``,
 		`"github.com/stretchr/testify/assert"`,
 		``,
-		`otlplogs "go.opentelemetry.io/collector/internal/data/protogen/logs/v1"`,
+		`otlplogs "go.opentelemetry.io/collector/model/internal/data/protogen/logs/v1"`,
 	},
 	structs: []baseStruct{
 		resourceLogsSlice,
@@ -47,6 +49,7 @@ var resourceLogs = &messageValueStruct{
 	originFullName: "otlplogs.ResourceLogs",
 	fields: []baseField{
 		resourceField,
+		schemaURLField,
 		&sliceField{
 			fieldName:       "InstrumentationLibraryLogs",
 			originFieldName: "InstrumentationLibraryLogs",
@@ -66,6 +69,7 @@ var instrumentationLibraryLogs = &messageValueStruct{
 	originFullName: "otlplogs.InstrumentationLibraryLogs",
 	fields: []baseField{
 		instrumentationLibraryField,
+		schemaURLField,
 		&sliceField{
 			fieldName:       "Logs",
 			originFieldName: "Logs",

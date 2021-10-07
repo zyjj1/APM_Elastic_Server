@@ -17,7 +17,9 @@
                 "hostname": "host-abc"
             },
             "http": {
-                "request.method": "get",
+                "request": {
+                    "method": "get"
+                },
                 "response": {
                     "status_code": 400
                 }
@@ -57,11 +59,9 @@
                     "method": "get",
                     "response": {
                         "status_code": 400
-                    },
-                    "url": {
-                        "original": "http://foo.bar.com?a=12"
                     }
                 },
+                "http.url.original": "http://foo.bar.com?a=12",
                 "id": "0000000041414646",
                 "name": "HTTP GET",
                 "subtype": "http",
@@ -73,7 +73,9 @@
             "trace": {
                 "id": "00000000000000000000000046467830"
             },
-            "url.original": "http://foo.bar.com?a=12"
+            "url": {
+                "original": "http://foo.bar.com?a=12"
+            }
         },
         {
             "@timestamp": "2019-12-16T12:46:58.000Z",
@@ -94,6 +96,14 @@
             "host": {
                 "hostname": "host-abc"
             },
+            "http": {
+                "request": {
+                    "method": "get"
+                },
+                "response": {
+                    "status_code": 400
+                }
+            },
             "parent": {
                 "id": "0000000041414646"
             },
@@ -112,6 +122,9 @@
             },
             "trace": {
                 "id": "00000000000000000000000046467830"
+            },
+            "url": {
+                "original": "http://foo.bar.com?a=12"
             }
         },
         {
@@ -128,6 +141,14 @@
             "host": {
                 "hostname": "host-abc"
             },
+            "http": {
+                "request": {
+                    "method": "get"
+                },
+                "response": {
+                    "status_code": 400
+                }
+            },
             "parent": {
                 "id": "0000000041414646"
             },
@@ -146,6 +167,9 @@
             },
             "trace": {
                 "id": "00000000000000000000000046467830"
+            },
+            "url": {
+                "original": "http://foo.bar.com?a=12"
             }
         },
         {
@@ -164,6 +188,14 @@
             "host": {
                 "hostname": "host-abc"
             },
+            "http": {
+                "request": {
+                    "method": "get"
+                },
+                "response": {
+                    "status_code": 400
+                }
+            },
             "parent": {
                 "id": "0000000041414646"
             },
@@ -182,6 +214,9 @@
             },
             "trace": {
                 "id": "00000000000000000000000046467830"
+            },
+            "url": {
+                "original": "http://foo.bar.com?a=12"
             }
         },
         {
@@ -200,6 +235,14 @@
             "host": {
                 "hostname": "host-abc"
             },
+            "http": {
+                "request": {
+                    "method": "get"
+                },
+                "response": {
+                    "status_code": 400
+                }
+            },
             "parent": {
                 "id": "0000000041414646"
             },
@@ -218,6 +261,9 @@
             },
             "trace": {
                 "id": "00000000000000000000000046467830"
+            },
+            "url": {
+                "original": "http://foo.bar.com?a=12"
             }
         },
         {
@@ -236,6 +282,14 @@
             "host": {
                 "hostname": "host-abc"
             },
+            "http": {
+                "request": {
+                    "method": "get"
+                },
+                "response": {
+                    "status_code": 400
+                }
+            },
             "parent": {
                 "id": "0000000041414646"
             },
@@ -254,6 +308,9 @@
             },
             "trace": {
                 "id": "00000000000000000000000046467830"
+            },
+            "url": {
+                "original": "http://foo.bar.com?a=12"
             }
         },
         {
@@ -270,6 +327,14 @@
             "host": {
                 "hostname": "host-abc"
             },
+            "http": {
+                "request": {
+                    "method": "get"
+                },
+                "response": {
+                    "status_code": 400
+                }
+            },
             "parent": {
                 "id": "0000000041414646"
             },
@@ -288,6 +353,134 @@
             },
             "trace": {
                 "id": "00000000000000000000000046467830"
+            },
+            "url": {
+                "original": "http://foo.bar.com?a=12"
+            }
+        },
+        {
+            "@timestamp": "2019-12-16T12:46:58.000Z",
+            "agent": {
+                "name": "Jaeger",
+                "version": "unknown"
+            },
+            "data_stream.type": "logs",
+            "host": {
+                "hostname": "host-abc"
+            },
+            "http": {
+                "request": {
+                    "method": "get"
+                },
+                "response": {
+                    "status_code": 400
+                }
+            },
+            "labels": {
+                "event": "baggage",
+                "isValid": false
+            },
+            "parent": {
+                "id": "0000000058585858"
+            },
+            "processor": {
+                "event": "log",
+                "name": "log"
+            },
+            "service": {
+                "language": {
+                    "name": "unknown"
+                },
+                "name": "unknown"
+            },
+            "trace": {
+                "id": "00000000000000000000000046467830"
+            },
+            "url": {
+                "original": "http://foo.bar.com?a=12"
+            }
+        },
+        {
+            "@timestamp": "2019-12-16T12:46:58.000Z",
+            "agent": {
+                "name": "Jaeger",
+                "version": "unknown"
+            },
+            "data_stream.type": "logs",
+            "host": {
+                "hostname": "host-abc"
+            },
+            "http": {
+                "request": {
+                    "method": "get"
+                },
+                "response": {
+                    "status_code": 400
+                }
+            },
+            "labels": {
+                "level": "info"
+            },
+            "message": "retrying connection",
+            "parent": {
+                "id": "0000000058585858"
+            },
+            "processor": {
+                "event": "log",
+                "name": "log"
+            },
+            "service": {
+                "language": {
+                    "name": "unknown"
+                },
+                "name": "unknown"
+            },
+            "trace": {
+                "id": "00000000000000000000000046467830"
+            },
+            "url": {
+                "original": "http://foo.bar.com?a=12"
+            }
+        },
+        {
+            "@timestamp": "2019-12-16T12:46:58.000Z",
+            "agent": {
+                "name": "Jaeger",
+                "version": "unknown"
+            },
+            "data_stream.type": "logs",
+            "host": {
+                "hostname": "host-abc"
+            },
+            "http": {
+                "request": {
+                    "method": "get"
+                },
+                "response": {
+                    "status_code": 400
+                }
+            },
+            "labels": {
+                "level": "error"
+            },
+            "parent": {
+                "id": "0000000058585858"
+            },
+            "processor": {
+                "event": "log",
+                "name": "log"
+            },
+            "service": {
+                "language": {
+                    "name": "unknown"
+                },
+                "name": "unknown"
+            },
+            "trace": {
+                "id": "00000000000000000000000046467830"
+            },
+            "url": {
+                "original": "http://foo.bar.com?a=12"
             }
         }
     ]

@@ -51,7 +51,8 @@ func TestRUMXForwardedFor(t *testing.T) {
 
 	req, _ := http.NewRequest("POST", serverURL.String(), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-ndjson")
-	req.Header.Set("X-Forwarded-For", "220.244.41.16")
+	ipAddress := "220.244.41.16"
+	req.Header.Set("X-Forwarded-For", ipAddress)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusAccepted, resp.StatusCode)
@@ -63,6 +64,11 @@ func TestRUMXForwardedFor(t *testing.T) {
 		t, t.Name(), result.Hits.Hits,
 		// RUM timestamps are set by the server based on the time the payload is received.
 		"@timestamp", "timestamp.us",
+		// RUM events have the source port recorded, and in the tests it will be dynamic
+		"source.port",
+		// Do not assert the exact contents of the location field since they may change
+		// slightly depending on the IP lookup.
+		"client.geo.location",
 	)
 }
 

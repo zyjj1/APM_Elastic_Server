@@ -37,7 +37,7 @@
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "error": {
                 "culprit": "my.module.function_name",
@@ -214,10 +214,6 @@
                             }
                         }
                     ]
-                },
-                "page": {
-                    "referer": "http://localhost:8000/test/e2e/",
-                    "url": "http://localhost:8000/test/e2e/general-usecase/"
                 }
             },
             "host": {
@@ -262,11 +258,7 @@
                         ]
                     },
                     "method": "POST",
-                    "referrer": "http://localhost:8000/test/e2e/",
-                    "socket": {
-                        "encrypted": true,
-                        "remote_address": "12.53.12.1"
-                    }
+                    "referrer": "http://localhost:8000/test/e2e/"
                 },
                 "response": {
                     "finished": true,
@@ -293,9 +285,9 @@
             "labels": {
                 "organization_uuid": "9f0e9d64-c185-4d21-a6f4-4673ed561ec8"
             },
+            "message": "My service could not talk to the database named foobar",
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -393,7 +385,7 @@
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "error": {
                 "grouping_key": "dc8dd667f7036ec5f0bae87bf2188243",
@@ -427,9 +419,9 @@
                     "uid": "pod-uid"
                 }
             },
+            "message": "no user found",
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -512,7 +504,7 @@
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "error": {
                 "exception": [
@@ -542,9 +534,9 @@
                     "uid": "pod-uid"
                 }
             },
+            "message": "Cannot read property 'baz' no defined",
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -627,7 +619,7 @@
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "error": {
                 "exception": [
@@ -659,7 +651,6 @@
             },
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -748,7 +739,7 @@
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "error": {
                 "grouping_key": "d6b3f958dfea98dc9ed2b57d5f0c48bb",
@@ -777,9 +768,9 @@
                     "uid": "pod-uid"
                 }
             },
+            "message": "Cannot read property 'baz' of undefined",
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",

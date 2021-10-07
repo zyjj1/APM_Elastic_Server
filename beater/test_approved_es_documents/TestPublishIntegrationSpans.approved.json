@@ -38,7 +38,7 @@
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "event": {
                 "outcome": "success"
@@ -67,7 +67,6 @@
             },
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -168,7 +167,7 @@
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "event": {
                 "outcome": "unknown"
@@ -197,7 +196,6 @@
             },
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -299,7 +297,7 @@
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "event": {
                 "outcome": "unknown"
@@ -331,7 +329,6 @@
             },
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -434,7 +431,7 @@
                 "id": "container-id"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "event": {
                 "outcome": "unknown"
@@ -463,7 +460,6 @@
             },
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -567,10 +563,11 @@
             },
             "destination": {
                 "address": "0:0::0:1",
+                "ip": "0:0::0:1",
                 "port": 5432
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "event": {
                 "outcome": "success"
@@ -585,9 +582,14 @@
                 }
             },
             "http": {
-                "request.method": "GET",
+                "request": {
+                    "method": "GET"
+                },
                 "response": {
-                    "status_code": 200
+                    "decoded_body_size": 401,
+                    "encoded_body_size": 356,
+                    "status_code": 200,
+                    "transfer_size": 300.12
                 }
             },
             "kubernetes": {
@@ -605,7 +607,6 @@
             },
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -676,11 +677,9 @@
                         "encoded_body_size": 356,
                         "status_code": 200,
                         "transfer_size": 300.12
-                    },
-                    "url": {
-                        "original": "http://localhost:8000"
                     }
                 },
+                "http.url.original": "http://localhost:8000",
                 "id": "1234567890aaaade",
                 "name": "SELECT FROM product_types",
                 "stacktrace": [
@@ -745,7 +744,9 @@
             "trace": {
                 "id": "abcdef0123456789abcdef9876543210"
             },
-            "url.original": "http://localhost:8000",
+            "url": {
+                "original": "http://localhost:8000"
+            },
             "user": {
                 "domain": "ldap://abc",
                 "email": "s@test.com",
@@ -786,10 +787,11 @@
                 "id": "container-id"
             },
             "destination": {
-                "address": "0:0::0:1"
+                "address": "0:0::0:1",
+                "ip": "0:0::0:1"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "event": {
                 "outcome": "unknown"
@@ -818,7 +820,6 @@
             },
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -872,7 +873,8 @@
                     },
                     "queue": {
                         "name": "new_users"
-                    }
+                    },
+                    "routing_key": "user-created-span"
                 },
                 "name": "Rabbitmq receive",
                 "subtype": "JMS",
@@ -883,6 +885,145 @@
             },
             "trace": {
                 "id": "fdedef0123456789abcdef9876543210"
+            },
+            "transaction": {
+                "id": "01af25874dec69dd"
+            },
+            "user": {
+                "domain": "ldap://abc",
+                "email": "s@test.com",
+                "id": "123",
+                "name": "john"
+            }
+        },
+        {
+            "@timestamp": "2021-07-06T11:58:05.682Z",
+            "agent": {
+                "name": "elastic-node",
+                "version": "3.14.0"
+            },
+            "cloud": {
+                "account": {
+                    "id": "account_id",
+                    "name": "account_name"
+                },
+                "availability_zone": "cloud_availability_zone",
+                "instance": {
+                    "id": "instance_id",
+                    "name": "instance_name"
+                },
+                "machine": {
+                    "type": "machine_type"
+                },
+                "project": {
+                    "id": "project_id",
+                    "name": "project_name"
+                },
+                "provider": "cloud_provider",
+                "region": "cloud_region",
+                "service": {
+                    "name": "lambda"
+                }
+            },
+            "container": {
+                "id": "container-id"
+            },
+            "ecs": {
+                "version": "1.12.0"
+            },
+            "event": {
+                "outcome": "success"
+            },
+            "host": {
+                "architecture": "x64",
+                "hostname": "node-name",
+                "ip": "127.0.0.1",
+                "name": "node-name",
+                "os": {
+                    "platform": "darwin"
+                }
+            },
+            "kubernetes": {
+                "namespace": "namespace1",
+                "node": {
+                    "name": "node-name"
+                },
+                "pod": {
+                    "name": "pod-name",
+                    "uid": "pod-uid"
+                }
+            },
+            "labels": {
+                "tag1": "label1"
+            },
+            "observer": {
+                "ephemeral_id": "00000000-0000-0000-0000-000000000000",
+                "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
+                "type": "test-apm-server",
+                "version": "1.2.3",
+                "version_major": 1
+            },
+            "parent": {
+                "id": "abcdef0123456789"
+            },
+            "process": {
+                "args": [
+                    "node",
+                    "server.js"
+                ],
+                "pid": 1234,
+                "ppid": 6789,
+                "title": "node"
+            },
+            "processor": {
+                "event": "span",
+                "name": "transaction"
+            },
+            "service": {
+                "environment": "staging",
+                "framework": {
+                    "name": "Express",
+                    "version": "1.2.3"
+                },
+                "language": {
+                    "name": "ecmascript",
+                    "version": "8"
+                },
+                "name": "backendspans",
+                "node": {
+                    "name": "container-id"
+                },
+                "runtime": {
+                    "name": "node",
+                    "version": "8.0.0"
+                },
+                "version": "5.1.3"
+            },
+            "span": {
+                "action": "query",
+                "composite": {
+                    "compression_strategy": "exact_match",
+                    "count": 10,
+                    "sum": {
+                        "us": 359298
+                    }
+                },
+                "duration": {
+                    "us": 378191
+                },
+                "id": "abcdef01234567",
+                "name": "SELECT FROM p_details",
+                "start": {
+                    "us": 2830
+                },
+                "subtype": "postgresql",
+                "type": "db"
+            },
+            "timestamp": {
+                "us": 1625572685682272
+            },
+            "trace": {
+                "id": "edcbaf0123456789abcdef9876543210"
             },
             "transaction": {
                 "id": "01af25874dec69dd"

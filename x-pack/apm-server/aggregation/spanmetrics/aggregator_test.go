@@ -27,10 +27,7 @@ func BenchmarkAggregateSpan(b *testing.B) {
 	span := makeSpan("test_service", "agent", "test_destination", "success", time.Second, 1)
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			agg.ProcessBatch(
-				context.Background(),
-				&model.Batch{{Span: span}},
-			)
+			agg.ProcessBatch(context.Background(), &model.Batch{span})
 		}
 	})
 }
@@ -100,11 +97,11 @@ func TestAggregatorRun(t *testing.T) {
 		go func(in input) {
 			defer wg.Done()
 			span := makeSpan(in.serviceName, in.agentName, in.destination, in.outcome, 100*time.Millisecond, in.count)
-			batch := model.Batch{{Span: span}}
+			batch := model.Batch{span}
 			for i := 0; i < 100; i++ {
 				err := agg.ProcessBatch(context.Background(), &batch)
 				require.NoError(t, err)
-				assert.Equal(t, model.Batch{{Span: span}}, batch)
+				assert.Equal(t, model.Batch{span}, batch)
 			}
 		}(in)
 	}
@@ -117,69 +114,65 @@ func TestAggregatorRun(t *testing.T) {
 	batch := expectBatch(t, batches)
 	metricsets := batchMetricsets(t, batch)
 
-	assert.ElementsMatch(t, []*model.Metricset{{
-		Name: "service_destination",
-		Metadata: model.Metadata{
-			Service: model.Service{Name: "service-A", Agent: model.Agent{Name: "java"}},
-		},
-		Event: model.MetricsetEventCategorization{
-			Outcome: "success",
-		},
-		Span: model.MetricsetSpan{
-			DestinationService: model.DestinationService{Resource: destinationX},
-		},
-		Samples: map[string]model.MetricsetSample{
-			"span.destination.service.response_time.count":  {Value: 100.0},
-			"span.destination.service.response_time.sum.us": {Value: 10000000.0},
-			"metricset.period": {Value: 10},
-		},
-	}, {
-		Name: "service_destination",
-		Metadata: model.Metadata{
-			Service: model.Service{Name: "service-A", Agent: model.Agent{Name: "java"}},
-		},
-		Event: model.MetricsetEventCategorization{
-			Outcome: "failure",
-		},
-		Span: model.MetricsetSpan{
-			DestinationService: model.DestinationService{Resource: destinationZ},
-		},
-		Samples: map[string]model.MetricsetSample{
-			"span.destination.service.response_time.count":  {Value: 100.0},
-			"span.destination.service.response_time.sum.us": {Value: 10000000.0},
-			"metricset.period": {Value: 10},
+	assert.ElementsMatch(t, []model.APMEvent{{
+		Agent:     model.Agent{Name: "java"},
+		Service:   model.Service{Name: "service-A"},
+		Event:     model.Event{Outcome: "success"},
+		Processor: model.MetricsetProcessor,
+		Metricset: &model.Metricset{Name: "service_destination"},
+		Span: &model.Span{
+			DestinationService: &model.DestinationService{
+				Resource: destinationX,
+				ResponseTime: model.AggregatedDuration{
+					Count: 100,
+					Sum:   10 * time.Second,
+				},
+			},
 		},
 	}, {
-		Name: "service_destination",
-		Metadata: model.Metadata{
-			Service: model.Service{Name: "service-A", Agent: model.Agent{Name: "java"}},
-		},
-		Event: model.MetricsetEventCategorization{
-			Outcome: "success",
-		},
-		Span: model.MetricsetSpan{
-			DestinationService: model.DestinationService{Resource: destinationZ},
-		},
-		Samples: map[string]model.MetricsetSample{
-			"span.destination.service.response_time.count":  {Value: 300.0},
-			"span.destination.service.response_time.sum.us": {Value: 30000000.0},
-			"metricset.period": {Value: 10},
+		Agent:     model.Agent{Name: "java"},
+		Service:   model.Service{Name: "service-A"},
+		Event:     model.Event{Outcome: "failure"},
+		Processor: model.MetricsetProcessor,
+		Metricset: &model.Metricset{Name: "service_destination"},
+		Span: &model.Span{
+			DestinationService: &model.DestinationService{
+				Resource: destinationZ,
+				ResponseTime: model.AggregatedDuration{
+					Count: 100,
+					Sum:   10 * time.Second,
+				},
+			},
 		},
 	}, {
-		Name: "service_destination",
-		Metadata: model.Metadata{
-			Service: model.Service{Name: "service-B", Agent: model.Agent{Name: "python"}},
+		Agent:     model.Agent{Name: "java"},
+		Service:   model.Service{Name: "service-A"},
+		Event:     model.Event{Outcome: "success"},
+		Processor: model.MetricsetProcessor,
+		Metricset: &model.Metricset{Name: "service_destination"},
+		Span: &model.Span{
+			DestinationService: &model.DestinationService{
+				Resource: destinationZ,
+				ResponseTime: model.AggregatedDuration{
+					Count: 300,
+					Sum:   30 * time.Second,
+				},
+			},
 		},
-		Event: model.MetricsetEventCategorization{
-			Outcome: "success",
-		},
-		Span: model.MetricsetSpan{
-			DestinationService: model.DestinationService{Resource: destinationZ},
-		},
-		Samples: map[string]model.MetricsetSample{
-			"span.destination.service.response_time.count":  {Value: 100.0},
-			"span.destination.service.response_time.sum.us": {Value: 10000000.0},
-			"metricset.period": {Value: 10},
+	}, {
+		Agent:     model.Agent{Name: "python"},
+		Service:   model.Service{Name: "service-B"},
+		Event:     model.Event{Outcome: "success"},
+		Processor: model.MetricsetProcessor,
+		Metricset: &model.Metricset{Name: "service_destination"},
+		Span: &model.Span{
+			DestinationService: &model.DestinationService{
+				Resource: destinationZ,
+				ResponseTime: model.AggregatedDuration{
+					Count: 100,
+					Sum:   10 * time.Second,
+				},
+			},
 		},
 	}}, metricsets)
 
@@ -188,6 +181,138 @@ func TestAggregatorRun(t *testing.T) {
 		t.Fatal("unexpected publish")
 	case <-time.After(100 * time.Millisecond):
 	}
+}
+
+func TestAggregateCompositeSpan(t *testing.T) {
+	batches := make(chan model.Batch, 1)
+	agg, err := NewAggregator(AggregatorConfig{
+		BatchProcessor: makeChanBatchProcessor(batches),
+		Interval:       10 * time.Millisecond,
+		MaxGroups:      1000,
+	})
+	require.NoError(t, err)
+
+	span := makeSpan("service-A", "java", "final_destination", "success", time.Second, 2)
+	span.Span.Composite = &model.Composite{Count: 25, Sum: 700 /* milliseconds */}
+	err = agg.ProcessBatch(context.Background(), &model.Batch{span})
+	require.NoError(t, err)
+
+	// Start the aggregator after processing to ensure metrics are aggregated deterministically.
+	go agg.Run()
+	defer agg.Stop(context.Background())
+
+	batch := expectBatch(t, batches)
+	metricsets := batchMetricsets(t, batch)
+
+	assert.Equal(t, []model.APMEvent{{
+		Agent:     model.Agent{Name: "java"},
+		Service:   model.Service{Name: "service-A"},
+		Event:     model.Event{Outcome: "success"},
+		Processor: model.MetricsetProcessor,
+		Metricset: &model.Metricset{Name: "service_destination"},
+		Span: &model.Span{
+			DestinationService: &model.DestinationService{
+				Resource: "final_destination",
+				ResponseTime: model.AggregatedDuration{
+					Count: 50,
+					Sum:   1400 * time.Millisecond,
+				},
+			},
+		},
+	}}, metricsets)
+}
+
+func TestAggregateTransactionDroppedSpansStats(t *testing.T) {
+	batches := make(chan model.Batch, 1)
+	agg, err := NewAggregator(AggregatorConfig{
+		BatchProcessor: makeChanBatchProcessor(batches),
+		Interval:       10 * time.Millisecond,
+		MaxGroups:      1000,
+	})
+	require.NoError(t, err)
+
+	tx := model.APMEvent{
+		Agent:   model.Agent{Name: "go"},
+		Service: model.Service{Name: "go-service"},
+		Event: model.Event{
+			Outcome:  "success",
+			Duration: 10 * time.Second,
+		},
+		Processor: model.TransactionProcessor,
+		Transaction: &model.Transaction{
+			RepresentativeCount: 2,
+			DroppedSpansStats: []model.DroppedSpanStats{
+				{
+					DestinationServiceResource: "https://elasticsearch:9200",
+					Outcome:                    "success",
+					Duration: model.AggregatedDuration{
+						Count: 10,
+						Sum:   1500 * time.Microsecond,
+					},
+				},
+				{
+					DestinationServiceResource: "mysql://mysql:3306",
+					Outcome:                    "unknown",
+					Duration: model.AggregatedDuration{
+						Count: 2,
+						Sum:   3000 * time.Microsecond,
+					},
+				},
+			},
+		},
+	}
+
+	txWithNoRepresentativeCount := model.APMEvent{
+		Processor: model.TransactionProcessor,
+		Transaction: &model.Transaction{
+			RepresentativeCount: 0,
+			DroppedSpansStats:   make([]model.DroppedSpanStats, 1),
+		},
+	}
+	err = agg.ProcessBatch(context.Background(), &model.Batch{tx, txWithNoRepresentativeCount})
+	require.NoError(t, err)
+
+	// Start the aggregator after processing to ensure metrics are aggregated deterministically.
+	go agg.Run()
+	defer agg.Stop(context.Background())
+
+	batch := expectBatch(t, batches)
+	metricsets := batchMetricsets(t, batch)
+
+	assert.ElementsMatch(t, []model.APMEvent{
+		{
+			Agent:     model.Agent{Name: "go"},
+			Service:   model.Service{Name: "go-service"},
+			Event:     model.Event{Outcome: "success"},
+			Processor: model.MetricsetProcessor,
+			Metricset: &model.Metricset{Name: "service_destination"},
+			Span: &model.Span{
+				DestinationService: &model.DestinationService{
+					Resource: "https://elasticsearch:9200",
+					ResponseTime: model.AggregatedDuration{
+						Count: 20,
+						Sum:   3000 * time.Microsecond,
+					},
+				},
+			},
+		},
+		{
+			Agent:     model.Agent{Name: "go"},
+			Service:   model.Service{Name: "go-service"},
+			Event:     model.Event{Outcome: "success"},
+			Processor: model.MetricsetProcessor,
+			Metricset: &model.Metricset{Name: "service_destination"},
+			Span: &model.Span{
+				DestinationService: &model.DestinationService{
+					Resource: "mysql://mysql:3306",
+					ResponseTime: model.AggregatedDuration{
+						Count: 4,
+						Sum:   6000 * time.Microsecond,
+					},
+				},
+			},
+		},
+	}, metricsets)
 }
 
 func TestAggregatorOverflow(t *testing.T) {
@@ -203,8 +328,8 @@ func TestAggregatorOverflow(t *testing.T) {
 	// as we have configured the spanmetrics with a maximum of two buckets.
 	batch := make(model.Batch, 20)
 	for i := 0; i < len(batch); i += 2 {
-		batch[i].Span = makeSpan("service", "agent", "destination1", "success", 100*time.Millisecond, 1)
-		batch[i+1].Span = makeSpan("service", "agent", "destination2", "success", 100*time.Millisecond, 1)
+		batch[i] = makeSpan("service", "agent", "destination1", "success", 100*time.Millisecond, 1)
+		batch[i+1] = makeSpan("service", "agent", "destination2", "success", 100*time.Millisecond, 1)
 	}
 	err = agg.ProcessBatch(context.Background(), &batch)
 	require.NoError(t, err)
@@ -212,9 +337,7 @@ func TestAggregatorOverflow(t *testing.T) {
 
 	// The third group will return a metricset for immediate publication.
 	for i := 0; i < 2; i++ {
-		batch = append(batch, model.APMEvent{
-			Span: makeSpan("service", "agent", "destination3", "success", 100*time.Millisecond, 1),
-		})
+		batch = append(batch, makeSpan("service", "agent", "destination3", "success", 100*time.Millisecond, 1))
 	}
 	err = agg.ProcessBatch(context.Background(), &batch)
 	require.NoError(t, err)
@@ -223,21 +346,20 @@ func TestAggregatorOverflow(t *testing.T) {
 	assert.Len(t, metricsets, 2)
 
 	for _, m := range metricsets {
-		assert.Equal(t, &model.Metricset{
-			Name: "service_destination",
-			Metadata: model.Metadata{
-				Service: model.Service{Name: "service", Agent: model.Agent{Name: "agent"}},
-			},
-			Event: model.MetricsetEventCategorization{
-				Outcome: "success",
-			},
-			Span: model.MetricsetSpan{
-				DestinationService: model.DestinationService{Resource: "destination3"},
-			},
-			Samples: map[string]model.MetricsetSample{
-				"span.destination.service.response_time.count":  {Value: 1.0},
-				"span.destination.service.response_time.sum.us": {Value: 100000.0},
-				// No metricset.period is recorded as these metrics are instantanous, not aggregated.
+		assert.Equal(t, model.APMEvent{
+			Agent:     model.Agent{Name: "agent"},
+			Service:   model.Service{Name: "service"},
+			Event:     model.Event{Outcome: "success"},
+			Processor: model.MetricsetProcessor,
+			Metricset: &model.Metricset{Name: "service_destination"},
+			Span: &model.Span{
+				DestinationService: &model.DestinationService{
+					Resource: "destination3",
+					ResponseTime: model.AggregatedDuration{
+						Count: 1,
+						Sum:   100 * time.Millisecond,
+					},
+				},
 			},
 		}, m)
 	}
@@ -247,20 +369,26 @@ func makeSpan(
 	serviceName, agentName, destinationServiceResource, outcome string,
 	duration time.Duration,
 	count float64,
-) *model.Span {
-	span := &model.Span{
-		Metadata:            model.Metadata{Service: model.Service{Name: serviceName, Agent: model.Agent{Name: agentName}}},
-		Name:                serviceName + ":" + destinationServiceResource,
-		Duration:            duration.Seconds() * 1000,
-		RepresentativeCount: count,
-		Outcome:             outcome,
+) model.APMEvent {
+	event := model.APMEvent{
+		Agent:   model.Agent{Name: agentName},
+		Service: model.Service{Name: serviceName},
+		Event: model.Event{
+			Outcome:  outcome,
+			Duration: duration,
+		},
+		Processor: model.SpanProcessor,
+		Span: &model.Span{
+			Name:                serviceName + ":" + destinationServiceResource,
+			RepresentativeCount: count,
+		},
 	}
 	if destinationServiceResource != "" {
-		span.DestinationService = &model.DestinationService{
+		event.Span.DestinationService = &model.DestinationService{
 			Resource: destinationServiceResource,
 		}
 	}
-	return span
+	return event
 }
 
 func makeErrBatchProcessor(err error) model.BatchProcessor {
@@ -289,15 +417,15 @@ func expectBatch(t *testing.T, ch <-chan model.Batch) model.Batch {
 	panic("unreachable")
 }
 
-func batchMetricsets(t testing.TB, batch model.Batch) []*model.Metricset {
-	var metricsets []*model.Metricset
+func batchMetricsets(t testing.TB, batch model.Batch) []model.APMEvent {
+	var metricsets []model.APMEvent
 	for _, event := range batch {
 		if event.Metricset == nil {
 			continue
 		}
-		require.NotZero(t, event.Metricset.Timestamp)
-		event.Metricset.Timestamp = time.Time{}
-		metricsets = append(metricsets, event.Metricset)
+		require.NotZero(t, event.Timestamp)
+		event.Timestamp = time.Time{}
+		metricsets = append(metricsets, event)
 	}
 	return metricsets
 }

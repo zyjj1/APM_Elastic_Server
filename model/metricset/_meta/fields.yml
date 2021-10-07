@@ -24,6 +24,11 @@
       description: Processor event.
       overwrite: true
 
+    - name: timeseries.instance
+      type: keyword
+      description: Time series instance ID
+      overwrite: true
+
     - name: timestamp
       type: group
       fields:
@@ -164,22 +169,6 @@
             Generic designation of a transaction in the scope of a single service (eg. 'GET /users/:id').
           overwrite: true
 
-        - name: duration
-          type: group
-          fields:
-            - name: count
-              type: long
-              overwrite: true
-              description: Number of aggregated transactions.
-            - name: sum
-              type: group
-              fields:
-                - name: us
-                  type: long
-                  unit: micros
-                  overwrite: true
-                  description: Aggregated transaction duration, in microseconds.
-
         - name: self_time
           type: group
           description: >
@@ -214,6 +203,10 @@
           description: >
             Identifies metrics for root transactions. This can be used for calculating metrics for traces.
 
+        - name: result
+          type: keyword
+          description: >
+            The result of the transaction. HTTP status code for HTTP-related transactions.
 
     - name: span
       type: group
@@ -252,6 +245,22 @@
                 description: >
                   Aggregated span duration, excluding the time periods where a
                   direct child was running, in microseconds.
+
+        - name: destination
+          type: group
+          dynamic: false
+          fields:
+
+            - name: service
+              type: group
+              dynamic: false
+              description: Destination service context
+              fields:
+
+                - name: resource
+                  type: keyword
+                  description: >
+                    Identifier for the destination service resource being operated on (e.g. 'http://elastic.co:80', 'elasticsearch', 'rabbitmq/queue_name')
 
     - name: agent
       type: group
@@ -338,11 +347,23 @@
         Optional network fields
       fields:
 
-        - name: connection_type
-          type: keyword
+        - name: connection
+          type: group
           description: >
-            Cellular network technology, eg. 4G
-          overwrite: true
+            Network connection details
+          fields:
+
+            - name: type
+              type: keyword
+              description: >
+                Network connection type, eg. "wifi", "cell"
+              overwrite: true
+
+            - name: subtype
+              type: keyword
+              description: >
+                Detailed network connection sub-type, e.g. "LTE", "CDMA"
+              overwrite: true
 
         - name: carrier
           type: group
@@ -485,6 +506,18 @@
           overwrite: true
           description: >
             The type will be set to `apm-server`.
+
+        - name: id
+          type: keyword
+          overwrite: true
+          description: >
+            Unique identifier of the APM Server.
+
+        - name: ephemeral_id
+          type: keyword
+          overwrite: true
+          description: >
+            Ephemeral identifier of the APM Server.
 
     - name: user
       type: group
@@ -694,12 +727,6 @@
             example: "4.4.0-112-generic"
             description: >
               Operating system kernel version as a raw string.
-
-    - name: experimental
-      type: object
-      dynamic: true
-      overwrite: true
-      description: Additional experimental data sent by the agents.
 
     - name: cloud
       title: Cloud

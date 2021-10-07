@@ -37,17 +37,14 @@ package otel
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"go.opentelemetry.io/collector/consumer/pdata"
-	"go.opentelemetry.io/collector/otlptext"
+	"go.opentelemetry.io/collector/model/pdata"
 
 	logs "github.com/elastic/apm-server/log"
 	"github.com/elastic/apm-server/model"
-	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/logp"
 )
 
@@ -57,7 +54,12 @@ func (c *Consumer) ConsumeMetrics(ctx context.Context, metrics pdata.Metrics) er
 	receiveTimestamp := time.Now()
 	logger := logp.NewLogger(logs.Otel)
 	if logger.IsDebug() {
-		logger.Debug(otlptext.Metrics(metrics))
+		data, err := jsonMetricsMarshaler.MarshalMetrics(metrics)
+		if err != nil {
+			logger.Debug(err)
+		} else {
+			logger.Debug(string(data))
+		}
 	}
 	batch := c.convertMetrics(metrics, receiveTimestamp)
 	return c.Processor.ProcessBatch(ctx, batch)
@@ -73,138 +75,114 @@ func (c *Consumer) convertMetrics(metrics pdata.Metrics, receiveTimestamp time.T
 }
 
 func (c *Consumer) convertResourceMetrics(resourceMetrics pdata.ResourceMetrics, receiveTimestamp time.Time, out *model.Batch) {
-	var metadata model.Metadata
+	var baseEvent model.APMEvent
 	var timeDelta time.Duration
 	resource := resourceMetrics.Resource()
-	translateResourceMetadata(resource, &metadata)
+	translateResourceMetadata(resource, &baseEvent)
 	if exportTimestamp, ok := exportTimestamp(resource); ok {
 		timeDelta = receiveTimestamp.Sub(exportTimestamp)
 	}
 	instrumentationLibraryMetrics := resourceMetrics.InstrumentationLibraryMetrics()
 	for i := 0; i < instrumentationLibraryMetrics.Len(); i++ {
-		c.convertInstrumentationLibraryMetrics(instrumentationLibraryMetrics.At(i), metadata, timeDelta, out)
+		c.convertInstrumentationLibraryMetrics(instrumentationLibraryMetrics.At(i), baseEvent, timeDelta, out)
 	}
 }
 
 func (c *Consumer) convertInstrumentationLibraryMetrics(
 	in pdata.InstrumentationLibraryMetrics,
-	metadata model.Metadata,
+	baseEvent model.APMEvent,
 	timeDelta time.Duration,
 	out *model.Batch,
 ) {
-	var ms metricsets
+	ms := make(metricsets)
 	otelMetrics := in.Metrics()
 	var unsupported int64
 	for i := 0; i < otelMetrics.Len(); i++ {
-		if !c.addMetric(otelMetrics.At(i), &ms) {
+		if !c.addMetric(otelMetrics.At(i), ms) {
 			unsupported++
 		}
 	}
-	for _, m := range ms {
-		m.Metadata = metadata
-		m.Timestamp = m.Timestamp.Add(timeDelta)
-		*out = append(*out, model.APMEvent{Metricset: m.Metricset})
+	for key, ms := range ms {
+		event := baseEvent
+		event.Processor = model.MetricsetProcessor
+		event.Timestamp = key.timestamp.Add(timeDelta)
+		event.Metricset = &model.Metricset{Samples: ms.samples}
+		if ms.attributes.Len() > 0 {
+			event.Labels = initEventLabels(event.Labels)
+			ms.attributes.Range(func(k string, v pdata.AttributeValue) bool {
+				event.Labels[k] = ifaceAttributeValue(v)
+				return true
+			})
+		}
+		*out = append(*out, event)
 	}
 	if unsupported > 0 {
 		atomic.AddInt64(&c.stats.unsupportedMetricsDropped, unsupported)
 	}
 }
 
-func (c *Consumer) addMetric(metric pdata.Metric, ms *metricsets) bool {
+func (c *Consumer) addMetric(metric pdata.Metric, ms metricsets) bool {
 	// TODO(axw) support units
-
+	anyDropped := false
 	switch metric.DataType() {
-	case pdata.MetricDataTypeIntGauge:
-		dps := metric.IntGauge().DataPoints()
+	case pdata.MetricDataTypeGauge:
+		dps := metric.Gauge().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
 			dp := dps.At(i)
-			ms.upsert(
-				dp.Timestamp().AsTime(),
-				metric.Name(),
-				toStringMapItems(dp.LabelsMap()),
-				model.MetricsetSample{
-					Type:  model.MetricTypeGauge,
-					Value: float64(dp.Value()),
-				},
-			)
+			if sample, ok := numberSample(dp, model.MetricTypeGauge); ok {
+				ms.upsert(dp.Timestamp().AsTime(), metric.Name(), dp.Attributes(), sample)
+			} else {
+				anyDropped = true
+			}
 		}
-		return true
-	case pdata.MetricDataTypeDoubleGauge:
-		dps := metric.DoubleGauge().DataPoints()
+		return !anyDropped
+	case pdata.MetricDataTypeSum:
+		dps := metric.Sum().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
 			dp := dps.At(i)
-			ms.upsert(
-				dp.Timestamp().AsTime(),
-				metric.Name(),
-				toStringMapItems(dp.LabelsMap()),
-				model.MetricsetSample{
-					Type:  model.MetricTypeGauge,
-					Value: float64(dp.Value()),
-				},
-			)
-		}
-		return true
-	case pdata.MetricDataTypeIntSum:
-		dps := metric.IntSum().DataPoints()
-		for i := 0; i < dps.Len(); i++ {
-			dp := dps.At(i)
-			ms.upsert(
-				dp.Timestamp().AsTime(),
-				metric.Name(),
-				toStringMapItems(dp.LabelsMap()),
-				model.MetricsetSample{
-					Type:  model.MetricTypeCounter,
-					Value: float64(dp.Value()),
-				},
-			)
-		}
-		return true
-	case pdata.MetricDataTypeDoubleSum:
-		dps := metric.DoubleSum().DataPoints()
-		for i := 0; i < dps.Len(); i++ {
-			dp := dps.At(i)
-			ms.upsert(
-				dp.Timestamp().AsTime(),
-				metric.Name(),
-				toStringMapItems(dp.LabelsMap()),
-				model.MetricsetSample{
-					Type:  model.MetricTypeCounter,
-					Value: float64(dp.Value()),
-				},
-			)
-		}
-		return true
-	case pdata.MetricDataTypeIntHistogram:
-		anyDropped := false
-		dps := metric.IntHistogram().DataPoints()
-		for i := 0; i < dps.Len(); i++ {
-			dp := dps.At(i)
-			if sample, ok := histogramSample(dp.BucketCounts(), dp.ExplicitBounds()); ok {
-				ms.upsert(dp.Timestamp().AsTime(), metric.Name(), toStringMapItems(dp.LabelsMap()), sample)
+			if sample, ok := numberSample(dp, model.MetricTypeCounter); ok {
+				ms.upsert(dp.Timestamp().AsTime(), metric.Name(), dp.Attributes(), sample)
 			} else {
 				anyDropped = true
 			}
 		}
 		return !anyDropped
 	case pdata.MetricDataTypeHistogram:
-		anyDropped := false
 		dps := metric.Histogram().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
 			dp := dps.At(i)
 			if sample, ok := histogramSample(dp.BucketCounts(), dp.ExplicitBounds()); ok {
-				ms.upsert(dp.Timestamp().AsTime(), metric.Name(), toStringMapItems(dp.LabelsMap()), sample)
+				ms.upsert(dp.Timestamp().AsTime(), metric.Name(), dp.Attributes(), sample)
 			} else {
 				anyDropped = true
 			}
 		}
-		return !anyDropped
 	case pdata.MetricDataTypeSummary:
 		// TODO(axw) https://github.com/elastic/apm-server/issues/3195
 		// (Not quite the same issue, but the solution would also enable
 		// aggregate metrics, which would be appropriate for summaries.)
+		fallthrough
+	default:
+		// Unsupported metric: report that it has been dropped.
+		anyDropped = true
 	}
-	// Unsupported metric: report that it has been dropped.
-	return false
+	return !anyDropped
+}
+
+func numberSample(dp pdata.NumberDataPoint, metricType model.MetricType) (model.MetricsetSample, bool) {
+	var value float64
+	switch dp.Type() {
+	case pdata.MetricValueTypeInt:
+		value = float64(dp.IntVal())
+	case pdata.MetricValueTypeDouble:
+		value = dp.DoubleVal()
+	default:
+		return model.MetricsetSample{}, false
+	}
+	return model.MetricsetSample{
+		Type:  metricType,
+		Value: value,
+	}, true
 }
 
 func histogramSample(bucketCounts []uint64, explicitBounds []float64) (model.MetricsetSample, bool) {
@@ -263,60 +241,51 @@ func histogramSample(bucketCounts []uint64, explicitBounds []float64) (model.Met
 		values = append(values, value)
 	}
 	return model.MetricsetSample{
-		Type:   model.MetricTypeHistogram,
-		Counts: counts,
-		Values: values,
+		Type: model.MetricTypeHistogram,
+		Histogram: model.Histogram{
+			Counts: counts,
+			Values: values,
+		},
 	}, true
 }
 
-type metricsets []metricset
+type metricsets map[metricsetKey]metricset
+
+type metricsetKey struct {
+	timestamp time.Time
+	signature string // combination of all attributes
+}
 
 type metricset struct {
-	*model.Metricset
-	labels []stringMapItem // sorted by key
-}
-
-type stringMapItem struct {
-	key   string
-	value string
-}
-
-func toStringMapItems(labelMap pdata.StringMap) []stringMapItem {
-	labels := make([]stringMapItem, 0, labelMap.Len())
-	labelMap.Range(func(k, v string) bool {
-		labels = append(labels, stringMapItem{k, v})
-		return true
-	})
-	sort.SliceStable(labels, func(i, j int) bool {
-		return labels[i].key < labels[j].key
-	})
-	return labels
+	attributes pdata.AttributeMap
+	samples    map[string]model.MetricsetSample
 }
 
 // upsert searches for an existing metricset with the given timestamp and labels,
 // and appends the sample to it. If there is no such existing metricset, a new one
 // is created.
-func (ms *metricsets) upsert(timestamp time.Time, name string, labels []stringMapItem, sample model.MetricsetSample) {
+func (ms metricsets) upsert(timestamp time.Time, name string, attributes pdata.AttributeMap, sample model.MetricsetSample) {
 	// We always record metrics as they are given. We also copy some
 	// well-known OpenTelemetry metrics to their Elastic APM equivalents.
-	ms.upsertOne(timestamp, name, labels, sample)
+	ms.upsertOne(timestamp, name, attributes, sample)
 
 	switch name {
 	case "runtime.jvm.memory.area":
 		// runtime.jvm.memory.area -> jvm.memory.{area}.{type}
 		// Copy label "gc" to "name".
 		var areaValue, typeValue string
-		for _, label := range labels {
-			switch label.key {
+		attributes.Range(func(k string, v pdata.AttributeValue) bool {
+			switch k {
 			case "area":
-				areaValue = label.value
+				areaValue = v.AsString()
 			case "type":
-				typeValue = label.value
+				typeValue = v.AsString()
 			}
-		}
+			return true
+		})
 		if areaValue != "" && typeValue != "" {
 			elasticapmName := fmt.Sprintf("jvm.memory.%s.%s", areaValue, typeValue)
-			ms.upsertOne(timestamp, elasticapmName, nil, sample)
+			ms.upsertOne(timestamp, elasticapmName, pdata.NewAttributeMap(), sample)
 		}
 	case "runtime.jvm.gc.collection":
 		// This is the old name for runtime.jvm.gc.time.
@@ -328,62 +297,34 @@ func (ms *metricsets) upsert(timestamp time.Time, name string, labels []stringMa
 		elasticapmName := name[len("runtime."):]
 
 		// Copy label "gc" to "name".
-		var elasticapmLabels []stringMapItem
-		for _, label := range labels {
-			if label.key == "gc" {
-				elasticapmLabels = []stringMapItem{{key: "name", value: label.value}}
-				break
+		elasticapmAttributes := pdata.NewAttributeMap()
+		attributes.Range(func(k string, v pdata.AttributeValue) bool {
+			if k == "gc" {
+				elasticapmAttributes.Insert("name", v)
+				return false
 			}
-		}
-		ms.upsertOne(timestamp, elasticapmName, elasticapmLabels, sample)
+			return true
+		})
+		ms.upsertOne(timestamp, elasticapmName, elasticapmAttributes, sample)
 	}
 }
 
-func (ms *metricsets) upsertOne(timestamp time.Time, name string, labels []stringMapItem, sample model.MetricsetSample) {
-	var m *model.Metricset
-	i := ms.search(timestamp, labels)
-	if i < len(*ms) && compareMetricsets((*ms)[i], timestamp, labels) == 0 {
-		m = (*ms)[i].Metricset
-	} else {
-		m = &model.Metricset{Timestamp: timestamp, Samples: make(map[string]model.MetricsetSample)}
-		if len(labels) > 0 {
-			m.Labels = make(common.MapStr, len(labels))
-			for _, label := range labels {
-				m.Labels[label.key] = label.value
-			}
-		}
-		head := (*ms)[:i]
-		tail := append([]metricset{{Metricset: m, labels: labels}}, (*ms)[i:]...)
-		*ms = append(head, tail...)
-	}
-	m.Samples[name] = sample
-}
-
-func (ms *metricsets) search(timestamp time.Time, labels []stringMapItem) int {
-	return sort.Search(len(*ms), func(i int) bool {
-		return compareMetricsets((*ms)[i], timestamp, labels) >= 0
+func (ms metricsets) upsertOne(timestamp time.Time, name string, attributes pdata.AttributeMap, sample model.MetricsetSample) {
+	var signatureBuilder strings.Builder
+	attributes.Range(func(k string, v pdata.AttributeValue) bool {
+		signatureBuilder.WriteString(k)
+		signatureBuilder.WriteString(v.AsString())
+		return true
 	})
-}
+	key := metricsetKey{timestamp: timestamp, signature: signatureBuilder.String()}
 
-func compareMetricsets(ms metricset, timestamp time.Time, labels []stringMapItem) int {
-	if d := ms.Timestamp.Sub(timestamp); d < 0 {
-		return -1
-	} else if d > 0 {
-		return 1
-	}
-	if n := len(ms.labels) - len(labels); n < 0 {
-		return -1
-	} else if n > 0 {
-		return 1
-	}
-	for i, la := range ms.labels {
-		lb := labels[i]
-		if n := strings.Compare(la.key, lb.key); n != 0 {
-			return n
+	m, ok := ms[key]
+	if !ok {
+		m = metricset{
+			attributes: attributes,
+			samples:    make(map[string]model.MetricsetSample),
 		}
-		if n := strings.Compare(la.value, lb.value); n != 0 {
-			return n
-		}
+		ms[key] = m
 	}
-	return 0
+	m.samples[name] = sample
 }

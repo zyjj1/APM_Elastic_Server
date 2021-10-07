@@ -53,7 +53,7 @@ func (val *metadataRoot) validate() error {
 }
 
 func (val *metadata) IsSet() bool {
-	return val.Cloud.IsSet() || (len(val.Labels) > 0) || val.Process.IsSet() || val.Service.IsSet() || val.System.IsSet() || val.User.IsSet()
+	return val.Cloud.IsSet() || (len(val.Labels) > 0) || val.Process.IsSet() || val.Service.IsSet() || val.System.IsSet() || val.User.IsSet() || val.Network.IsSet()
 }
 
 func (val *metadata) Reset() {
@@ -65,6 +65,7 @@ func (val *metadata) Reset() {
 	val.Service.Reset()
 	val.System.Reset()
 	val.User.Reset()
+	val.Network.Reset()
 }
 
 func (val *metadata) validate() error {
@@ -101,6 +102,9 @@ func (val *metadata) validate() error {
 	}
 	if err := val.User.validate(); err != nil {
 		return errors.Wrapf(err, "user")
+	}
+	if err := val.Network.validate(); err != nil {
+		return errors.Wrapf(err, "network")
 	}
 	return nil
 }
@@ -281,13 +285,14 @@ func (val *metadataProcess) validate() error {
 }
 
 func (val *metadataService) IsSet() bool {
-	return val.Agent.IsSet() || val.Environment.IsSet() || val.Framework.IsSet() || val.Language.IsSet() || val.Name.IsSet() || val.Node.IsSet() || val.Runtime.IsSet() || val.Version.IsSet()
+	return val.Agent.IsSet() || val.Environment.IsSet() || val.Framework.IsSet() || val.ID.IsSet() || val.Language.IsSet() || val.Name.IsSet() || val.Node.IsSet() || val.Runtime.IsSet() || val.Version.IsSet()
 }
 
 func (val *metadataService) Reset() {
 	val.Agent.Reset()
 	val.Environment.Reset()
 	val.Framework.Reset()
+	val.ID.Reset()
 	val.Language.Reset()
 	val.Name.Reset()
 	val.Node.Reset()
@@ -633,6 +638,42 @@ func (val *user) validate() error {
 	return nil
 }
 
+func (val *network) IsSet() bool {
+	return val.Connection.IsSet()
+}
+
+func (val *network) Reset() {
+	val.Connection.Reset()
+}
+
+func (val *network) validate() error {
+	if !val.IsSet() {
+		return nil
+	}
+	if err := val.Connection.validate(); err != nil {
+		return errors.Wrapf(err, "connection")
+	}
+	return nil
+}
+
+func (val *networkConnection) IsSet() bool {
+	return val.Type.IsSet()
+}
+
+func (val *networkConnection) Reset() {
+	val.Type.Reset()
+}
+
+func (val *networkConnection) validate() error {
+	if !val.IsSet() {
+		return nil
+	}
+	if val.Type.IsSet() && utf8.RuneCountInString(val.Type.Val) > 1024 {
+		return fmt.Errorf("'type': validation rule 'maxLength(1024)' violated")
+	}
+	return nil
+}
+
 func (val *errorRoot) IsSet() bool {
 	return val.Error.IsSet()
 }
@@ -725,14 +766,14 @@ func (val *errorEvent) validate() error {
 }
 
 func (val *context) IsSet() bool {
-	return (len(val.Custom) > 0) || val.Experimental.IsSet() || val.Message.IsSet() || val.Page.IsSet() || val.Response.IsSet() || val.Request.IsSet() || val.Service.IsSet() || (len(val.Tags) > 0) || val.User.IsSet()
+	return val.Cloud.IsSet() || (len(val.Custom) > 0) || val.Message.IsSet() || val.Page.IsSet() || val.Response.IsSet() || val.Request.IsSet() || val.Service.IsSet() || (len(val.Tags) > 0) || val.User.IsSet()
 }
 
 func (val *context) Reset() {
+	val.Cloud.Reset()
 	for k := range val.Custom {
 		delete(val.Custom, k)
 	}
-	val.Experimental.Reset()
 	val.Message.Reset()
 	val.Page.Reset()
 	val.Response.Reset()
@@ -747,6 +788,9 @@ func (val *context) Reset() {
 func (val *context) validate() error {
 	if !val.IsSet() {
 		return nil
+	}
+	if err := val.Cloud.validate(); err != nil {
+		return errors.Wrapf(err, "cloud")
 	}
 	if err := val.Message.validate(); err != nil {
 		return errors.Wrapf(err, "message")
@@ -782,8 +826,80 @@ func (val *context) validate() error {
 	return nil
 }
 
+func (val *contextCloud) IsSet() bool {
+	return val.Origin.IsSet()
+}
+
+func (val *contextCloud) Reset() {
+	val.Origin.Reset()
+}
+
+func (val *contextCloud) validate() error {
+	if !val.IsSet() {
+		return nil
+	}
+	if err := val.Origin.validate(); err != nil {
+		return errors.Wrapf(err, "origin")
+	}
+	return nil
+}
+
+func (val *contextCloudOrigin) IsSet() bool {
+	return val.Account.IsSet() || val.Provider.IsSet() || val.Region.IsSet() || val.Service.IsSet()
+}
+
+func (val *contextCloudOrigin) Reset() {
+	val.Account.Reset()
+	val.Provider.Reset()
+	val.Region.Reset()
+	val.Service.Reset()
+}
+
+func (val *contextCloudOrigin) validate() error {
+	if !val.IsSet() {
+		return nil
+	}
+	if err := val.Account.validate(); err != nil {
+		return errors.Wrapf(err, "account")
+	}
+	if err := val.Service.validate(); err != nil {
+		return errors.Wrapf(err, "service")
+	}
+	return nil
+}
+
+func (val *contextCloudOriginAccount) IsSet() bool {
+	return val.ID.IsSet()
+}
+
+func (val *contextCloudOriginAccount) Reset() {
+	val.ID.Reset()
+}
+
+func (val *contextCloudOriginAccount) validate() error {
+	if !val.IsSet() {
+		return nil
+	}
+	return nil
+}
+
+func (val *contextCloudOriginService) IsSet() bool {
+	return val.Name.IsSet()
+}
+
+func (val *contextCloudOriginService) Reset() {
+	val.Name.Reset()
+}
+
+func (val *contextCloudOriginService) validate() error {
+	if !val.IsSet() {
+		return nil
+	}
+	return nil
+}
+
 func (val *contextMessage) IsSet() bool {
-	return val.Age.IsSet() || val.Body.IsSet() || val.Headers.IsSet() || val.Queue.IsSet()
+	return val.Age.IsSet() || val.Body.IsSet() || val.Headers.IsSet() || val.Queue.IsSet() || val.RoutingKey.IsSet()
 }
 
 func (val *contextMessage) Reset() {
@@ -791,6 +907,7 @@ func (val *contextMessage) Reset() {
 	val.Body.Reset()
 	val.Headers.Reset()
 	val.Queue.Reset()
+	val.RoutingKey.Reset()
 }
 
 func (val *contextMessage) validate() error {
@@ -1001,16 +1118,18 @@ func (val *contextRequestURL) validate() error {
 }
 
 func (val *contextService) IsSet() bool {
-	return val.Agent.IsSet() || val.Environment.IsSet() || val.Framework.IsSet() || val.Language.IsSet() || val.Name.IsSet() || val.Node.IsSet() || val.Runtime.IsSet() || val.Version.IsSet()
+	return val.Agent.IsSet() || val.Environment.IsSet() || val.Framework.IsSet() || val.ID.IsSet() || val.Language.IsSet() || val.Name.IsSet() || val.Node.IsSet() || val.Origin.IsSet() || val.Runtime.IsSet() || val.Version.IsSet()
 }
 
 func (val *contextService) Reset() {
 	val.Agent.Reset()
 	val.Environment.Reset()
 	val.Framework.Reset()
+	val.ID.Reset()
 	val.Language.Reset()
 	val.Name.Reset()
 	val.Node.Reset()
+	val.Origin.Reset()
 	val.Runtime.Reset()
 	val.Version.Reset()
 }
@@ -1039,6 +1158,9 @@ func (val *contextService) validate() error {
 	}
 	if err := val.Node.validate(); err != nil {
 		return errors.Wrapf(err, "node")
+	}
+	if err := val.Origin.validate(); err != nil {
+		return errors.Wrapf(err, "origin")
 	}
 	if err := val.Runtime.validate(); err != nil {
 		return errors.Wrapf(err, "runtime")
@@ -1133,6 +1255,23 @@ func (val *contextServiceNode) validate() error {
 	}
 	if val.Name.IsSet() && utf8.RuneCountInString(val.Name.Val) > 1024 {
 		return fmt.Errorf("'configured_name': validation rule 'maxLength(1024)' violated")
+	}
+	return nil
+}
+
+func (val *contextServiceOrigin) IsSet() bool {
+	return val.ID.IsSet() || val.Name.IsSet() || val.Version.IsSet()
+}
+
+func (val *contextServiceOrigin) Reset() {
+	val.ID.Reset()
+	val.Name.Reset()
+	val.Version.Reset()
+}
+
+func (val *contextServiceOrigin) validate() error {
+	if !val.IsSet() {
+		return nil
 	}
 	return nil
 }
@@ -1482,12 +1621,13 @@ func (val *spanRoot) validate() error {
 }
 
 func (val *span) IsSet() bool {
-	return val.Action.IsSet() || (len(val.ChildIDs) > 0) || val.Context.IsSet() || val.Duration.IsSet() || val.ID.IsSet() || val.Name.IsSet() || val.Outcome.IsSet() || val.ParentID.IsSet() || val.SampleRate.IsSet() || (len(val.Stacktrace) > 0) || val.Start.IsSet() || val.Subtype.IsSet() || val.Sync.IsSet() || val.Timestamp.IsSet() || val.TraceID.IsSet() || val.TransactionID.IsSet() || val.Type.IsSet()
+	return val.Action.IsSet() || (len(val.ChildIDs) > 0) || val.Composite.IsSet() || val.Context.IsSet() || val.Duration.IsSet() || val.ID.IsSet() || val.Name.IsSet() || val.Outcome.IsSet() || val.ParentID.IsSet() || val.SampleRate.IsSet() || (len(val.Stacktrace) > 0) || val.Start.IsSet() || val.Subtype.IsSet() || val.Sync.IsSet() || val.Timestamp.IsSet() || val.TraceID.IsSet() || val.TransactionID.IsSet() || val.Type.IsSet()
 }
 
 func (val *span) Reset() {
 	val.Action.Reset()
 	val.ChildIDs = val.ChildIDs[:0]
+	val.Composite.Reset()
 	val.Context.Reset()
 	val.Duration.Reset()
 	val.ID.Reset()
@@ -1519,6 +1659,9 @@ func (val *span) validate() error {
 		if utf8.RuneCountInString(elem) > 1024 {
 			return fmt.Errorf("'child_ids': validation rule 'maxLength(1024)' violated")
 		}
+	}
+	if err := val.Composite.validate(); err != nil {
+		return errors.Wrapf(err, "composite")
 	}
 	if err := val.Context.validate(); err != nil {
 		return errors.Wrapf(err, "context")
@@ -1588,14 +1731,45 @@ func (val *span) validate() error {
 	return nil
 }
 
+func (val *spanComposite) IsSet() bool {
+	return val.Count.IsSet() || val.Sum.IsSet() || val.CompressionStrategy.IsSet()
+}
+
+func (val *spanComposite) Reset() {
+	val.Count.Reset()
+	val.Sum.Reset()
+	val.CompressionStrategy.Reset()
+}
+
+func (val *spanComposite) validate() error {
+	if !val.IsSet() {
+		return nil
+	}
+	if val.Count.IsSet() && val.Count.Val < 2 {
+		return fmt.Errorf("'count': validation rule 'min(2)' violated")
+	}
+	if !val.Count.IsSet() {
+		return fmt.Errorf("'count' required")
+	}
+	if val.Sum.IsSet() && val.Sum.Val < 0 {
+		return fmt.Errorf("'sum': validation rule 'min(0)' violated")
+	}
+	if !val.Sum.IsSet() {
+		return fmt.Errorf("'sum' required")
+	}
+	if !val.CompressionStrategy.IsSet() {
+		return fmt.Errorf("'compression_strategy' required")
+	}
+	return nil
+}
+
 func (val *spanContext) IsSet() bool {
-	return val.Database.IsSet() || val.Destination.IsSet() || val.Experimental.IsSet() || val.HTTP.IsSet() || val.Message.IsSet() || val.Service.IsSet() || (len(val.Tags) > 0)
+	return val.Database.IsSet() || val.Destination.IsSet() || val.HTTP.IsSet() || val.Message.IsSet() || val.Service.IsSet() || (len(val.Tags) > 0)
 }
 
 func (val *spanContext) Reset() {
 	val.Database.Reset()
 	val.Destination.Reset()
-	val.Experimental.Reset()
 	val.HTTP.Reset()
 	val.Message.Reset()
 	val.Service.Reset()
@@ -1776,12 +1950,17 @@ func (val *transactionRoot) validate() error {
 }
 
 func (val *transaction) IsSet() bool {
-	return val.Context.IsSet() || val.Duration.IsSet() || val.ID.IsSet() || val.Marks.IsSet() || val.Name.IsSet() || val.Outcome.IsSet() || val.ParentID.IsSet() || val.Result.IsSet() || val.Sampled.IsSet() || val.SampleRate.IsSet() || val.Session.IsSet() || val.SpanCount.IsSet() || val.Timestamp.IsSet() || val.TraceID.IsSet() || val.Type.IsSet() || val.UserExperience.IsSet()
+	return val.Context.IsSet() || (len(val.DroppedSpanStats) > 0) || val.Duration.IsSet() || val.FAAS.IsSet() || val.ID.IsSet() || val.Marks.IsSet() || val.Name.IsSet() || val.Outcome.IsSet() || val.ParentID.IsSet() || val.Result.IsSet() || val.Sampled.IsSet() || val.SampleRate.IsSet() || val.Session.IsSet() || val.SpanCount.IsSet() || val.Timestamp.IsSet() || val.TraceID.IsSet() || val.Type.IsSet() || val.UserExperience.IsSet()
 }
 
 func (val *transaction) Reset() {
 	val.Context.Reset()
+	for i := range val.DroppedSpanStats {
+		val.DroppedSpanStats[i].Reset()
+	}
+	val.DroppedSpanStats = val.DroppedSpanStats[:0]
 	val.Duration.Reset()
+	val.FAAS.Reset()
 	val.ID.Reset()
 	val.Marks.Reset()
 	val.Name.Reset()
@@ -1805,11 +1984,19 @@ func (val *transaction) validate() error {
 	if err := val.Context.validate(); err != nil {
 		return errors.Wrapf(err, "context")
 	}
+	for _, elem := range val.DroppedSpanStats {
+		if err := elem.validate(); err != nil {
+			return errors.Wrapf(err, "dropped_spans_stats")
+		}
+	}
 	if val.Duration.IsSet() && val.Duration.Val < 0 {
 		return fmt.Errorf("'duration': validation rule 'min(0)' violated")
 	}
 	if !val.Duration.IsSet() {
 		return fmt.Errorf("'duration' required")
+	}
+	if err := val.FAAS.validate(); err != nil {
+		return errors.Wrapf(err, "faas")
 	}
 	if val.ID.IsSet() && utf8.RuneCountInString(val.ID.Val) > 1024 {
 		return fmt.Errorf("'id': validation rule 'maxLength(1024)' violated")
@@ -1864,6 +2051,117 @@ func (val *transaction) validate() error {
 	}
 	if err := val.UserExperience.validate(); err != nil {
 		return errors.Wrapf(err, "experience")
+	}
+	return nil
+}
+
+func (val *transactionDroppedSpanStats) IsSet() bool {
+	return val.DestinationServiceResource.IsSet() || val.Outcome.IsSet() || val.Duration.IsSet()
+}
+
+func (val *transactionDroppedSpanStats) Reset() {
+	val.DestinationServiceResource.Reset()
+	val.Outcome.Reset()
+	val.Duration.Reset()
+}
+
+func (val *transactionDroppedSpanStats) validate() error {
+	if !val.IsSet() {
+		return nil
+	}
+	if val.DestinationServiceResource.IsSet() && utf8.RuneCountInString(val.DestinationServiceResource.Val) > 1024 {
+		return fmt.Errorf("'destination_service_resource': validation rule 'maxLength(1024)' violated")
+	}
+	if val.Outcome.Val != "" {
+		var matchEnum bool
+		for _, s := range enumOutcome {
+			if val.Outcome.Val == s {
+				matchEnum = true
+				break
+			}
+		}
+		if !matchEnum {
+			return fmt.Errorf("'outcome': validation rule 'enum(enumOutcome)' violated")
+		}
+	}
+	if err := val.Duration.validate(); err != nil {
+		return errors.Wrapf(err, "duration")
+	}
+	return nil
+}
+
+func (val *transactionDroppedSpansDuration) IsSet() bool {
+	return val.Count.IsSet() || val.Sum.IsSet()
+}
+
+func (val *transactionDroppedSpansDuration) Reset() {
+	val.Count.Reset()
+	val.Sum.Reset()
+}
+
+func (val *transactionDroppedSpansDuration) validate() error {
+	if !val.IsSet() {
+		return nil
+	}
+	if val.Count.IsSet() && val.Count.Val < 1 {
+		return fmt.Errorf("'count': validation rule 'min(1)' violated")
+	}
+	if err := val.Sum.validate(); err != nil {
+		return errors.Wrapf(err, "sum")
+	}
+	return nil
+}
+
+func (val *transactionDroppedSpansDurationSum) IsSet() bool {
+	return val.Us.IsSet()
+}
+
+func (val *transactionDroppedSpansDurationSum) Reset() {
+	val.Us.Reset()
+}
+
+func (val *transactionDroppedSpansDurationSum) validate() error {
+	if !val.IsSet() {
+		return nil
+	}
+	if val.Us.IsSet() && val.Us.Val < 0 {
+		return fmt.Errorf("'us': validation rule 'min(0)' violated")
+	}
+	return nil
+}
+
+func (val *faas) IsSet() bool {
+	return val.Coldstart.IsSet() || val.Execution.IsSet() || val.Trigger.IsSet()
+}
+
+func (val *faas) Reset() {
+	val.Coldstart.Reset()
+	val.Execution.Reset()
+	val.Trigger.Reset()
+}
+
+func (val *faas) validate() error {
+	if !val.IsSet() {
+		return nil
+	}
+	if err := val.Trigger.validate(); err != nil {
+		return errors.Wrapf(err, "trigger")
+	}
+	return nil
+}
+
+func (val *trigger) IsSet() bool {
+	return val.Type.IsSet() || val.RequestID.IsSet()
+}
+
+func (val *trigger) Reset() {
+	val.Type.Reset()
+	val.RequestID.Reset()
+}
+
+func (val *trigger) validate() error {
+	if !val.IsSet() {
+		return nil
 	}
 	return nil
 }

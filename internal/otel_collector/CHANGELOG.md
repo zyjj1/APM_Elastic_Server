@@ -2,6 +2,212 @@
 
 ## Unreleased
 
+## v0.34.0 Beta
+
+## 🛑 Breaking changes 🛑
+
+- Artifacts are no longer published in this repository, check [here](https://github.com/open-telemetry/opentelemetry-collector-releases) (#3941)
+- Remove deprecated `tracetranslator.AttributeValueToString` and `tracetranslator.AttributeMapToMap` (#3873)
+- Change semantic conventions for status (code, msg) as per specifications (#3872)
+- Add `pdata.NewTimestampFromTime`, deprecate `pdata.TimestampFromTime` (#3868)
+- Add `pdata.NewAttributeMapFromMap`, deprecate `pdata.AttributeMap.InitFromMap` (#3936)
+- Move `fileexporter` to contrib (#3474)
+- Move `jaegerexporter` to contrib (#3474)
+- Move `kafkaexporter` to contrib (#3474)
+- Move `opencensusexporter` to contrib (#3474)
+- Move `prometheusexporter` to contrib (#3474)
+- Move `prometheusremotewriteexporter` to contrib (#3474)
+- Move `zipkinexporter` to contrib (#3474)
+- Move `attributeprocessor` to contrib (#3474)
+- Move `filterprocessor` to contrib (#3474)
+- Move `probabilisticsamplerprocessor` to contrib (#3474)
+- Move `resourceprocessor` to contrib (#3474)
+- Move `spanprocessor` to contrib (#3474)
+- Move `hostmetricsreceiver` to contrib (#3474)
+- Move `jaegerreceiver` to contrib (#3474)
+- Move `kafkareceiver` to contrib (#3474)
+- Move `opencensusreceiver` to contrib (#3474)
+- Move `prometheusreceiver` to contrib (#3474)
+- Move `zipkinreceiver` to contrib (#3474)
+- Move `bearertokenauthextension` to contrib (#3474)
+- Move `healthcheckextension` to contrib (#3474)
+- Move `oidcauthextension` to contrib (#3474)
+- Move `pprofextension` to contrib (#3474)
+- Move `translator/internaldata` to contrib (#3474)
+- Move `translator/trace/jaeger` to contrib (#3474)
+- Move `translator/trace/zipkin` to contrib (#3474)
+- Move `testbed` to contrib (#3474)
+- Move `exporter/exporterhelper/resource_to_telemetry` to contrib (#3474)
+- Move `processor/processorhelper/attraction` to contrib (#3474)
+- Move `translator/conventions` to `model/semconv` (#3901)
+
+## v0.33.0 Beta
+
+## 🛑 Breaking changes 🛑
+
+- Rename `configloader` interface to `configunmarshaler` (#3774)
+- Remove `LabelsMap` from all the metrics points (#3706)
+- Update generated K8S attribute labels to fix capitalization (#3823) 
+
+## 💡 Enhancements 💡
+
+- Collector has now full support for metrics proto v0.9.0.
+
+## v0.32.0 Beta
+
+This release is marked as "bad" since the metrics pipelines will produce bad data.
+
+- See https://github.com/open-telemetry/opentelemetry-collector/issues/3824
+
+## 🛑 Breaking changes 🛑
+
+- Rename `CustomUnmarshable` interface to `Unmarshallable` (#3774)
+
+## 💡 Enhancements 💡
+
+- Change default OTLP/HTTP port number from 55681 to 4318 (#3743)
+- Update OTLP proto to v0.9.0 (#3740)
+  - Remove `SetValue`/`Value` func for `NumberDataPoint`/`Exemplar` (#3730)
+  - Remove `IntGauge`/`IntSum`from pdata (#3731)
+  - Remove `IntDataPoint` from pdata (#3735)
+  - Add support for `Bytes` attribute type (#3756)
+  - Add `SchemaUrl` field (#3759)
+  - Add `Attributes` to `NumberDataPoint`, `HistogramDataPoint`, `SummaryDataPoint` (#3761)
+- `conventions` translator: Replace with conventions generated from spec v1.5.0 (#3494)
+- `prometheus` receiver: Add `ToMetricPdata` method (#3695)
+- Make configsource `Watchable` an optional interface (#3792)
+- `obsreport` exporter: Change to accept `ExporterCreateSettings` (#3789)
+
+## 🧰 Bug fixes 🧰
+
+- `configgrpc`: Use chained interceptors in the gRPC server (#3744)
+- `prometheus` receiver: Use actual interval startTimeMs for cumulative types (#3694)
+- `jaeger` translator: Fix bug that could generate empty proto spans (#3808)
+
+## v0.31.0 Beta
+
+## 🛑 Breaking changes 🛑
+
+- Remove Resize() from pdata slice APIs (#3675)
+- Remove the ballast allocation when `mem-ballast-size-mib` is set in command line (#3626)
+  - Use [`ballast extension`](./extension/ballastextension/README.md) to set memory ballast instead.
+- Rename `DoubleDataPoint` to `NumberDataPoint` (#3633)
+- Remove `IntHistogram` (#3676)
+
+## 💡 Enhancements 💡
+
+- Update to OTLP 0.8.0:
+  - Translate `IntHistogram` to `Histogram` in `otlp_wrappers` (#3676)
+  - Translate `IntGauge` to `Gauge` in `otlp_wrappers` (#3619)
+  - Translate `IntSum` to `Sum` in `otlp_wrappers` (#3621)
+  - Update `NumberDataPoint` to support `DoubleVal` and `IntVal` (#3689)
+  - Update `Exemplar` to use `oneOfPrimitiveValue` (#3699)
+  - Remove `IntExemplar` and `IntExemplarSlice` from `pdata` (#3705)
+  - Mark `IntGauge`/`IntSum`/`IntDataPoint` as deprecated (#3707)
+  - Remove `IntGauge`/`IntSum` from `batchprocessor` (#3718)
+  - `prometheusremotewrite` exporter: Convert to new Number metrics (#3714)
+  - `prometheus` receiver: Convert to new Number metrics (#3716)
+  - `prometheus` exporter: Convert to new Number metrics (#3709)
+  - `hostmetrics` receiver: Convert to new Number metrics (#3710)
+  - `opencensus`: Convert to new Number metrics (#3708)
+  - `scraperhelper` receiver: Convert to new Number metrics (#3717)
+  - `testbed`: Convert to new Number metrics (#3719)
+  - `expoerterhelper`: Convert `resourcetolabel` to new Number metrics (#3723)
+- `configauth`: Prepare auth API to return a context (#3618)
+- `pdata`:
+  - Implement `Equal()` for map-valued `AttributeValues` (#3612)
+  - Add `[Type]Slice.Sort(func)` to sort slices (#3671)
+- `memorylimiter`:
+  - Add validation on ballast size between `memorylimiter` and `ballastextension` (#3532)
+  - Access Ballast extension via `Host.GetExtensions` (#3634)
+- `prometheusremotewrite` exporter: Add a WAL implementation without wiring up (#3597)
+- `prometheus` receiver: Add `metricGroup.toDistributionPoint` pdata conversion (#3667)
+- Use `ComponentID` as identifier instead of config (#3696)
+- `zpages`: Move config validation from factory to `Validate` (#3697)
+- Enable `tracez` z-pages from otel-go, disable opencensus (#3698)
+- Convert temporality and monotonicity for deprecated sums (#3729)
+
+## 🧰 Bug fixes 🧰
+
+- `otlpexporter`: Allow endpoint to be configured with a scheme of `http` or `https` (#3575)
+- Handle errors when reloading the collector service (#3615)
+- Do not report fatal error when `cmux.ErrServerClosed` (#3703)
+- Fix bool attribute equality in `pdata` (#3688)
+
+## v0.30.0 Beta
+
+## 🛑 Breaking changes 🛑
+
+- Rename `pdata.DoubleSum` to `pdata.Sum` (#3583)
+- Rename `pdata.DoubleGauge` to `pdata.Gauge` (#3599)
+- Migrated `pdata` to a dedicated package (#3483)
+- Change Marshaler/Unmarshaler to be consistent with other interfaces (#3502)
+- Remove consumer/simple package (#3438)
+- Remove unnecessary interfaces from pdata (#3506)
+- zipkinv1 implement directly Unmarshaler interface (#3504)
+- zipkinv2 implement directly Marshaler/Unmarshaler interface (#3505)
+- Change exporterhelper to accept ExporterCreateSettings instead of just logger (#3569)
+- Deprecate Resize() from pdata slice APIs (#3573) 
+- Use Func pattern in processorhelper, consistent with others (#3570)
+
+## 💡 Enhancements 💡
+
+- Update OTLP to v0.8.0 (#3572)
+- Migrate from OpenCensus to OpenTelemetry for internal tracing (#3567) 
+- Move internal/pdatagrpc to model/otlpgrpc (#3507) 
+- Move internal/otlp to model/otlp (#3508)
+- Create http Server via Config, enable cors and decompression (#3513)
+- Allow users to set min and max TLS versions (#3591)
+- Support setting ballast size in percentage of total Mem in ballast extension (#3456)
+- Publish go.opentelemetry.io/collector/model as a separate module (#3530)
+- Pass a TracerProvider via construct settings to all the components (#3592) 
+- Make graceful shutdown optional (#3577)
+
+## 🧰 Bug fixes 🧰
+
+- `scraperhelper`: Include the scraper name in log messages (#3487)
+- `scraperhelper`: fix case when returned pdata is empty (#3520) 
+- Record the correct number of points not metrics in Kafka receiver (#3553) 
+- Validate the Prometheus configuration (#3589) 
+
+## v0.29.0 Beta
+
+## 🛑 Breaking changes 🛑
+
+- Rename `service.Application` to `service.Collector` (#3268)
+- Provide case sensitivity in config yaml mappings by using Koanf instead of Viper (#3337)
+- Move zipkin constants to an internal package (#3431)
+- Disallow renaming metrics using metric relabel configs (#3410)
+- Move cgroup and iruntime utils from memory_limiter to internal folder (#3448)
+- Move model pdata interfaces to pdata, expose them publicly (#3455)
+
+## 💡 Enhancements 💡
+
+- Change obsreport helpers for scraper to use the same pattern as Processor/Exporter (#3327)
+- Convert `otlptext` to implement Marshaler interfaces (#3366)
+- Add encoder/decoder and marshaler/unmarshaler for OTLP protobuf (#3401)
+- Use the new marshaler/unmarshaler in `kafka` exporter (#3403)
+- Convert `zipkinv2` to to/from translator interfaces (#3409)
+- `zipkinv1`: Move to translator and encoders interfaces (#3419)
+- Use the new marshaler/unmarshaler in `kafka` receiver #3402
+- Change `oltp` receiver to use the new unmarshaler, avoid grpc-gateway dependency (#3406)
+- Use the new Marshaler in the `otlphttp` exporter (#3433)
+- Add grpc response struct for all signals instead of returning interface in `otlp` receiver/exporter (#3437)
+- `zipkinv2`: Add encoders, decoders, marshalers (#3426)
+- `scrapererror` receiver: Return concrete error type (#3360)
+- `kafka` receiver: Add metrics support (#3452)
+- `prometheus` receiver:
+  - Add store to track stale metrics (#3414)
+  - Add `up` and `scrape_xxxx` internal metrics (#3116)
+
+## 🧰 Bug fixes 🧰
+
+- `prometheus` receiver:
+  - Reject datapoints with duplicate label keys (#3408)
+  - Scrapers are not stopped when receiver is shutdown (#3450)
+- `prometheusremotewrite` exporter: Adjust default retry settings (#3416)
+- `hostmetrics` receiver: Fix missing startTimestamp for `processes` scraper (#3461)
+
 ## v0.28.0 Beta
 
 ## 🛑 Breaking changes 🛑
@@ -33,6 +239,7 @@
 ## 💡 Enhancements 💡
 
 - Add `doc.go` files to the consumer package and its subpackages (#3270)
+- Improve documentation of consumer package and subpackages (#3269, #3361)
 - Automate triggering of doc-update on release (#3234)
 - Enable Dependabot for Github Actions (#3312)
 - Remove the proto dependency in `goldendataset` for traces (#3322)

@@ -24,49 +24,49 @@ import (
 	"github.com/elastic/apm-server/model/modelprocessor"
 )
 
-func TestSetSystemHostname(t *testing.T) {
-	withConfiguredHostname := model.Metadata{
-		System: model.System{
-			ConfiguredHostname: "configured_hostname",
-			DetectedHostname:   "detected_hostname",
+func TestSetHostHostname(t *testing.T) {
+	withConfiguredHostname := model.APMEvent{
+		Host: model.Host{
+			Name:     "configured_hostname",
+			Hostname: "detected_hostname",
 		},
 	}
-	withDetectedHostname := model.Metadata{
-		System: model.System{
-			DetectedHostname: "detected_hostname",
+	withDetectedHostname := model.APMEvent{
+		Host: model.Host{
+			Hostname: "detected_hostname",
 		},
 	}
 	withKubernetesPodName := withDetectedHostname
-	withKubernetesPodName.System.Kubernetes.PodName = "kubernetes.pod.name"
+	withKubernetesPodName.Kubernetes.PodName = "kubernetes.pod.name"
 	withKubernetesNodeName := withKubernetesPodName
-	withKubernetesNodeName.System.Kubernetes.NodeName = "kubernetes.node.name"
+	withKubernetesNodeName.Kubernetes.NodeName = "kubernetes.node.name"
 
-	processor := modelprocessor.SetSystemHostname{}
+	processor := modelprocessor.SetHostHostname{}
 
-	testProcessBatchMetadata(t, processor, withConfiguredHostname, withConfiguredHostname) // unchanged
-	testProcessBatchMetadata(t, processor, withDetectedHostname,
-		metadataWithConfiguredHostname(
-			metadataWithDetectedHostname(withDetectedHostname, "detected_hostname"),
+	testProcessBatch(t, processor, withConfiguredHostname, withConfiguredHostname) // unchanged
+	testProcessBatch(t, processor, withDetectedHostname,
+		eventWithHostName(
+			eventWithHostHostname(withDetectedHostname, "detected_hostname"),
 			"detected_hostname",
 		),
 	)
-	testProcessBatchMetadata(t, processor, withKubernetesPodName,
-		metadataWithDetectedHostname(withKubernetesPodName, ""),
+	testProcessBatch(t, processor, withKubernetesPodName,
+		eventWithHostHostname(withKubernetesPodName, ""),
 	)
-	testProcessBatchMetadata(t, processor, withKubernetesNodeName,
-		metadataWithConfiguredHostname(
-			metadataWithDetectedHostname(withKubernetesNodeName, "kubernetes.node.name"),
+	testProcessBatch(t, processor, withKubernetesNodeName,
+		eventWithHostName(
+			eventWithHostHostname(withKubernetesNodeName, "kubernetes.node.name"),
 			"kubernetes.node.name",
 		),
 	)
 }
 
-func metadataWithDetectedHostname(in model.Metadata, detectedHostname string) model.Metadata {
-	in.System.DetectedHostname = detectedHostname
+func eventWithHostHostname(in model.APMEvent, detectedHostname string) model.APMEvent {
+	in.Host.Hostname = detectedHostname
 	return in
 }
 
-func metadataWithConfiguredHostname(in model.Metadata, configuredHostname string) model.Metadata {
-	in.System.ConfiguredHostname = configuredHostname
+func eventWithHostName(in model.APMEvent, configuredHostname string) model.APMEvent {
+	in.Host.Name = configuredHostname
 	return in
 }

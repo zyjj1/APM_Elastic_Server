@@ -249,10 +249,6 @@
                             }
                         }
                     ]
-                },
-                "page": {
-                    "referer": "http://localhost:8000/test/e2e/",
-                    "url": "http://localhost:8000/test/e2e/general-usecase/"
                 }
             },
             "event": {
@@ -263,6 +259,7 @@
                     "referrer": "http://localhost:8000/test/e2e/"
                 }
             },
+            "message": "Uncaught Error: log timeout test error",
             "observer": {
                 "ephemeral_id": "dynamic",
                 "hostname": "dynamic",
@@ -280,7 +277,8 @@
                 "version": "1.0.1"
             },
             "source": {
-                "ip": "127.0.0.1"
+                "ip": "127.0.0.1",
+                "port": "dynamic"
             },
             "timestamp": {
                 "us": "dynamic"

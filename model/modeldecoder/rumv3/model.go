@@ -43,11 +43,6 @@ type metadataRoot struct {
 	Metadata metadata `json:"m" validate:"required"`
 }
 
-// metricsetRoot requires a metricset event to be present
-type metricsetRoot struct {
-	Metricset metricset `json:"me" validate:"required"`
-}
-
 // transactionRoot requires a transaction event to be present
 type transactionRoot struct {
 	Transaction transaction `json:"x" validate:"required"`
@@ -252,6 +247,9 @@ type metadata struct {
 	Service metadataService `json:"se" validate:"required"`
 	// User metadata, which can be overwritten on a per event basis.
 	User user `json:"u"`
+	// Network holds information about the network over which the
+	// monitored service is communicating.
+	Network network `json:"n"`
 }
 
 type metadataService struct {
@@ -303,40 +301,29 @@ type metadataServiceRuntime struct {
 	Version nullable.String `json:"ve" validate:"required,maxLength=1024"`
 }
 
-type metricset struct {
-	// Samples hold application metrics collected from the agent.
-	Samples metricsetSamples `json:"sa" validate:"required"`
-	// Span holds selected information about the correlated transaction.
-	Span metricsetSpanRef `json:"y"`
-	// Tags are a flat mapping of user-defined tags. Allowed value types are
-	// string, boolean and number values. Tags are indexed and searchable.
-	Tags common.MapStr `json:"g" validate:"inputTypesVals=string;bool;number,maxLengthVals=1024"`
+type network struct {
+	Connection networkConnection `json:"c"`
 }
 
-type metricsetSamples struct {
-	// TransactionDurationCount is the number of transactions since the last
-	// report (the delta). The duration of transactions is tracked, which
-	// allows for the creation of graphs displaying a weighted average.
-	TransactionDurationCount metricsetSampleValue `json:"xdc"`
-	// TransactionDurationSum is the sum of all transactions durations in ms
-	// since the last report (the delta). The duration of transactions is tracked,
-	// which allows for the creation of graphs displaying a weighted average.
-	TransactionDurationSum metricsetSampleValue `json:"xds"`
-	// TransactionBreakdownCount The number of transactions for which breakdown metrics (span.self_time) have been created. As the Java agent tracks the breakdown for both sampled and non-sampled transactions, this metric is equivalent to transaction.duration.count
+type networkConnection struct {
+	Type nullable.String `json:"t" validate:"maxLength=1024"`
+}
+
+type transactionMetricset struct {
+	// Samples hold application metrics collected from the agent.
+	Samples transactionMetricsetSamples `json:"sa" validate:"required"`
+	// Span holds selected information about the correlated transaction.
+	Span metricsetSpanRef `json:"y"`
+}
+
+type transactionMetricsetSamples struct {
+	// TransactionBreakdownCount The number of transactions for which breakdown metrics (span.self_time) have been created.
 	TransactionBreakdownCount metricsetSampleValue `json:"xbc"`
 	// SpanSelfTimeCount holds the count of the related spans' self_time.
 	SpanSelfTimeCount metricsetSampleValue `json:"ysc"`
 	// SpanSelfTimeSum holds the sum of the related spans' self_time.
 	SpanSelfTimeSum metricsetSampleValue `json:"yss"`
 }
-
-var (
-	metricsetSamplesTransactionDurationCountName  = "transaction.duration.count"
-	metricsetSamplesTransactionDurationSumName    = "transaction.duration.sum.us"
-	metricsetSamplesTransactionBreakdownCountName = "transaction.breakdown.count"
-	metricsetSamplesSpanSelfTimeCountName         = "span.self_time.count"
-	metricsetSamplesSpanSelfTimeSumName           = "span.self_time.sum.us"
-)
 
 type metricsetSampleValue struct {
 	// Value holds the value of a single metric sample.
@@ -495,7 +482,7 @@ type transaction struct {
 	// user or the agent. Marks are only reported by RUM agents.
 	Marks transactionMarks `json:"k"`
 	// Metricsets is a collection metrics related to this transaction.
-	Metricsets []metricset `json:"me"`
+	Metricsets []transactionMetricset `json:"me"`
 	// Name is the generic designation of a transaction in the scope of a
 	// single service, eg: 'GET /users/:id'.
 	Name nullable.String `json:"n" validate:"maxLength=1024"`

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build windows
 // +build windows
 
 package main
@@ -25,7 +26,7 @@ import (
 	"go.opentelemetry.io/collector/service"
 )
 
-func run(set service.AppSettings) error {
+func run(set service.CollectorSettings) error {
 	if useInteractiveMode, err := checkUseInteractiveMode(); err != nil {
 		return err
 	} else if useInteractiveMode {
@@ -51,7 +52,7 @@ func checkUseInteractiveMode() (bool, error) {
 	}
 }
 
-func runService(set service.AppSettings) error {
+func runService(set service.CollectorSettings) error {
 	// do not need to supply service name when startup is invoked through Service Control Manager directly
 	if err := svc.Run("", service.NewWindowsService(set)); err != nil {
 		return fmt.Errorf("failed to start service %w", err)

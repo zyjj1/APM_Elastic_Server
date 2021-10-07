@@ -7,7 +7,7 @@
                 "version": "4.8.1"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "event": {
                 "outcome": "success"
@@ -37,6 +37,11 @@
             },
             "labels": {
                 "testTagKey": "testTagValue"
+            },
+            "network": {
+                "connection": {
+                    "type": "5G"
+                }
             },
             "parent": {
                 "id": "1ef08ac234fca23b455d9e27c660f1ab"
@@ -118,10 +123,6 @@
                     }
                 },
                 "name": "general-usecase-initial-p-load",
-                "page": {
-                    "referer": "http://localhost:8000/test/e2e/",
-                    "url": "http://localhost:8000/test/e2e/general-usecase/"
-                },
                 "sampled": true,
                 "span_count": {
                     "dropped": 1,
@@ -153,10 +154,15 @@
                 "version": "4.8.1"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "labels": {
                 "testTagKey": "testTagValue"
+            },
+            "network": {
+                "connection": {
+                    "type": "5G"
+                }
             },
             "processor": {
                 "event": "metric",
@@ -179,13 +185,14 @@
                 },
                 "version": "0.0.1"
             },
+            "source": {
+                "ip": "192.0.0.1"
+            },
             "transaction": {
+                "breakdown.count": 1,
                 "name": "general-usecase-initial-p-load",
                 "type": "p-load"
             },
-            "transaction.breakdown.count": 1,
-            "transaction.duration.count": 1,
-            "transaction.duration.sum.us": 295,
             "user": {
                 "email": "user@email.com",
                 "id": "123",
@@ -202,10 +209,15 @@
                 "version": "4.8.1"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "labels": {
                 "testTagKey": "testTagValue"
+            },
+            "network": {
+                "connection": {
+                    "type": "5G"
+                }
             },
             "processor": {
                 "event": "metric",
@@ -228,11 +240,16 @@
                 },
                 "version": "0.0.1"
             },
+            "source": {
+                "ip": "192.0.0.1"
+            },
             "span": {
+                "self_time": {
+                    "count": 1,
+                    "sum.us": 1
+                },
                 "type": "Request"
             },
-            "span.self_time.count": 1,
-            "span.self_time.sum.us": 1,
             "transaction": {
                 "name": "general-usecase-initial-p-load",
                 "type": "p-load"
@@ -253,10 +270,15 @@
                 "version": "4.8.1"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "labels": {
                 "testTagKey": "testTagValue"
+            },
+            "network": {
+                "connection": {
+                    "type": "5G"
+                }
             },
             "processor": {
                 "event": "metric",
@@ -279,11 +301,16 @@
                 },
                 "version": "0.0.1"
             },
+            "source": {
+                "ip": "192.0.0.1"
+            },
             "span": {
+                "self_time": {
+                    "count": 1,
+                    "sum.us": 1
+                },
                 "type": "Response"
             },
-            "span.self_time.count": 1,
-            "span.self_time.sum.us": 1,
             "transaction": {
                 "name": "general-usecase-initial-p-load",
                 "type": "p-load"
@@ -304,13 +331,18 @@
                 "version": "4.8.1"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "event": {
                 "outcome": "unknown"
             },
             "labels": {
                 "testTagKey": "testTagValue"
+            },
+            "network": {
+                "connection": {
+                    "type": "5G"
+                }
             },
             "parent": {
                 "id": "ec2e280be8345240"
@@ -335,6 +367,9 @@
                     "version": "8.0"
                 },
                 "version": "0.0.1"
+            },
+            "source": {
+                "ip": "192.0.0.1"
             },
             "span": {
                 "duration": {
@@ -373,13 +408,18 @@
                 "version": "4.8.1"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "event": {
                 "outcome": "unknown"
             },
             "labels": {
                 "testTagKey": "testTagValue"
+            },
+            "network": {
+                "connection": {
+                    "type": "5G"
+                }
             },
             "parent": {
                 "id": "ec2e280be8345240"
@@ -404,6 +444,9 @@
                     "version": "8.0"
                 },
                 "version": "0.0.1"
+            },
+            "source": {
+                "ip": "192.0.0.1"
             },
             "span": {
                 "duration": {
@@ -442,7 +485,7 @@
                 "version": "4.8.1"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "destination": {
                 "address": "localhost",
@@ -451,8 +494,20 @@
             "event": {
                 "outcome": "unknown"
             },
+            "http": {
+                "response": {
+                    "decoded_body_size": 676864,
+                    "encoded_body_size": 676864,
+                    "transfer_size": 677175
+                }
+            },
             "labels": {
                 "testTagKey": "testTagValue"
+            },
+            "network": {
+                "connection": {
+                    "type": "5G"
+                }
             },
             "parent": {
                 "id": "ec2e280be8345240"
@@ -477,6 +532,9 @@
                     "version": "8.0"
                 },
                 "version": "0.0.1"
+            },
+            "source": {
+                "ip": "192.0.0.1"
             },
             "span": {
                 "destination": {
@@ -494,11 +552,9 @@
                         "decoded_body_size": 676864,
                         "encoded_body_size": 676864,
                         "transfer_size": 677175
-                    },
-                    "url": {
-                        "original": "http://localhost:8000/test/e2e/general-usecase/app.e2e-bundle.min.js?token=REDACTED"
                     }
                 },
+                "http.url.original": "http://localhost:8000/test/e2e/general-usecase/app.e2e-bundle.min.js?token=REDACTED",
                 "id": "fb8f717930697299",
                 "name": "http://localhost:8000/test/e2e/general-usecase/app.e2e-bundle.min.js",
                 "start": {
@@ -516,7 +572,9 @@
             "transaction": {
                 "id": "ec2e280be8345240"
             },
-            "url.original": "http://localhost:8000/test/e2e/general-usecase/app.e2e-bundle.min.js?token=REDACTED",
+            "url": {
+                "original": "http://localhost:8000/test/e2e/general-usecase/app.e2e-bundle.min.js?token=REDACTED"
+            },
             "user": {
                 "email": "user@email.com",
                 "id": "123",
@@ -533,13 +591,18 @@
                 "version": "4.8.1"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "event": {
                 "outcome": "unknown"
             },
             "labels": {
                 "testTagKey": "testTagValue"
+            },
+            "network": {
+                "connection": {
+                    "type": "5G"
+                }
             },
             "parent": {
                 "id": "ec2e280be8345240"
@@ -564,6 +627,9 @@
                     "version": "8.0"
                 },
                 "version": "0.0.1"
+            },
+            "source": {
+                "ip": "192.0.0.1"
             },
             "span": {
                 "duration": {
@@ -601,7 +667,7 @@
                 "version": "4.8.1"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "destination": {
                 "address": "localhost",
@@ -611,13 +677,20 @@
                 "outcome": "success"
             },
             "http": {
-                "request.method": "GET",
+                "request": {
+                    "method": "GET"
+                },
                 "response": {
                     "status_code": 200
                 }
             },
             "labels": {
                 "testTagKey": "testTagValue"
+            },
+            "network": {
+                "connection": {
+                    "type": "5G"
+                }
             },
             "parent": {
                 "id": "ec2e280be8345240"
@@ -643,6 +716,9 @@
                 },
                 "version": "0.0.1"
             },
+            "source": {
+                "ip": "192.0.0.1"
+            },
             "span": {
                 "destination": {
                     "service": {
@@ -658,11 +734,9 @@
                     "method": "GET",
                     "response": {
                         "status_code": 200
-                    },
-                    "url": {
-                        "original": "http://localhost:8000/test/e2e/common/data.json?test=hamid"
                     }
                 },
+                "http.url.original": "http://localhost:8000/test/e2e/common/data.json?test=hamid",
                 "id": "5ecb8ee030749715",
                 "name": "GET /test/e2e/common/data.json",
                 "start": {
@@ -681,7 +755,9 @@
             "transaction": {
                 "id": "ec2e280be8345240"
             },
-            "url.original": "http://localhost:8000/test/e2e/common/data.json?test=hamid",
+            "url": {
+                "original": "http://localhost:8000/test/e2e/common/data.json?test=hamid"
+            },
             "user": {
                 "email": "user@email.com",
                 "id": "123",
@@ -698,7 +774,7 @@
                 "version": "4.8.1"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "destination": {
                 "address": "localhost",
@@ -708,13 +784,20 @@
                 "outcome": "success"
             },
             "http": {
-                "request.method": "POST",
+                "request": {
+                    "method": "POST"
+                },
                 "response": {
                     "status_code": 200
                 }
             },
             "labels": {
                 "testTagKey": "testTagValue"
+            },
+            "network": {
+                "connection": {
+                    "type": "5G"
+                }
             },
             "parent": {
                 "id": "ec2e280be8345240"
@@ -740,6 +823,9 @@
                 },
                 "version": "0.0.1"
             },
+            "source": {
+                "ip": "192.0.0.1"
+            },
             "span": {
                 "destination": {
                     "service": {
@@ -755,11 +841,9 @@
                     "method": "POST",
                     "response": {
                         "status_code": 200
-                    },
-                    "url": {
-                        "original": "http://localhost:8003/data"
                     }
                 },
+                "http.url.original": "http://localhost:8003/data",
                 "id": "27f45fd274f976d4",
                 "name": "POST http://localhost:8003/data",
                 "start": {
@@ -778,7 +862,9 @@
             "transaction": {
                 "id": "ec2e280be8345240"
             },
-            "url.original": "http://localhost:8003/data",
+            "url": {
+                "original": "http://localhost:8003/data"
+            },
             "user": {
                 "email": "user@email.com",
                 "id": "123",
@@ -795,7 +881,7 @@
                 "version": "4.8.1"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "destination": {
                 "address": "localhost",
@@ -805,13 +891,20 @@
                 "outcome": "success"
             },
             "http": {
-                "request.method": "POST",
+                "request": {
+                    "method": "POST"
+                },
                 "response": {
                     "status_code": 200
                 }
             },
             "labels": {
                 "testTagKey": "testTagValue"
+            },
+            "network": {
+                "connection": {
+                    "type": "5G"
+                }
             },
             "parent": {
                 "id": "bbd8bcc3be14d814"
@@ -837,6 +930,9 @@
                 },
                 "version": "0.0.1"
             },
+            "source": {
+                "ip": "192.0.0.1"
+            },
             "span": {
                 "action": "action",
                 "destination": {
@@ -853,11 +949,9 @@
                     "method": "POST",
                     "response": {
                         "status_code": 200
-                    },
-                    "url": {
-                        "original": "http://localhost:8003/fetch"
                     }
                 },
+                "http.url.original": "http://localhost:8003/fetch",
                 "id": "a3c043330bc2015e",
                 "name": "POST http://localhost:8003/fetch",
                 "start": {
@@ -876,7 +970,9 @@
             "transaction": {
                 "id": "ec2e280be8345240"
             },
-            "url.original": "http://localhost:8003/fetch",
+            "url": {
+                "original": "http://localhost:8003/fetch"
+            },
             "user": {
                 "email": "user@email.com",
                 "id": "123",
@@ -893,13 +989,18 @@
                 "version": "4.8.1"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "event": {
                 "outcome": "success"
             },
             "labels": {
                 "testTagKey": "testTagValue"
+            },
+            "network": {
+                "connection": {
+                    "type": "5G"
+                }
             },
             "parent": {
                 "id": "ec2e280be8345240"
@@ -924,6 +1025,9 @@
                     "version": "8.0"
                 },
                 "version": "0.0.1"
+            },
+            "source": {
+                "ip": "192.0.0.1"
             },
             "span": {
                 "duration": {
@@ -968,55 +1072,6 @@
             "transaction": {
                 "id": "ec2e280be8345240"
             },
-            "user": {
-                "email": "user@email.com",
-                "id": "123",
-                "name": "John Doe"
-            },
-            "user_agent": {
-                "original": "rum-2.0"
-            }
-        },
-        {
-            "@timestamp": "2018-08-01T10:00:00.000Z",
-            "agent": {
-                "name": "js-base",
-                "version": "4.8.1"
-            },
-            "client": {
-                "ip": "192.0.0.1"
-            },
-            "labels": {
-                "tag1": "value1",
-                "testTagKey": "testTagValue"
-            },
-            "processor": {
-                "event": "metric",
-                "name": "metric"
-            },
-            "service": {
-                "environment": "prod",
-                "framework": {
-                    "name": "angular",
-                    "version": "2"
-                },
-                "language": {
-                    "name": "javascript",
-                    "version": "6"
-                },
-                "name": "apm-a-rum-test-e2e-general-usecase",
-                "runtime": {
-                    "name": "v8",
-                    "version": "8.0"
-                },
-                "version": "0.0.1"
-            },
-            "span": {
-                "subtype": "subtype",
-                "type": "Processing"
-            },
-            "span.self_time.count": 1,
-            "span.self_time.sum.us": 124,
             "user": {
                 "email": "user@email.com",
                 "id": "123",

@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build !windows
 // +build !windows
 
 package main
 
 import "go.opentelemetry.io/collector/service"
 
-func run(settings service.AppSettings) error {
+func run(settings service.CollectorSettings) error {
 	return runInteractive(settings)
 }

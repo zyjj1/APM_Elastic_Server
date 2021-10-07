@@ -18,70 +18,67 @@
 package model
 
 import (
-	"time"
-
-	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/common"
-	"github.com/elastic/beats/v7/libbeat/monitoring"
-
-	"github.com/elastic/apm-server/utility"
 )
 
 const (
-	transactionProcessorName = "transaction"
-	transactionDocType       = "transaction"
-	TracesDataset            = "apm"
+	TracesDataset = "apm"
 )
 
 var (
-	transactionMetrics         = monitoring.Default.NewRegistry("apm-server.processor.transaction")
-	transactionTransformations = monitoring.NewInt(transactionMetrics, "transformations")
-	transactionProcessorEntry  = common.MapStr{"name": transactionProcessorName, "event": transactionDocType}
+	// TransactionProcessor is the Processor value that should be assigned to transaction events.
+	TransactionProcessor = Processor{Name: "transaction", Event: "transaction"}
 )
 
+// Transaction holds values for transaction.* fields. This may be used in
+// transaction, span, and error events (i.e. transaction.id), as well as
+// internal metrics such as breakdowns (i.e. including transaction.name).
 type Transaction struct {
-	Metadata Metadata
+	ID string
 
-	ID       string
-	ParentID string
-	TraceID  string
+	// Type holds the transaction type: "request", "message", etc.
+	Type string
 
-	Timestamp time.Time
+	// Name holds the transaction name: "GET /foo", etc.
+	Name string
 
-	Type           string
-	Name           string
-	Result         string
-	Outcome        string
-	Duration       float64
+	// Result holds the transaction result: "HTTP 2xx", "OK", "Error", etc.
+	Result string
+
+	// Sampled holds the transaction's sampling decision.
+	//
+	// If Sampled is false, then it will be omitted from the output event.
+	Sampled bool
+
+	// DurationHistogram holds a transaction duration histogram,
+	// with bucket values measured in microseconds, for transaction
+	// duration metrics.
+	DurationHistogram Histogram
+
+	// BreakdownCount holds transaction breakdown count, for
+	// breakdown metrics.
+	BreakdownCount int
+
 	Marks          TransactionMarks
 	Message        *Message
-	Sampled        *bool
 	SpanCount      SpanCount
-	Page           *Page
-	HTTP           *Http
-	URL            *URL
-	Labels         common.MapStr
 	Custom         common.MapStr
 	UserExperience *UserExperience
-	Session        TransactionSession
 
-	Experimental interface{}
+	// DroppedSpanStats holds a list of the spans that were dropped by an
+	// agent; not indexed.
+	DroppedSpansStats []DroppedSpanStats
 
 	// RepresentativeCount holds the approximate number of
 	// transactions that this transaction represents for aggregation.
 	//
 	// This may be used for scaling metrics; it is not indexed.
 	RepresentativeCount float64
-}
 
-type TransactionSession struct {
-	// ID holds a session ID for grouping a set of related transactions.
-	ID string
-
-	// Sequence holds an optional sequence number for a transaction
-	// within a session. Sequence is ignored if it is zero or if
-	// ID is empty.
-	Sequence int
+	// Root indicates whether or not the transaction is the trace root.
+	//
+	// If Root is false, it will be omitted from the output event.
+	Root bool
 }
 
 type SpanCount struct {
@@ -89,19 +86,22 @@ type SpanCount struct {
 	Started *int
 }
 
-// fields creates the fields to populate in the top-level "transaction" object field.
-func (e *Transaction) fields() common.MapStr {
-	var fields mapStr
-	fields.set("id", e.ID)
-	fields.set("type", e.Type)
-	fields.set("duration", utility.MillisAsMicros(e.Duration))
-	fields.maybeSetString("name", e.Name)
-	fields.maybeSetString("result", e.Result)
-	fields.maybeSetMapStr("marks", e.Marks.fields())
-	fields.maybeSetMapStr("page", e.Page.Fields())
-	fields.maybeSetMapStr("custom", customFields(e.Custom))
-	fields.maybeSetMapStr("message", e.Message.Fields())
-	fields.maybeSetMapStr("experience", e.UserExperience.Fields())
+func (e *Transaction) setFields(fields *mapStr, apmEvent *APMEvent) {
+	var transaction mapStr
+	if apmEvent.Processor == TransactionProcessor {
+		// TODO(axw) set `event.duration` in 8.0, and remove this field.
+		// See https://github.com/elastic/apm-server/issues/5999
+		transaction.set("duration", common.MapStr{"us": int(apmEvent.Event.Duration.Microseconds())})
+	}
+	transaction.maybeSetString("id", e.ID)
+	transaction.maybeSetString("type", e.Type)
+	transaction.maybeSetMapStr("duration.histogram", e.DurationHistogram.fields())
+	transaction.maybeSetString("name", e.Name)
+	transaction.maybeSetString("result", e.Result)
+	transaction.maybeSetMapStr("marks", e.Marks.fields())
+	transaction.maybeSetMapStr("custom", customFields(e.Custom))
+	transaction.maybeSetMapStr("message", e.Message.Fields())
+	transaction.maybeSetMapStr("experience", e.UserExperience.Fields())
 	if e.SpanCount.Dropped != nil || e.SpanCount.Started != nil {
 		spanCount := common.MapStr{}
 		if e.SpanCount.Dropped != nil {
@@ -110,47 +110,25 @@ func (e *Transaction) fields() common.MapStr {
 		if e.SpanCount.Started != nil {
 			spanCount["started"] = *e.SpanCount.Started
 		}
-		fields.set("span_count", spanCount)
+		transaction.set("span_count", spanCount)
 	}
-	// TODO(axw) change Sampled to be non-pointer, and set its final value when
-	// instantiating the model type.
-	fields.set("sampled", e.Sampled == nil || *e.Sampled)
-	return common.MapStr(fields)
-}
-
-func (e *Transaction) toBeatEvent() beat.Event {
-	transactionTransformations.Inc()
-
-	fields := mapStr{
-		"processor":        transactionProcessorEntry,
-		transactionDocType: e.fields(),
+	if e.Sampled {
+		transaction.set("sampled", e.Sampled)
 	}
-
-	// first set generic metadata (order is relevant)
-	e.Metadata.set(&fields, e.Labels)
-	if client := fields["client"]; client != nil {
-		fields["source"] = client
+	if e.Root {
+		transaction.set("root", e.Root)
 	}
-
-	// then merge event specific information
-	var parent, trace mapStr
-	parent.maybeSetString("id", e.ParentID)
-	trace.maybeSetString("id", e.TraceID)
-	fields.maybeSetMapStr("parent", common.MapStr(parent))
-	fields.maybeSetMapStr("trace", common.MapStr(trace))
-	fields.maybeSetMapStr("timestamp", utility.TimeAsMicros(e.Timestamp))
-	fields.maybeSetMapStr("http", e.HTTP.Fields())
-	fields.maybeSetMapStr("url", e.URL.Fields())
-	fields.maybeSetMapStr("session", e.Session.fields())
-	if e.Experimental != nil {
-		fields.set("experimental", e.Experimental)
+	if e.BreakdownCount > 0 {
+		transaction.set("breakdown.count", e.BreakdownCount)
 	}
-	common.MapStr(fields).Put("event.outcome", e.Outcome)
-
-	return beat.Event{
-		Timestamp: e.Timestamp,
-		Fields:    common.MapStr(fields),
+	var dss []common.MapStr
+	for _, v := range e.DroppedSpansStats {
+		dss = append(dss, v.fields())
 	}
+	if len(dss) > 0 {
+		transaction.set("dropped_spans_stats", dss)
+	}
+	fields.maybeSetMapStr("transaction", common.MapStr(transaction))
 }
 
 type TransactionMarks map[string]TransactionMark
@@ -179,13 +157,18 @@ func (m TransactionMark) fields() common.MapStr {
 	return out
 }
 
-func (s *TransactionSession) fields() common.MapStr {
-	if s.ID == "" {
-		return nil
-	}
-	out := common.MapStr{"id": s.ID}
-	if s.Sequence > 0 {
-		out["sequence"] = s.Sequence
-	}
-	return out
+type DroppedSpanStats struct {
+	DestinationServiceResource string
+	Outcome                    string
+	Duration                   AggregatedDuration
+}
+
+func (stat DroppedSpanStats) fields() common.MapStr {
+	var out mapStr
+	out.maybeSetString("destination_service_resource",
+		stat.DestinationServiceResource,
+	)
+	out.maybeSetString("outcome", stat.Outcome)
+	out.maybeSetMapStr("duration", stat.Duration.fields())
+	return common.MapStr(out)
 }

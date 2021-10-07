@@ -27,8 +27,6 @@ import (
 )
 
 const (
-	badgerValueLogFileSize = 128 * 1024 * 1024
-
 	// subscriberPositionFile holds the file name used for persisting
 	// the subscriber position across server restarts.
 	subscriberPositionFile = "subscriber_position.json"
@@ -49,7 +47,6 @@ type Processor struct {
 	groups              *traceGroups
 
 	storageMu    sync.RWMutex
-	db           *badger.DB
 	storage      *eventstorage.ShardedReadWriter
 	eventMetrics *eventMetrics // heap-allocated for 64-bit alignment
 
@@ -71,19 +68,8 @@ func NewProcessor(config Config) (*Processor, error) {
 	}
 
 	logger := logp.NewLogger(logs.Sampling)
-	badgerOpts := badger.DefaultOptions(config.StorageDir)
-	badgerOpts.ValueLogFileSize = config.ValueLogFileSize
-	if badgerOpts.ValueLogFileSize == 0 {
-		badgerOpts.ValueLogFileSize = badgerValueLogFileSize
-	}
-	badgerOpts.Logger = eventstorage.LogpAdaptor{Logger: logger}
-	db, err := badger.Open(badgerOpts)
-	if err != nil {
-		return nil, err
-	}
-
 	eventCodec := eventstorage.JSONCodec{}
-	storage := eventstorage.New(db, eventCodec, config.TTL)
+	storage := eventstorage.New(config.DB, eventCodec, config.TTL)
 	readWriter := storage.NewShardedReadWriter()
 
 	p := &Processor{
@@ -91,7 +77,6 @@ func NewProcessor(config Config) (*Processor, error) {
 		logger:              logger,
 		tooManyGroupsLogger: logger.WithOptions(logs.WithRateLimit(tooManyGroupsLoggerRateLimit)),
 		groups:              newTraceGroups(config.Policies, config.MaxDynamicServices, config.IngestRateDecayFactor),
-		db:                  db,
 		storage:             readWriter,
 		eventMetrics:        &eventMetrics{},
 		stopping:            make(chan struct{}),
@@ -124,7 +109,7 @@ func (p *Processor) CollectMonitoring(_ monitoring.Mode, V monitoring.Visitor) {
 	monitoring.ReportNamespace(V, "storage", func() {
 		p.storageMu.RLock()
 		defer p.storageMu.RUnlock()
-		lsmSize, valueLogSize := p.db.Size()
+		lsmSize, valueLogSize := p.config.DB.Size()
 		monitoring.ReportInt(V, "lsm_size", int64(lsmSize))
 		monitoring.ReportInt(V, "value_log_size", int64(valueLogSize))
 	})
@@ -154,19 +139,20 @@ func (p *Processor) ProcessBatch(ctx context.Context, batch *model.Batch) error 
 	}
 	events := *batch
 	for i := 0; i < len(events); i++ {
-		event := events[i]
+		event := &events[i]
 		var report, stored bool
-		if event.Transaction != nil {
+		switch event.Processor {
+		case model.TransactionProcessor:
 			var err error
 			atomic.AddInt64(&p.eventMetrics.processed, 1)
-			report, stored, err = p.processTransaction(event.Transaction)
+			report, stored, err = p.processTransaction(event)
 			if err != nil {
 				return err
 			}
-		} else if event.Span != nil {
+		case model.SpanProcessor:
 			var err error
 			atomic.AddInt64(&p.eventMetrics.processed, 1)
-			report, stored, err = p.processSpan(event.Span)
+			report, stored, err = p.processSpan(event)
 			if err != nil {
 				return err
 			}
@@ -201,14 +187,14 @@ func (p *Processor) updateProcessorMetrics(report, stored bool) {
 	}
 }
 
-func (p *Processor) processTransaction(tx *model.Transaction) (report, stored bool, _ error) {
-	if tx.Sampled != nil && !*tx.Sampled {
+func (p *Processor) processTransaction(event *model.APMEvent) (report, stored bool, _ error) {
+	if !event.Transaction.Sampled {
 		// (Head-based) unsampled transactions are passed through
 		// by the tail sampler.
 		return true, false, nil
 	}
 
-	traceSampled, err := p.storage.IsTraceSampled(tx.TraceID)
+	traceSampled, err := p.storage.IsTraceSampled(event.Trace.ID)
 	switch err {
 	case nil:
 		// Tail-sampling decision has been made: report the transaction
@@ -222,14 +208,16 @@ func (p *Processor) processTransaction(tx *model.Transaction) (report, stored bo
 		return false, false, err
 	}
 
-	if tx.ParentID != "" {
+	if event.Parent.ID != "" {
 		// Non-root transaction: write to local storage while we wait
 		// for a sampling decision.
-		return false, true, p.storage.WriteTransaction(tx)
+		return false, true, p.storage.WriteTraceEvent(
+			event.Trace.ID, event.Transaction.ID, event,
+		)
 	}
 
 	// Root transaction: apply reservoir sampling.
-	reservoirSampled, err := p.groups.sampleTrace(tx)
+	reservoirSampled, err := p.groups.sampleTrace(event)
 	if err == errTooManyTraceGroups {
 		// Too many trace groups, drop the transaction.
 		p.tooManyGroupsLogger.Warn(`
@@ -249,21 +237,25 @@ sampling policies without service name specified.
 		// This is a local optimisation only. To avoid creating network
 		// traffic and load on Elasticsearch for uninteresting root
 		// transactions, we do not propagate this to other APM Servers.
-		return false, false, p.storage.WriteTraceSampled(tx.TraceID, false)
+		return false, false, p.storage.WriteTraceSampled(event.Trace.ID, false)
 	}
 
 	// The root transaction was admitted to the sampling reservoir, so we
 	// can proceed to write the transaction to storage; we may index it later,
 	// after finalising the sampling decision.
-	return false, true, p.storage.WriteTransaction(tx)
+	return false, true, p.storage.WriteTraceEvent(
+		event.Trace.ID, event.Transaction.ID, event,
+	)
 }
 
-func (p *Processor) processSpan(span *model.Span) (report, stored bool, _ error) {
-	traceSampled, err := p.storage.IsTraceSampled(span.TraceID)
+func (p *Processor) processSpan(event *model.APMEvent) (report, stored bool, _ error) {
+	traceSampled, err := p.storage.IsTraceSampled(event.Trace.ID)
 	if err != nil {
 		if err == eventstorage.ErrNotFound {
-			// Tail-sampling decision has not yet been made, write span to local storage.
-			return false, true, p.storage.WriteSpan(span)
+			// Tail-sampling decision has not yet been made, write event to local storage.
+			return false, true, p.storage.WriteTraceEvent(
+				event.Trace.ID, event.Span.ID, event,
+			)
 		}
 		return false, false, err
 	}
@@ -274,7 +266,8 @@ func (p *Processor) processSpan(span *model.Span) (report, stored bool, _ error)
 	return true, false, nil
 }
 
-// Stop stops the processor, flushing and closing the event storage.
+// Stop stops the processor, flushing event storage. Note that the underlying
+// badger.DB must be closed independently to ensure writes are synced to disk.
 func (p *Processor) Stop(ctx context.Context) error {
 	p.stopMu.Lock()
 	if p.storage == nil {
@@ -306,9 +299,6 @@ func (p *Processor) Stop(ctx context.Context) error {
 		return err
 	}
 	p.storage.Close()
-	if err := p.db.Close(); err != nil {
-		return err
-	}
 	p.storage = nil
 	return nil
 }
@@ -388,7 +378,7 @@ func (p *Processor) Run() error {
 				return ctx.Err()
 			case <-ticker.C:
 				const discardRatio = 0.5
-				if err := p.db.RunValueLogGC(discardRatio); err != nil && err != badger.ErrNoRewrite {
+				if err := p.config.DB.RunValueLogGC(discardRatio); err != nil && err != badger.ErrNoRewrite {
 					return err
 				}
 			}
@@ -445,7 +435,7 @@ func (p *Processor) Run() error {
 				return err
 			}
 			var events model.Batch
-			if err := p.storage.ReadEvents(traceID, &events); err != nil {
+			if err := p.storage.ReadTraceEvents(traceID, &events); err != nil {
 				return err
 			}
 			if n := len(events); n > 0 {
@@ -458,12 +448,13 @@ func (p *Processor) Run() error {
 					// we don't publish duplicates; delivery is therefore
 					// at-most-once, not guaranteed.
 					for _, event := range events {
-						if event.Transaction != nil {
-							if err := p.storage.DeleteTransaction(event.Transaction); err != nil {
+						switch event.Processor {
+						case model.TransactionProcessor:
+							if err := p.storage.DeleteTraceEvent(event.Trace.ID, event.Transaction.ID); err != nil {
 								return errors.Wrap(err, "failed to delete transaction from local storage")
 							}
-						} else if event.Span != nil {
-							if err := p.storage.DeleteSpan(event.Span); err != nil {
+						case model.SpanProcessor:
+							if err := p.storage.DeleteTraceEvent(event.Trace.ID, event.Span.ID); err != nil {
 								return errors.Wrap(err, "failed to delete span from local storage")
 							}
 						}

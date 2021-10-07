@@ -18,69 +18,38 @@
 package model
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"strconv"
-	"time"
-
-	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/common"
-	"github.com/elastic/beats/v7/libbeat/monitoring"
-
-	"github.com/elastic/apm-server/utility"
 )
 
 var (
-	errorMetrics           = monitoring.Default.NewRegistry("apm-server.processor.error")
-	errorTransformations   = monitoring.NewInt(errorMetrics, "transformations")
-	errorStacktraceCounter = monitoring.NewInt(errorMetrics, "stacktraces")
-	errorFrameCounter      = monitoring.NewInt(errorMetrics, "frames")
-	errorProcessorEntry    = common.MapStr{"name": errorProcessorName, "event": errorDocType}
+	// ErrorProcessor is the Processor value that should be assigned to error events.
+	ErrorProcessor = Processor{Name: "error", Event: "error"}
 )
 
 const (
-	errorProcessorName = "error"
-	errorDocType       = "error"
-	ErrorsDataset      = "apm.error"
+	ErrorsDataset = "apm.error"
 )
 
 type Error struct {
-	ID            string
-	TransactionID string
-	TraceID       string
-	ParentID      string
-
-	Timestamp time.Time
-	Metadata  Metadata
+	ID string
 
 	GroupingKey string
 	Culprit     string
-	Labels      common.MapStr
-	Page        *Page
-	HTTP        *Http
-	URL         *URL
 	Custom      common.MapStr
 
 	Exception *Exception
 	Log       *Log
-
-	TransactionSampled *bool
-	TransactionType    string
-
-	Experimental interface{}
 }
 
 type Exception struct {
 	Message    string
 	Module     string
-	Code       interface{}
+	Code       string
 	Attributes interface{}
 	Stacktrace Stacktrace
 	Type       string
 	Handled    *bool
 	Cause      []Exception
-	Parent     *int
 }
 
 type Log struct {
@@ -91,109 +60,18 @@ type Log struct {
 	Stacktrace   Stacktrace
 }
 
-func (e *Error) toBeatEvent(ctx context.Context) beat.Event {
-	errorTransformations.Inc()
-
+func (e *Error) setFields(fields *mapStr) {
+	var errorFields mapStr
+	errorFields.maybeSetString("id", e.ID)
 	if e.Exception != nil {
-		addStacktraceCounter(e.Exception.Stacktrace)
+		exceptionFields := e.Exception.appendFields(nil, 0)
+		errorFields.set("exception", exceptionFields)
 	}
-	if e.Log != nil {
-		addStacktraceCounter(e.Log.Stacktrace)
-	}
-
-	fields := mapStr{
-		"error":     e.fields(),
-		"processor": errorProcessorEntry,
-	}
-
-	// first set the generic metadata (order is relevant)
-	e.Metadata.set(&fields, e.Labels)
-	if client := fields["client"]; client != nil {
-		fields["source"] = client
-	}
-
-	// then add event specific information
-	fields.maybeSetMapStr("http", e.HTTP.Fields())
-	fields.maybeSetMapStr("url", e.URL.Fields())
-	if e.Experimental != nil {
-		fields.set("experimental", e.Experimental)
-	}
-
-	// sampled and type is nil if an error happens outside a transaction or an (old) agent is not sending sampled info
-	// agents must send semantically correct data
-	var transaction mapStr
-	transaction.maybeSetString("id", e.TransactionID)
-	transaction.maybeSetString("type", e.TransactionType)
-	transaction.maybeSetBool("sampled", e.TransactionSampled)
-	fields.maybeSetMapStr("transaction", common.MapStr(transaction))
-
-	var parent, trace mapStr
-	parent.maybeSetString("id", e.ParentID)
-	trace.maybeSetString("id", e.TraceID)
-	fields.maybeSetMapStr("parent", common.MapStr(parent))
-	fields.maybeSetMapStr("trace", common.MapStr(trace))
-	fields.maybeSetMapStr("timestamp", utility.TimeAsMicros(e.Timestamp))
-
-	return beat.Event{
-		Fields:    common.MapStr(fields),
-		Timestamp: e.Timestamp,
-	}
-}
-
-func (e *Error) fields() common.MapStr {
-	var fields mapStr
-	fields.maybeSetString("id", e.ID)
-	fields.maybeSetMapStr("page", e.Page.Fields())
-
-	exceptionChain := flattenExceptionTree(e.Exception)
-	if exception := e.exceptionFields(exceptionChain); len(exception) > 0 {
-		fields.set("exception", exception)
-	}
-	fields.maybeSetMapStr("log", e.logFields())
-
-	fields.maybeSetString("culprit", e.Culprit)
-	fields.maybeSetMapStr("custom", customFields(e.Custom))
-	fields.maybeSetString("grouping_key", e.GroupingKey)
-	return common.MapStr(fields)
-}
-
-func (e *Error) exceptionFields(chain []Exception) []common.MapStr {
-	var result []common.MapStr
-	for _, exception := range chain {
-		var ex mapStr
-		ex.maybeSetString("message", exception.Message)
-		ex.maybeSetString("module", exception.Module)
-		ex.maybeSetString("type", exception.Type)
-		ex.maybeSetBool("handled", exception.Handled)
-		if exception.Parent != nil {
-			ex.set("parent", exception.Parent)
-		}
-		if exception.Attributes != nil {
-			ex.set("attributes", exception.Attributes)
-		}
-
-		switch code := exception.Code.(type) {
-		case int:
-			ex.set("code", strconv.Itoa(code))
-		case float64:
-			ex.set("code", fmt.Sprintf("%.0f", code))
-		case string:
-			ex.set("code", code)
-		case json.Number:
-			ex.set("code", code.String())
-		}
-
-		if n := len(exception.Stacktrace); n > 0 {
-			frames := make([]common.MapStr, n)
-			for i, frame := range exception.Stacktrace {
-				frames[i] = frame.transform()
-			}
-			ex.set("stacktrace", frames)
-		}
-
-		result = append(result, common.MapStr(ex))
-	}
-	return result
+	errorFields.maybeSetMapStr("log", e.logFields())
+	errorFields.maybeSetString("culprit", e.Culprit)
+	errorFields.maybeSetMapStr("custom", customFields(e.Custom))
+	errorFields.maybeSetString("grouping_key", e.GroupingKey)
+	fields.set("error", common.MapStr(errorFields))
 }
 
 func (e *Error) logFields() common.MapStr {
@@ -211,36 +89,33 @@ func (e *Error) logFields() common.MapStr {
 	return common.MapStr(log)
 }
 
-func addStacktraceCounter(st Stacktrace) {
-	if frames := len(st); frames > 0 {
-		errorStacktraceCounter.Inc()
-		errorFrameCounter.Add(int64(frames))
+func (e *Exception) appendFields(out []common.MapStr, parentOffset int) []common.MapStr {
+	offset := len(out)
+	var fields mapStr
+	fields.maybeSetString("message", e.Message)
+	fields.maybeSetString("module", e.Module)
+	fields.maybeSetString("type", e.Type)
+	fields.maybeSetString("code", e.Code)
+	fields.maybeSetBool("handled", e.Handled)
+	if offset > parentOffset+1 {
+		// The parent of an exception in the resulting slice is at the offset
+		// indicated by the `parent` field (0 index based), or the preceding
+		// exception in the slice if the `parent` field is not set.
+		fields.set("parent", parentOffset)
 	}
-}
-
-// flattenExceptionTree recursively traverses the causes of an exception to return a slice of exceptions.
-// Tree traversal is Depth First.
-// The parent of a exception in the resulting slice is at the position indicated by the `parent` property
-// (0 index based), or the preceding exception if `parent` is nil.
-// The resulting exceptions always have `nil` cause.
-func flattenExceptionTree(exception *Exception) []Exception {
-	var recur func(Exception, int) []Exception
-
-	recur = func(e Exception, posId int) []Exception {
-		causes := e.Cause
-		e.Cause = nil
-		result := []Exception{e}
-		for idx, cause := range causes {
-			if idx > 0 {
-				cause.Parent = &posId
-			}
-			result = append(result, recur(cause, posId+len(result))...)
+	if e.Attributes != nil {
+		fields.set("attributes", e.Attributes)
+	}
+	if n := len(e.Stacktrace); n > 0 {
+		frames := make([]common.MapStr, n)
+		for i, frame := range e.Stacktrace {
+			frames[i] = frame.transform()
 		}
-		return result
+		fields.set("stacktrace", frames)
 	}
-
-	if exception == nil {
-		return []Exception{}
+	out = append(out, common.MapStr(fields))
+	for _, cause := range e.Cause {
+		out = cause.appendFields(out, offset)
 	}
-	return recur(*exception, 0)
+	return out
 }

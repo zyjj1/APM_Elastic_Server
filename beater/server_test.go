@@ -20,14 +20,19 @@ package beater
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
+	"path"
 	"reflect"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -467,6 +472,7 @@ func TestServerConfigReload(t *testing.T) {
 	apmBeat.Manager = &mockManager{enabled: true}
 	beater, err := newTestBeater(t, apmBeat, cfg, nil)
 	require.NoError(t, err)
+	require.NotNil(t, apmBeat.OutputConfigReloader)
 	beater.start()
 
 	// Now that the beater is running, send config changes. The reloader
@@ -484,7 +490,19 @@ func TestServerConfigReload(t *testing.T) {
 
 	// The config must contain an "apm-server" section, and will be rejected otherwise.
 	err = reloadable.Reload([]*reload.ConfigWithMeta{{Config: common.NewConfig()}})
-	assert.EqualError(t, err, "1 error: Error creating runner from config: 'apm-server' not found in integration config")
+	assert.EqualError(t, err, "'apm-server' not found in integration config")
+
+	// Creating the socket listener is performed synchronously in the Reload method
+	// to ensure zero downtime when reloading an already running server. Illustrate
+	// that the socket listener is created synhconously in Reload by attempting to
+	// reload with an invalid host.
+	err = reloadable.Reload([]*reload.ConfigWithMeta{{Config: common.MustNewConfigFrom(map[string]interface{}{
+		"apm-server": map[string]interface{}{
+			"host": "testing.invalid:123",
+		},
+	})}})
+	require.Error(t, err)
+	assert.Regexp(t, "listen tcp: lookup testing.invalid: .*", err.Error())
 
 	inputConfig := common.MustNewConfigFrom(map[string]interface{}{
 		"apm-server": map[string]interface{}{
@@ -515,11 +533,243 @@ func TestServerConfigReload(t *testing.T) {
 
 	addr2, err := beater.waitListenAddr(1 * time.Second)
 	require.NoError(t, err)
-	assert.Empty(t, healthcheck(addr2)) // empty as auth is required but not specified
+	assert.Empty(t, healthcheck(addr2))
 
 	// First HTTP server should have been stopped.
 	_, err = http.Get("http://" + addr1)
 	assert.Error(t, err)
+
+	// Reload output config, should also cause HTTP server to be restarted.
+	err = apmBeat.OutputConfigReloader.Reload(&reload.ConfigWithMeta{Config: common.NewConfig()})
+	assert.NoError(t, err)
+
+	addr3, err := beater.waitListenAddr(1 * time.Second)
+	require.NoError(t, err)
+	assert.Empty(t, healthcheck(addr3)) // empty as auth is required but not specified
+
+	// Second HTTP server should have been stopped.
+	_, err = http.Get("http://" + addr2)
+	assert.Error(t, err)
+}
+
+func TestServerOutputConfigReload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping server test")
+	}
+
+	// The beater has no way of unregistering itself from reload.Register,
+	// so we create a fresh registry and replace it after the test.
+	oldRegister := reload.Register
+	defer func() {
+		reload.Register = oldRegister
+	}()
+	reload.Register = reload.NewRegistry()
+
+	cfg := common.MustNewConfigFrom(map[string]interface{}{"data_streams.enabled": true})
+	apmBeat, cfg := newBeat(t, cfg, nil, nil)
+	apmBeat.Manager = &mockManager{enabled: true}
+
+	runServerCalls := make(chan ServerParams, 1)
+	createBeater := NewCreator(CreatorParams{
+		Logger: logp.NewLogger(""),
+		WrapRunServer: func(runServer RunServerFunc) RunServerFunc {
+			return func(ctx context.Context, args ServerParams) error {
+				runServerCalls <- args
+				return runServer(ctx, args)
+			}
+		},
+	})
+	beater, err := createBeater(apmBeat, cfg)
+	require.NoError(t, err)
+	t.Cleanup(beater.Stop)
+	go beater.Run(apmBeat)
+
+	// Now that the beater is running, send config changes. The reloader
+	// is not registered until after the beater starts running, so we
+	// must loop until it is set.
+	var reloadable reload.ReloadableList
+	for {
+		// The Reloader is not registered until after the beat has started running.
+		reloadable = reload.Register.GetReloadableList("inputs")
+		if reloadable != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	inputConfig := common.MustNewConfigFrom(map[string]interface{}{
+		"apm-server": map[string]interface{}{
+			"host": "localhost:0",
+			"sampling.tail": map[string]interface{}{
+				"enabled": true,
+				"policies": []map[string]interface{}{{
+					"sample_rate": 0.5,
+				}},
+			},
+		},
+	})
+	err = reloadable.Reload([]*reload.ConfigWithMeta{{Config: inputConfig}})
+	require.NoError(t, err)
+
+	runServerArgs := <-runServerCalls
+	assert.Equal(t, "", runServerArgs.Config.Sampling.Tail.ESConfig.Username)
+
+	// Reloaded output config should be passed into apm-server config.
+	err = apmBeat.OutputConfigReloader.Reload(&reload.ConfigWithMeta{
+		Config: common.MustNewConfigFrom(map[string]interface{}{
+			"elasticsearch.username": "updated",
+		}),
+	})
+	assert.NoError(t, err)
+	runServerArgs = <-runServerCalls
+	assert.Equal(t, "updated", runServerArgs.Config.Sampling.Tail.ESConfig.Username)
+}
+
+func TestServerWaitForIntegrationKibana(t *testing.T) {
+	var requests int
+	requestCh := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"version":{"number":"1.2.3"}}`))
+	})
+	mux.HandleFunc("/api/fleet/epm/packages/apm", func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		switch requests {
+		case 1:
+			w.WriteHeader(500)
+		case 2:
+			fmt.Fprintln(w, `{"response":{"status":"not_installed"}}`)
+		case 3:
+			fmt.Fprintln(w, `{"response":{"status":"installed"}}`)
+		}
+		select {
+		case requestCh <- struct{}{}:
+		case <-r.Context().Done():
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cfg := common.MustNewConfigFrom(map[string]interface{}{
+		"data_streams.enabled": true,
+		"wait_ready_interval":  "100ms",
+		"kibana.enabled":       true,
+		"kibana.host":          srv.URL,
+	})
+	_, err := setupServer(t, cfg, nil, nil)
+	require.NoError(t, err)
+
+	timeout := time.After(10 * time.Second)
+	for i := 0; i < 3; i++ {
+		select {
+		case <-requestCh:
+		case <-timeout:
+			t.Fatal("timed out waiting for request")
+		}
+	}
+	select {
+	case <-requestCh:
+		t.Fatal("unexpected request")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestServerWaitForIntegrationElasticsearch(t *testing.T) {
+	var mu sync.Mutex
+	var tracesRequests int
+	tracesRequestsCh := make(chan int)
+	bulkCh := make(chan struct{}, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		// We must send a valid JSON response for the libbeat
+		// elasticsearch client to send bulk requests.
+		fmt.Fprintln(w, `{"version":{"number":"1.2.3"}}`)
+	})
+	mux.HandleFunc("/_index_template/", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		template := path.Base(r.URL.Path)
+		if template == "traces-apm" {
+			tracesRequests++
+			if tracesRequests == 1 {
+				w.WriteHeader(404)
+			}
+			tracesRequestsCh <- tracesRequests
+		}
+	})
+	mux.HandleFunc("/_bulk", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case bulkCh <- struct{}{}:
+		default:
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cfg := common.MustNewConfigFrom(map[string]interface{}{
+		"data_streams.enabled": true,
+		"wait_ready_interval":  "100ms",
+	})
+	var beatConfig beat.BeatConfig
+	err := beatConfig.Output.Unpack(common.MustNewConfigFrom(map[string]interface{}{
+		"elasticsearch": map[string]interface{}{
+			"hosts":       []string{srv.URL},
+			"backoff":     map[string]interface{}{"init": "10ms", "max": "10ms"},
+			"max_retries": 1000,
+		},
+	}))
+	require.NoError(t, err)
+
+	beater, err := setupServer(t, cfg, &beatConfig, nil)
+	require.NoError(t, err)
+
+	// Send some events to the server. They should be accepted and enqueued.
+	req := makeTransactionRequest(t, beater.baseURL)
+	req.Header.Add("Content-Type", "application/x-ndjson")
+	resp, err := beater.client.Do(req)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+	resp.Body.Close()
+
+	// Healthcheck should report that the server is not publish-ready.
+	resp, err = beater.client.Get(beater.baseURL + api.RootPath)
+	require.NoError(t, err)
+	out := decodeJSONMap(t, resp.Body)
+	resp.Body.Close()
+	assert.Equal(t, false, out["publish_ready"])
+
+	// Indexing should be blocked until we receive from tracesRequestsCh.
+	select {
+	case <-bulkCh:
+		t.Fatal("unexpected bulk request")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	timeout := time.After(10 * time.Second)
+	var done bool
+	for !done {
+		select {
+		case n := <-tracesRequestsCh:
+			done = n == 2
+		case <-timeout:
+			t.Fatal("timed out waiting for request")
+		}
+	}
+
+	// libbeat should keep retrying, and finally succeed now it is unblocked.
+	select {
+	case <-bulkCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for bulk request")
+	}
+
+	// Healthcheck should now report that the server is publish-ready.
+	resp, err = beater.client.Get(beater.baseURL + api.RootPath)
+	require.NoError(t, err)
+	out = decodeJSONMap(t, resp.Body)
+	resp.Body.Close()
+	assert.Equal(t, true, out["publish_ready"])
 }
 
 type chanClient struct {
@@ -577,7 +827,7 @@ func dummyPipeline(cfg *common.Config, info beat.Info, clients ...outputs.Client
 	if cfg == nil {
 		cfg = common.NewConfig()
 	}
-	processors, err := processing.MakeDefaultObserverSupport(false)(info, logp.NewLogger("testbeat"), cfg)
+	processors, err := processing.MakeDefaultSupport(false)(info, logp.NewLogger("testbeat"), cfg)
 	if err != nil {
 		panic(err)
 	}
@@ -622,6 +872,13 @@ func makeTransactionRequest(t *testing.T, baseUrl string) *http.Request {
 	}
 
 	return req
+}
+
+func decodeJSONMap(t *testing.T, r io.Reader) map[string]interface{} {
+	out := make(map[string]interface{})
+	err := json.NewDecoder(r).Decode(&out)
+	require.NoError(t, err)
+	return out
 }
 
 func body(t *testing.T, response *http.Response) string {

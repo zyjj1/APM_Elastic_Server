@@ -7,7 +7,7 @@
                 "version": "4.8.1"
             },
             "client": {
-                "ip": "192.0.0.1"
+                "ip": "192.0.0.2"
             },
             "error": {
                 "culprit": "test/e2e/general-usecase/app.e2e-bundle.min.js?token=secret",
@@ -42,11 +42,7 @@
                         "type": "Error"
                     }
                 ],
-                "id": "3661352868c17c78b773d2f1beae6d41",
-                "page": {
-                    "referer": "http://localhost:8000/test/e2e/",
-                    "url": "http://localhost:8000/test/e2e/general-usecase/"
-                }
+                "id": "3661352868c17c78b773d2f1beae6d41"
             },
             "http": {
                 "request": {

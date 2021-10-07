@@ -161,11 +161,23 @@
         Optional network fields
       fields:
 
-        - name: connection_type
-          type: keyword
+        - name: connection
+          type: group
           description: >
-            Cellular network technology, eg. 4G
-          overwrite: true
+            Network connection details
+          fields:
+
+            - name: type
+              type: keyword
+              description: >
+                Network connection type, eg. "wifi", "cell"
+              overwrite: true
+
+            - name: subtype
+              type: keyword
+              description: >
+                Detailed network connection sub-type, e.g. "LTE", "CDMA"
+              overwrite: true
 
         - name: carrier
           type: group
@@ -347,6 +359,18 @@
           overwrite: true
           description: >
             The type will be set to `apm-server`.
+
+        - name: id
+          type: keyword
+          overwrite: true
+          description: >
+            Unique identifier of the APM Server.
+
+        - name: ephemeral_id
+          type: keyword
+          overwrite: true
+          description: >
+            Ephemeral identifier of the APM Server.
 
     - name: user
       type: group
@@ -556,12 +580,6 @@
             example: "4.4.0-112-generic"
             description: >
               Operating system kernel version as a raw string.
-
-    - name: experimental
-      type: object
-      dynamic: true
-      overwrite: true
-      description: Additional experimental data sent by the agents.
 
     - name: cloud
       title: Cloud

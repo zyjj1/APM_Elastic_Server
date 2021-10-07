@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/component"
@@ -49,7 +50,7 @@ func (rcv *builtReceiver) Shutdown(ctx context.Context) error {
 }
 
 // Receivers is a map of receivers created from receiver configs.
-type Receivers map[config.Receiver]*builtReceiver
+type Receivers map[config.ComponentID]*builtReceiver
 
 // ShutdownAll stops all receivers.
 func (rcvs Receivers) ShutdownAll(ctx context.Context) error {
@@ -79,8 +80,6 @@ func (rcvs Receivers) StartAll(ctx context.Context, host component.Host) error {
 
 // receiversBuilder builds receivers from config.
 type receiversBuilder struct {
-	logger         *zap.Logger
-	buildInfo      component.BuildInfo
 	config         *config.Config
 	builtPipelines BuiltPipelines
 	factories      map[config.Type]component.ReceiverFactory
@@ -89,25 +88,31 @@ type receiversBuilder struct {
 // BuildReceivers builds Receivers from config.
 func BuildReceivers(
 	logger *zap.Logger,
+	tracerProvider trace.TracerProvider,
 	buildInfo component.BuildInfo,
-	config *config.Config,
+	cfg *config.Config,
 	builtPipelines BuiltPipelines,
 	factories map[config.Type]component.ReceiverFactory,
 ) (Receivers, error) {
-	rb := &receiversBuilder{logger.With(zap.String(zapKindKey, zapKindReceiver)), buildInfo, config, builtPipelines, factories}
+	rb := &receiversBuilder{cfg, builtPipelines, factories}
 
 	receivers := make(Receivers)
-	for _, cfg := range rb.config.Receivers {
-		recvLogger := rb.logger.With(zap.Stringer(zapNameKey, cfg.ID()))
-		rcv, err := rb.buildReceiver(context.Background(), recvLogger, rb.buildInfo, cfg)
+	for recvID, recvCfg := range cfg.Receivers {
+		set := component.ReceiverCreateSettings{
+			Logger:         logger.With(zap.String(zapKindKey, zapKindReceiver), zap.String(zapNameKey, recvID.String())),
+			TracerProvider: tracerProvider,
+			BuildInfo:      buildInfo,
+		}
+
+		rcv, err := rb.buildReceiver(context.Background(), set, recvCfg)
 		if err != nil {
 			if err == errUnusedReceiver {
-				recvLogger.Info("Ignoring receiver as it is not used by any pipeline")
+				set.Logger.Info("Ignoring receiver as it is not used by any pipeline")
 				continue
 			}
 			return nil, err
 		}
-		receivers[cfg] = rcv
+		receivers[recvID] = rcv
 	}
 
 	return receivers, nil
@@ -125,7 +130,7 @@ func hasReceiver(pipeline *config.Pipeline, receiverID config.ComponentID) bool 
 
 type attachedPipelines map[config.DataType][]*builtPipeline
 
-func (rb *receiversBuilder) findPipelinesToAttach(cfg config.Receiver) (attachedPipelines, error) {
+func (rb *receiversBuilder) findPipelinesToAttach(receiverID config.ComponentID) (attachedPipelines, error) {
 	// A receiver may be attached to multiple pipelines. Pipelines may consume different
 	// data types. We need to compile the list of pipelines of each type that must be
 	// attached to this receiver according to configuration.
@@ -144,7 +149,7 @@ func (rb *receiversBuilder) findPipelinesToAttach(cfg config.Receiver) (attached
 		}
 
 		// Is this receiver attached to the pipeline?
-		if hasReceiver(pipelineCfg, cfg.ID()) {
+		if hasReceiver(pipelineCfg, receiverID) {
 			if _, exists := pipelinesToAttach[pipelineCfg.InputType]; !exists {
 				pipelinesToAttach[pipelineCfg.InputType] = make([]*builtPipeline, 0)
 			}
@@ -158,10 +163,9 @@ func (rb *receiversBuilder) findPipelinesToAttach(cfg config.Receiver) (attached
 	return pipelinesToAttach, nil
 }
 
-func (rb *receiversBuilder) attachReceiverToPipelines(
+func attachReceiverToPipelines(
 	ctx context.Context,
-	logger *zap.Logger,
-	buildInfo component.BuildInfo,
+	set component.ReceiverCreateSettings,
 	factory component.ReceiverFactory,
 	dataType config.DataType,
 	cfg config.Receiver,
@@ -173,23 +177,19 @@ func (rb *receiversBuilder) attachReceiverToPipelines(
 	// sure its output is fanned out to all attached pipelines.
 	var err error
 	var createdReceiver component.Receiver
-	creationSet := component.ReceiverCreateSettings{
-		Logger:    logger,
-		BuildInfo: buildInfo,
-	}
 
 	switch dataType {
 	case config.TracesDataType:
 		junction := buildFanoutTraceConsumer(builtPipelines)
-		createdReceiver, err = factory.CreateTracesReceiver(ctx, creationSet, cfg, junction)
+		createdReceiver, err = factory.CreateTracesReceiver(ctx, set, cfg, junction)
 
 	case config.MetricsDataType:
 		junction := buildFanoutMetricConsumer(builtPipelines)
-		createdReceiver, err = factory.CreateMetricsReceiver(ctx, creationSet, cfg, junction)
+		createdReceiver, err = factory.CreateMetricsReceiver(ctx, set, cfg, junction)
 
 	case config.LogsDataType:
 		junction := buildFanoutLogConsumer(builtPipelines)
-		createdReceiver, err = factory.CreateLogsReceiver(ctx, creationSet, cfg, junction)
+		createdReceiver, err = factory.CreateLogsReceiver(ctx, set, cfg, junction)
 
 	default:
 		err = componenterror.ErrDataTypeIsNotSupported
@@ -198,13 +198,10 @@ func (rb *receiversBuilder) attachReceiverToPipelines(
 	if err != nil {
 		if err == componenterror.ErrDataTypeIsNotSupported {
 			return fmt.Errorf(
-				"receiver %v does not support %s but it was used in a "+
-					"%s pipeline",
-				cfg.ID(),
-				dataType,
-				dataType)
+				"receiver %v does not support %s but it was used in a %s pipeline",
+				cfg.ID(), dataType, dataType)
 		}
-		return fmt.Errorf("cannot create receiver %v: %s", cfg.ID(), err.Error())
+		return fmt.Errorf("cannot create receiver %v: %w", cfg.ID(), err)
 	}
 
 	// Check if the factory really created the receiver.
@@ -227,26 +224,26 @@ func (rb *receiversBuilder) attachReceiverToPipelines(
 	}
 	rcv.receiver = createdReceiver
 
-	logger.Info("Receiver was built.", zap.String("datatype", string(dataType)))
+	set.Logger.Info("Receiver was built.", zap.String("datatype", string(dataType)))
 
 	return nil
 }
 
-func (rb *receiversBuilder) buildReceiver(ctx context.Context, logger *zap.Logger, buildInfo component.BuildInfo, config config.Receiver) (*builtReceiver, error) {
+func (rb *receiversBuilder) buildReceiver(ctx context.Context, set component.ReceiverCreateSettings, cfg config.Receiver) (*builtReceiver, error) {
 
 	// First find pipelines that must be attached to this receiver.
-	pipelinesToAttach, err := rb.findPipelinesToAttach(config)
+	pipelinesToAttach, err := rb.findPipelinesToAttach(cfg.ID())
 	if err != nil {
 		return nil, err
 	}
 
 	// Prepare to build the receiver.
-	factory := rb.factories[config.ID().Type()]
+	factory := rb.factories[cfg.ID().Type()]
 	if factory == nil {
-		return nil, fmt.Errorf("receiver factory not found for: %v", config.ID())
+		return nil, fmt.Errorf("receiver factory not found for: %v", cfg.ID())
 	}
 	rcv := &builtReceiver{
-		logger: logger,
+		logger: set.Logger,
 	}
 
 	// Now we have list of pipelines broken down by data type. Iterate for each data type.
@@ -258,7 +255,7 @@ func (rb *receiversBuilder) buildReceiver(ctx context.Context, logger *zap.Logge
 
 		// Attach the corresponding part of the receiver to all pipelines that require
 		// this data type.
-		err := rb.attachReceiverToPipelines(ctx, logger, buildInfo, factory, dataType, config, rcv, pipelines)
+		err := attachReceiverToPipelines(ctx, set, factory, dataType, cfg, rcv, pipelines)
 		if err != nil {
 			return nil, err
 		}

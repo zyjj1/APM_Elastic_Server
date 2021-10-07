@@ -21,6 +21,10 @@ import (
 	"context"
 	"time"
 
+	"github.com/elastic/beats/v7/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/common"
+	"github.com/elastic/ecs/code/go/ecs"
+
 	"github.com/elastic/apm-server/beater/auth"
 	"github.com/elastic/apm-server/beater/ratelimit"
 	"github.com/elastic/apm-server/model"
@@ -30,13 +34,18 @@ const (
 	rateLimitTimeout = time.Second
 )
 
-// authorizeEventIngest is a model.BatchProcessor that checks that the client
-// is authorized to ingest events for the agent and service name in metadata.
-func authorizeEventIngest(ctx context.Context, meta *model.Metadata) error {
-	return auth.Authorize(ctx, auth.ActionEventIngest, auth.Resource{
-		AgentName:   meta.Service.Agent.Name,
-		ServiceName: meta.Service.Name,
-	})
+// authorizeEventIngestProcessor is a model.BatchProcessor that checks that the
+// client is authorized to ingest events for the given agent and service name.
+func authorizeEventIngestProcessor(ctx context.Context, batch *model.Batch) error {
+	for _, event := range *batch {
+		if err := auth.Authorize(ctx, auth.ActionEventIngest, auth.Resource{
+			AgentName:   event.Agent.Name,
+			ServiceName: event.Service.Name,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // rateLimitBatchProcessor is a model.BatchProcessor that rate limits based on
@@ -51,4 +60,38 @@ func rateLimitBatchProcessor(ctx context.Context, batch *model.Batch) error {
 		}
 	}
 	return nil
+}
+
+// ecsVersionBatchProcessor is a model.BatchProcessor that sets the ECSVersion
+// field of each event to the ECS library version.
+func ecsVersionBatchProcessor(ctx context.Context, b *model.Batch) error {
+	for i := range *b {
+		event := &(*b)[i]
+		event.ECSVersion = ecs.Version
+	}
+	return nil
+}
+
+// newObserverBatchProcessor returns a model.BatchProcessor that sets observer
+// fields from info.
+func newObserverBatchProcessor(info beat.Info) model.ProcessBatchFunc {
+	var versionMajor int
+	if version, err := common.NewVersion(info.Version); err == nil {
+		versionMajor = version.Major
+	}
+	return func(ctx context.Context, b *model.Batch) error {
+		for i := range *b {
+			observer := &(*b)[i].Observer
+			observer.EphemeralID = info.EphemeralID.String()
+			observer.Hostname = info.Hostname
+			observer.ID = info.ID.String()
+			if info.Name != info.Hostname {
+				observer.Name = info.Name
+			}
+			observer.Type = info.Beat
+			observer.Version = info.Version
+			observer.VersionMajor = versionMajor
+		}
+		return nil
+	}
 }

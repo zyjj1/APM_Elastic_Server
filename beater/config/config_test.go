@@ -38,11 +38,19 @@ var testdataCertificateConfig = tlscommon.CertificateConfig{
 }
 
 func TestUnpackConfig(t *testing.T) {
+	// When unpacking libbeat/kibana.ClientConfig, proxy headers
+	// are set to nil rather than an empty map like in the default
+	// instantiated value.
+	defaultDecodedKibanaClientConfig := defaultKibanaConfig().ClientConfig
+	defaultDecodedKibanaClientConfig.Transport.Proxy.Headers = nil
+
 	kibanaNoSlashConfig := DefaultConfig()
+	kibanaNoSlashConfig.Kibana.ClientConfig = defaultDecodedKibanaClientConfig
 	kibanaNoSlashConfig.Kibana.Enabled = true
 	kibanaNoSlashConfig.Kibana.Host = "kibanahost:5601/proxy"
 
 	kibanaHeadersConfig := DefaultConfig()
+	kibanaHeadersConfig.Kibana.ClientConfig = defaultDecodedKibanaClientConfig
 	kibanaHeadersConfig.Kibana.Enabled = true
 	kibanaHeadersConfig.Kibana.Headers = map[string]string{"foo": "bar"}
 
@@ -232,7 +240,7 @@ func TestUnpackConfig(t *testing.T) {
 				},
 				Kibana: KibanaConfig{
 					Enabled:      true,
-					ClientConfig: defaultKibanaConfig().ClientConfig,
+					ClientConfig: defaultDecodedKibanaClientConfig,
 				},
 				KibanaAgentConfig: KibanaAgentConfig{Cache: Cache{Expiration: 2 * time.Minute}},
 				Pipeline:          defaultAPMPipeline,
@@ -275,12 +283,16 @@ func TestUnpackConfig(t *testing.T) {
 						ESConfig:              elasticsearch.DefaultConfig(),
 						Interval:              1 * time.Minute,
 						IngestRateDecayFactor: 0.25,
-						StorageDir:            "tail_sampling",
 						StorageGCInterval:     5 * time.Minute,
 						TTL:                   30 * time.Minute,
 					},
 				},
 				DefaultServiceEnvironment: "overridden",
+				DataStreams: DataStreamsConfig{
+					Enabled:            false,
+					WaitForIntegration: true,
+				},
+				WaitReadyInterval: 5 * time.Second,
 			},
 		},
 		"merge config with default": {
@@ -329,11 +341,12 @@ func TestUnpackConfig(t *testing.T) {
 				"aggregation.service_destinations.enabled": false,
 				"sampling.keep_unsampled":                  false,
 				"sampling.tail": map[string]interface{}{
-					"enabled":           true,
+					"enabled":           false,
 					"policies":          []map[string]interface{}{{"sample_rate": 0.5}},
 					"interval":          "2m",
 					"ingest_rate_decay": 1.0,
 				},
+				"data_streams.wait_for_integration": false,
 			},
 			outCfg: &Config{
 				Host:            "localhost:3000",
@@ -454,16 +467,20 @@ func TestUnpackConfig(t *testing.T) {
 				Sampling: SamplingConfig{
 					KeepUnsampled: false,
 					Tail: TailSamplingConfig{
-						Enabled:               true,
+						Enabled:               false,
 						Policies:              []TailSamplingPolicy{{SampleRate: 0.5}},
 						ESConfig:              elasticsearch.DefaultConfig(),
 						Interval:              2 * time.Minute,
 						IngestRateDecayFactor: 1.0,
-						StorageDir:            "tail_sampling",
 						StorageGCInterval:     5 * time.Minute,
 						TTL:                   30 * time.Minute,
 					},
 				},
+				DataStreams: DataStreamsConfig{
+					Enabled:            false,
+					WaitForIntegration: false,
+				},
+				WaitReadyInterval: 5 * time.Second,
 			},
 		},
 		"kibana trailing slash": {
@@ -625,8 +642,21 @@ func TestAgentConfig(t *testing.T) {
 	})
 }
 
+func TestAgentConfigs(t *testing.T) {
+	cfg, err := NewConfig(common.MustNewConfigFrom(`{"agent_config":[{"service.environment":"production","config":{"transaction_sample_rate":0.5}}]}`), nil)
+	require.NoError(t, err)
+	assert.NotNil(t, cfg)
+	assert.Len(t, cfg.AgentConfigs, 1)
+	assert.NotEmpty(t, cfg.AgentConfigs[0].Etag)
+}
+
 func TestNewConfig_ESConfig(t *testing.T) {
-	ucfg, err := common.NewConfigFrom(`{"rum.enabled":true,"api_key.enabled":true,"sampling.tail.policies":[{"sample_rate": 0.5}]}`)
+	ucfg, err := common.NewConfigFrom(`{
+		"rum.enabled":true,
+		"api_key.enabled":true,
+		"data_streams.enabled":true,
+		"sampling.tail.policies":[{"sample_rate": 0.5}],
+	}`)
 	require.NoError(t, err)
 
 	// no es config given

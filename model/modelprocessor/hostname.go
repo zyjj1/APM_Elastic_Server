@@ -23,29 +23,31 @@ import (
 	"github.com/elastic/apm-server/model"
 )
 
-// SetSystemHostname is a transform.Processor that sets the final
+// SetHostHostname is a transform.Processor that sets the final
 // host.name and host.hostname values, according to whether the
-// system is running in Kubernetes or not.
-type SetSystemHostname struct{}
+// event originated from within Kubernetes or not.
+type SetHostHostname struct{}
 
 // ProcessBatch sets or overrides the host.name and host.hostname fields for events.
-func (SetSystemHostname) ProcessBatch(ctx context.Context, b *model.Batch) error {
-	return MetadataProcessorFunc(setSystemHostname).ProcessBatch(ctx, b)
+func (SetHostHostname) ProcessBatch(ctx context.Context, b *model.Batch) error {
+	for i := range *b {
+		setHostHostname(&(*b)[i])
+	}
+	return nil
 }
 
-func setSystemHostname(ctx context.Context, meta *model.Metadata) error {
+func setHostHostname(event *model.APMEvent) {
 	switch {
-	case meta.System.Kubernetes.NodeName != "":
-		// system.kubernetes.node.name is set: set host.hostname to its value.
-		meta.System.DetectedHostname = meta.System.Kubernetes.NodeName
-	case meta.System.Kubernetes.PodName != "" || meta.System.Kubernetes.PodUID != "" || meta.System.Kubernetes.Namespace != "":
-		// system.kubernetes.* is set, but system.kubernetes.node.name is not: don't set host.hostname at all.
-		meta.System.DetectedHostname = ""
+	case event.Kubernetes.NodeName != "":
+		// host.kubernetes.node.name is set: set host.hostname to its value.
+		event.Host.Hostname = event.Kubernetes.NodeName
+	case event.Kubernetes.PodName != "" || event.Kubernetes.PodUID != "" || event.Kubernetes.Namespace != "":
+		// kubernetes.* is set, but kubernetes.node.name is not: don't set host.hostname at all.
+		event.Host.Hostname = ""
 	default:
 		// Otherwise use the originally specified host.hostname value.
 	}
-	if meta.System.ConfiguredHostname == "" {
-		meta.System.ConfiguredHostname = meta.System.DetectedHostname
+	if event.Host.Name == "" {
+		event.Host.Name = event.Host.Hostname
 	}
-	return nil
 }

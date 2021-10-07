@@ -19,28 +19,29 @@ package otel_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
-	"go.opentelemetry.io/collector/consumer/pdata"
+	"go.opentelemetry.io/collector/model/pdata"
 
 	"github.com/elastic/apm-server/model"
 	"github.com/elastic/beats/v7/libbeat/common"
 )
 
 func TestResourceConventions(t *testing.T) {
+	defaultAgent := model.Agent{Name: "otlp", Version: "unknown"}
 	defaultService := model.Service{
 		Name:     "unknown",
 		Language: model.Language{Name: "unknown"},
-		Agent:    model.Agent{Name: "otlp", Version: "unknown"},
 	}
 
 	for name, test := range map[string]struct {
 		attrs    map[string]pdata.AttributeValue
-		expected model.Metadata
+		expected model.APMEvent
 	}{
 		"empty": {
 			attrs:    nil,
-			expected: model.Metadata{Service: defaultService},
+			expected: model.APMEvent{Agent: defaultAgent, Service: defaultService},
 		},
 		"service": {
 			attrs: map[string]pdata.AttributeValue{
@@ -48,13 +49,13 @@ func TestResourceConventions(t *testing.T) {
 				"service.version":        pdata.NewAttributeValueString("service_version"),
 				"deployment.environment": pdata.NewAttributeValueString("service_environment"),
 			},
-			expected: model.Metadata{
+			expected: model.APMEvent{
+				Agent: model.Agent{Name: "otlp", Version: "unknown"},
 				Service: model.Service{
 					Name:        "service_name",
 					Version:     "service_version",
 					Environment: "service_environment",
 					Language:    model.Language{Name: "unknown"},
-					Agent:       model.Agent{Name: "otlp", Version: "unknown"},
 				},
 			},
 		},
@@ -64,11 +65,11 @@ func TestResourceConventions(t *testing.T) {
 				"telemetry.sdk.version":  pdata.NewAttributeValueString("sdk_version"),
 				"telemetry.sdk.language": pdata.NewAttributeValueString("language_name"),
 			},
-			expected: model.Metadata{
+			expected: model.APMEvent{
+				Agent: model.Agent{Name: "sdk_name/language_name", Version: "sdk_version"},
 				Service: model.Service{
 					Name:     "unknown",
 					Language: model.Language{Name: "language_name"},
-					Agent:    model.Agent{Name: "sdk_name/language_name", Version: "sdk_version"},
 				},
 			},
 		},
@@ -77,11 +78,11 @@ func TestResourceConventions(t *testing.T) {
 				"process.runtime.name":    pdata.NewAttributeValueString("runtime_name"),
 				"process.runtime.version": pdata.NewAttributeValueString("runtime_version"),
 			},
-			expected: model.Metadata{
+			expected: model.APMEvent{
+				Agent: model.Agent{Name: "otlp", Version: "unknown"},
 				Service: model.Service{
 					Name:     "unknown",
 					Language: model.Language{Name: "unknown"},
-					Agent:    model.Agent{Name: "otlp", Version: "unknown"},
 					Runtime: model.Runtime{
 						Name:    "runtime_name",
 						Version: "runtime_version",
@@ -97,7 +98,8 @@ func TestResourceConventions(t *testing.T) {
 				"cloud.availability_zone": pdata.NewAttributeValueString("availability_zone"),
 				"cloud.platform":          pdata.NewAttributeValueString("platform_name"),
 			},
-			expected: model.Metadata{
+			expected: model.APMEvent{
+				Agent:   defaultAgent,
 				Service: defaultService,
 				Cloud: model.Cloud{
 					Provider:         "provider_name",
@@ -116,16 +118,15 @@ func TestResourceConventions(t *testing.T) {
 				"container.image.tag":  pdata.NewAttributeValueString("container_image_tag"),
 				"container.runtime":    pdata.NewAttributeValueString("container_runtime"),
 			},
-			expected: model.Metadata{
+			expected: model.APMEvent{
+				Agent:   defaultAgent,
 				Service: defaultService,
-				System: model.System{
-					Container: model.Container{
-						Name:      "container_name",
-						ID:        "container_id",
-						Runtime:   "container_runtime",
-						ImageName: "container_image_name",
-						ImageTag:  "container_image_tag",
-					},
+				Container: model.Container{
+					Name:      "container_name",
+					ID:        "container_id",
+					Runtime:   "container_runtime",
+					ImageName: "container_image_name",
+					ImageTag:  "container_image_tag",
 				},
 			},
 		},
@@ -136,15 +137,14 @@ func TestResourceConventions(t *testing.T) {
 				"k8s.pod.name":       pdata.NewAttributeValueString("kubernetes_pod_name"),
 				"k8s.pod.uid":        pdata.NewAttributeValueString("kubernetes_pod_uid"),
 			},
-			expected: model.Metadata{
+			expected: model.APMEvent{
+				Agent:   defaultAgent,
 				Service: defaultService,
-				System: model.System{
-					Kubernetes: model.Kubernetes{
-						Namespace: "kubernetes_namespace",
-						NodeName:  "kubernetes_node_name",
-						PodName:   "kubernetes_pod_name",
-						PodUID:    "kubernetes_pod_uid",
-					},
+				Kubernetes: model.Kubernetes{
+					Namespace: "kubernetes_namespace",
+					NodeName:  "kubernetes_node_name",
+					PodName:   "kubernetes_pod_name",
+					PodUID:    "kubernetes_pod_uid",
 				},
 			},
 		},
@@ -155,13 +155,14 @@ func TestResourceConventions(t *testing.T) {
 				"host.type": pdata.NewAttributeValueString("host_type"),
 				"host.arch": pdata.NewAttributeValueString("host_arch"),
 			},
-			expected: model.Metadata{
+			expected: model.APMEvent{
+				Agent:   defaultAgent,
 				Service: defaultService,
-				System: model.System{
-					DetectedHostname: "host_name",
-					ID:               "host_id",
-					Type:             "host_type",
-					Architecture:     "host_arch",
+				Host: model.Host{
+					Hostname:     "host_name",
+					ID:           "host_id",
+					Type:         "host_type",
+					Architecture: "host_arch",
 				},
 			},
 		},
@@ -171,7 +172,8 @@ func TestResourceConventions(t *testing.T) {
 				"process.command_line":    pdata.NewAttributeValueString("command_line"),
 				"process.executable.path": pdata.NewAttributeValueString("executable_path"),
 			},
-			expected: model.Metadata{
+			expected: model.APMEvent{
+				Agent:   defaultAgent,
 				Service: defaultService,
 				Process: model.Process{
 					Pid:         123,
@@ -185,12 +187,15 @@ func TestResourceConventions(t *testing.T) {
 				"os.type":        pdata.NewAttributeValueString("DARWIN"),
 				"os.description": pdata.NewAttributeValueString("Mac OS Mojave"),
 			},
-			expected: model.Metadata{
+			expected: model.APMEvent{
+				Agent:   defaultAgent,
 				Service: defaultService,
-				System: model.System{
-					Platform:     "darwin",
-					OSType:       "macos",
-					FullPlatform: "Mac OS Mojave",
+				Host: model.Host{
+					OS: model.OS{
+						Platform: "darwin",
+						Type:     "macos",
+						Full:     "Mac OS Mojave",
+					},
 				},
 			},
 		},
@@ -204,12 +209,12 @@ func TestResourceConventions(t *testing.T) {
 
 func TestResourceLabels(t *testing.T) {
 	stringArray := pdata.NewAttributeValueArray()
-	stringArray.ArrayVal().Append(pdata.NewAttributeValueString("abc"))
-	stringArray.ArrayVal().Append(pdata.NewAttributeValueString("def"))
+	stringArray.ArrayVal().AppendEmpty().SetStringVal("abc")
+	stringArray.ArrayVal().AppendEmpty().SetStringVal("def")
 
 	intArray := pdata.NewAttributeValueArray()
-	intArray.ArrayVal().Append(pdata.NewAttributeValueInt(123))
-	intArray.ArrayVal().Append(pdata.NewAttributeValueInt(456))
+	intArray.ArrayVal().AppendEmpty().SetIntVal(123)
+	intArray.ArrayVal().AppendEmpty().SetIntVal(456)
 
 	metadata := transformResourceMetadata(t, map[string]pdata.AttributeValue{
 		"string_array": stringArray,
@@ -221,13 +226,17 @@ func TestResourceLabels(t *testing.T) {
 	}, metadata.Labels)
 }
 
-func transformResourceMetadata(t *testing.T, resourceAttrs map[string]pdata.AttributeValue) model.Metadata {
+func transformResourceMetadata(t *testing.T, resourceAttrs map[string]pdata.AttributeValue) model.APMEvent {
 	traces, spans := newTracesSpans()
 	traces.ResourceSpans().At(0).Resource().Attributes().InitFromMap(resourceAttrs)
-	otelSpan := pdata.NewSpan()
+	otelSpan := spans.Spans().AppendEmpty()
 	otelSpan.SetTraceID(pdata.NewTraceID([16]byte{1}))
 	otelSpan.SetSpanID(pdata.NewSpanID([8]byte{2}))
-	spans.Spans().Append(otelSpan)
 	events := transformTraces(t, traces)
-	return events[0].Transaction.Metadata
+	events[0].Transaction = nil
+	events[0].Trace = model.Trace{}
+	events[0].Event.Outcome = ""
+	events[0].Timestamp = time.Time{}
+	events[0].Processor = model.Processor{}
+	return events[0]
 }

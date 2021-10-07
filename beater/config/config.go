@@ -65,7 +65,6 @@ type Config struct {
 	SelfInstrumentation       InstrumentationConfig   `config:"instrumentation"`
 	RumConfig                 RumConfig               `config:"rum"`
 	Register                  RegisterConfig          `config:"register"`
-	Mode                      Mode                    `config:"mode"`
 	Kibana                    KibanaConfig            `config:"kibana"`
 	KibanaAgentConfig         KibanaAgentConfig       `config:"agent.config"`
 	JaegerConfig              JaegerConfig            `config:"jaeger"`
@@ -78,6 +77,11 @@ type Config struct {
 	Pipeline string
 
 	AgentConfigs []AgentConfig `config:"agent_config"`
+
+	// WaitReadyInterval holds the interval for checks when waiting for
+	// the integration package to be installed, and for checking the
+	// Elasticsearch license level.
+	WaitReadyInterval time.Duration `config:"wait_ready_interval"`
 }
 
 // NewConfig creates a Config struct based on the default config and the given input params
@@ -92,8 +96,8 @@ func NewConfig(ucfg *common.Config, outputESCfg *common.Config) (*Config, error)
 		return nil, errors.New(msgInvalidConfigAgentCfg)
 	}
 
-	for _, serviceConfig := range c.AgentConfigs {
-		if err := serviceConfig.setup(); err != nil {
+	for i := range c.AgentConfigs {
+		if err := c.AgentConfigs[i].setup(); err != nil {
 			return nil, err
 		}
 	}
@@ -118,10 +122,16 @@ func NewConfig(ucfg *common.Config, outputESCfg *common.Config) (*Config, error)
 		return nil, err
 	}
 
-	if err := c.Sampling.Tail.setup(logger, outputESCfg); err != nil {
+	if err := c.Sampling.Tail.setup(logger, c.DataStreams.Enabled, outputESCfg); err != nil {
 		return nil, err
 	}
-
+	if c.Sampling.KeepUnsampled {
+		logger.Info("" +
+			"apm-server.sampling.keep_unsampled is deprecated and " +
+			"will default to `false` in 8.0. It will be removed " +
+			"in a subsequent version.",
+		)
+	}
 	if !c.Sampling.KeepUnsampled && !c.Aggregation.Transactions.Enabled {
 		// Unsampled transactions should only be dropped
 		// when transaction aggregation is enabled in the
@@ -227,7 +237,6 @@ func DefaultConfig() *Config {
 		SelfInstrumentation: defaultInstrumentationConfig(),
 		RumConfig:           defaultRum(),
 		Register:            defaultRegisterConfig(),
-		Mode:                ModeProduction,
 		Kibana:              defaultKibanaConfig(),
 		KibanaAgentConfig:   defaultKibanaAgentConfig(),
 		Pipeline:            defaultAPMPipeline,
@@ -237,5 +246,6 @@ func DefaultConfig() *Config {
 		DataStreams:         defaultDataStreamsConfig(),
 		AgentAuth:           defaultAgentAuth(),
 		JavaAttacherConfig:  defaultJavaAttacherConfig(),
+		WaitReadyInterval:   5 * time.Second,
 	}
 }

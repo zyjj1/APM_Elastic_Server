@@ -20,29 +20,21 @@ package model
 import (
 	"time"
 
-	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/common"
 )
 
 const (
-	profileProcessorName = "profile"
-	profileDocType       = "profile"
-	ProfilesDataset      = "apm.profiling"
+	ProfilesDataset = "apm.profiling"
 )
 
-var profileProcessorEntry = common.MapStr{
-	"name":  profileProcessorName,
-	"event": profileDocType,
-}
+// ProfileProcessor is the Processor value that should be assigned to profile events.
+var ProfileProcessor = Processor{Name: "profile", Event: "profile"}
 
 // ProfileSample holds a profiling sample.
 type ProfileSample struct {
-	Metadata  Metadata
-	Timestamp time.Time
 	Duration  time.Duration
 	ProfileID string
 	Stack     []ProfileSampleStackframe
-	Labels    common.MapStr
 	Values    map[string]int64
 }
 
@@ -54,7 +46,7 @@ type ProfileSampleStackframe struct {
 	Line     int64
 }
 
-func (p *ProfileSample) toBeatEvent() beat.Event {
+func (p *ProfileSample) setFields(fields *mapStr) {
 	var profileFields mapStr
 	profileFields.maybeSetString("id", p.ProfileID)
 	if p.Duration > 0 {
@@ -81,15 +73,5 @@ func (p *ProfileSample) toBeatEvent() beat.Event {
 	for k, v := range p.Values {
 		profileFields.set(k, v)
 	}
-
-	fields := mapStr{
-		"processor":    profileProcessorEntry,
-		profileDocType: common.MapStr(profileFields),
-	}
-	p.Metadata.set(&fields, p.Labels)
-
-	return beat.Event{
-		Timestamp: p.Timestamp,
-		Fields:    common.MapStr(fields),
-	}
+	fields.set("profile", common.MapStr(profileFields))
 }

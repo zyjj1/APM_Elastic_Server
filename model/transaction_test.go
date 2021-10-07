@@ -18,24 +18,28 @@
 package model
 
 import (
+	"context"
 	"fmt"
-	"net"
-	"net/http"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/elastic/beats/v7/libbeat/common"
 )
 
+func TestTransactionTransformEmpty(t *testing.T) {
+	event := APMEvent{Transaction: &Transaction{}}
+	beatEvent := event.BeatEvent(context.Background())
+	assert.Empty(t, beatEvent.Fields)
+}
+
 func TestTransactionTransform(t *testing.T) {
 	id := "123"
 	result := "tx result"
-	sampled := false
 	dropped, startedSpans := 5, 14
 	name := "mytransaction"
+	duration := 65980 * time.Microsecond
 
 	tests := []struct {
 		Transaction Transaction
@@ -45,24 +49,19 @@ func TestTransactionTransform(t *testing.T) {
 		{
 			Transaction: Transaction{},
 			Output: common.MapStr{
-				"id":       "",
-				"type":     "",
-				"duration": common.MapStr{"us": 0},
-				"sampled":  true,
+				"duration": common.MapStr{"us": 65980},
 			},
-			Msg: "Empty Event",
+			Msg: "Empty Transaction",
 		},
 		{
 			Transaction: Transaction{
-				ID:       id,
-				Type:     "tx",
-				Duration: 65.98,
+				ID:   id,
+				Type: "tx",
 			},
 			Output: common.MapStr{
 				"id":       id,
 				"type":     "tx",
 				"duration": common.MapStr{"us": 65980},
-				"sampled":  true,
 			},
 			Msg: "SpanCount empty",
 		},
@@ -70,7 +69,6 @@ func TestTransactionTransform(t *testing.T) {
 			Transaction: Transaction{
 				ID:        id,
 				Type:      "tx",
-				Duration:  65.98,
 				SpanCount: SpanCount{Started: &startedSpans},
 			},
 			Output: common.MapStr{
@@ -78,7 +76,6 @@ func TestTransactionTransform(t *testing.T) {
 				"type":       "tx",
 				"duration":   common.MapStr{"us": 65980},
 				"span_count": common.MapStr{"started": 14},
-				"sampled":    true,
 			},
 			Msg: "SpanCount only contains `started`",
 		},
@@ -86,7 +83,6 @@ func TestTransactionTransform(t *testing.T) {
 			Transaction: Transaction{
 				ID:        id,
 				Type:      "tx",
-				Duration:  65.98,
 				SpanCount: SpanCount{Dropped: &dropped},
 			},
 			Output: common.MapStr{
@@ -94,7 +90,6 @@ func TestTransactionTransform(t *testing.T) {
 				"type":       "tx",
 				"duration":   common.MapStr{"us": 65980},
 				"span_count": common.MapStr{"dropped": 5},
-				"sampled":    true,
 			},
 			Msg: "SpanCount only contains `dropped`",
 		},
@@ -104,10 +99,9 @@ func TestTransactionTransform(t *testing.T) {
 				Name:      name,
 				Type:      "tx",
 				Result:    result,
-				Timestamp: time.Now(),
-				Duration:  65.98,
-				Sampled:   &sampled,
+				Sampled:   true,
 				SpanCount: SpanCount{Started: &startedSpans, Dropped: &dropped},
+				Root:      true,
 			},
 			Output: common.MapStr{
 				"id":         id,
@@ -116,68 +110,111 @@ func TestTransactionTransform(t *testing.T) {
 				"result":     "tx result",
 				"duration":   common.MapStr{"us": 65980},
 				"span_count": common.MapStr{"started": 14, "dropped": 5},
-				"sampled":    false,
+				"sampled":    true,
+				"root":       true,
 			},
 			Msg: "Full Event",
+		},
+		{
+			Transaction: Transaction{
+				ID:        id,
+				Name:      name,
+				Type:      "tx",
+				Result:    result,
+				Sampled:   true,
+				SpanCount: SpanCount{Started: &startedSpans, Dropped: &dropped},
+				DroppedSpansStats: []DroppedSpanStats{
+					{
+						DestinationServiceResource: "mysql://server:3306",
+						Outcome:                    "success",
+						Duration: AggregatedDuration{
+							Count: 5,
+							Sum:   duration,
+						},
+					},
+					{
+						DestinationServiceResource: "http://elasticsearch:9200",
+						Outcome:                    "unknown",
+						Duration: AggregatedDuration{
+							Count: 15,
+							Sum:   duration,
+						},
+					},
+				},
+				Root: true,
+			},
+			Output: common.MapStr{
+				"id":         id,
+				"name":       "mytransaction",
+				"type":       "tx",
+				"result":     "tx result",
+				"duration":   common.MapStr{"us": 65980},
+				"span_count": common.MapStr{"started": 14, "dropped": 5},
+				"dropped_spans_stats": []common.MapStr{
+					{
+						"destination_service_resource": "mysql://server:3306",
+						"duration":                     common.MapStr{"count": 5, "sum.us": int64(65980)},
+						"outcome":                      "success",
+					},
+					{
+						"destination_service_resource": "http://elasticsearch:9200",
+						"duration":                     common.MapStr{"count": 15, "sum.us": int64(65980)},
+						"outcome":                      "unknown",
+					},
+				},
+				"sampled": true,
+				"root":    true,
+			},
+			Msg: "Full Event With Dropped Spans Statistics",
 		},
 	}
 
 	for idx, test := range tests {
-		output := test.Transaction.toBeatEvent()
-		assert.Equal(t, test.Output, output.Fields["transaction"], fmt.Sprintf("Failed at idx %v; %s", idx, test.Msg))
+		event := APMEvent{
+			Processor:   TransactionProcessor,
+			Transaction: &test.Transaction,
+			Event:       Event{Duration: duration},
+		}
+		beatEvent := event.BeatEvent(context.Background())
+		assert.Equal(t, test.Output, beatEvent.Fields["transaction"], fmt.Sprintf("Failed at idx %v; %s", idx, test.Msg))
 	}
-}
-
-func TestTransactionTransformOutcome(t *testing.T) {
-	tx := Transaction{Outcome: "success"}
-	event := tx.toBeatEvent()
-	assert.Equal(t, common.MapStr{"outcome": "success"}, event.Fields["event"])
 }
 
 func TestEventsTransformWithMetadata(t *testing.T) {
 	hostname := "a.b.c"
 	architecture := "darwin"
 	platform := "x64"
-	timestamp := time.Date(2019, 1, 3, 15, 17, 4, 908.596*1e6, time.FixedZone("+0100", 3600))
-	timestampUs := timestamp.UnixNano() / 1000
-	id, name, ip, userAgent := "123", "jane", "63.23.123.4", "node-js-2.3"
-	url, referer := "https://localhost", "http://localhost"
+	id, name, userAgent := "123", "jane", "node-js-2.3"
+	url := "https://localhost"
 	serviceName, serviceNodeName, serviceVersion := "myservice", "service-123", "2.1.3"
-	eventMetadata := Metadata{
+
+	txWithContext := APMEvent{
+		Processor: TransactionProcessor,
 		Service: Service{
 			Name:    serviceName,
 			Version: serviceVersion,
 			Node:    ServiceNode{Name: serviceNodeName},
 		},
-		System: System{
-			ConfiguredHostname: name,
-			DetectedHostname:   hostname,
-			Architecture:       architecture,
-			Platform:           platform,
+		Host: Host{
+			Name:         name,
+			Hostname:     hostname,
+			Architecture: architecture,
+			OS:           OS{Platform: platform},
 		},
 		User:      User{ID: id, Name: name},
 		UserAgent: UserAgent{Original: userAgent},
-		Client:    Client{IP: net.ParseIP(ip)},
-		Labels:    common.MapStr{"a": true},
+		URL:       URL{Original: url},
+		Transaction: &Transaction{
+			Custom:  common.MapStr{"foo.bar": "baz"},
+			Message: &Message{QueueName: "routeUser"},
+			Sampled: true,
+		},
 	}
 
-	request := Req{Method: "post", Socket: &Socket{}, Headers: http.Header{}, Referer: referer}
-	response := Resp{Finished: new(bool), MinimalResp: MinimalResp{Headers: http.Header{"content-type": []string{"text/html"}}}}
-	txWithContext := Transaction{
-		Metadata:  eventMetadata,
-		Timestamp: timestamp,
-		Labels:    common.MapStr{"a": "b"},
-		Page:      &Page{URL: &URL{Original: url}, Referer: referer},
-		HTTP:      &Http{Request: &request, Response: &response},
-		URL:       &URL{Original: url},
-		Custom:    common.MapStr{"foo.bar": "baz"},
-		Message:   &Message{QueueName: "routeUser"},
-	}
-	event := txWithContext.toBeatEvent()
-	assert.Equal(t, event.Fields, common.MapStr{
+	event := txWithContext.BeatEvent(context.Background())
+	assert.Equal(t, common.MapStr{
+		"processor":  common.MapStr{"name": "transaction", "event": "transaction"},
 		"user":       common.MapStr{"id": "123", "name": "jane"},
-		"client":     common.MapStr{"ip": ip},
-		"source":     common.MapStr{"ip": ip},
 		"user_agent": common.MapStr{"original": userAgent},
 		"host": common.MapStr{
 			"architecture": "darwin",
@@ -187,88 +224,23 @@ func TestEventsTransformWithMetadata(t *testing.T) {
 				"platform": "x64",
 			},
 		},
-		"processor": common.MapStr{
-			"event": "transaction",
-			"name":  "transaction",
-		},
 		"service": common.MapStr{
 			"name":    serviceName,
 			"version": serviceVersion,
 			"node":    common.MapStr{"name": serviceNodeName},
 		},
-		"timestamp": common.MapStr{"us": timestampUs},
 		"transaction": common.MapStr{
 			"duration": common.MapStr{"us": 0},
-			"id":       "",
-			"type":     "",
 			"sampled":  true,
-			"page":     common.MapStr{"url": url, "referer": referer},
 			"custom": common.MapStr{
 				"foo_bar": "baz",
 			},
 			"message": common.MapStr{"queue": common.MapStr{"name": "routeUser"}},
 		},
-		"event":  common.MapStr{"outcome": ""},
-		"labels": common.MapStr{"a": "b"},
-		"url":    common.MapStr{"original": url},
-		"http": common.MapStr{
-			"request":  common.MapStr{"method": "post", "referrer": referer},
-			"response": common.MapStr{"finished": false, "headers": common.MapStr{"content-type": []string{"text/html"}}}},
-	})
-}
-
-func TestTransformTransactionHTTP(t *testing.T) {
-	request := Req{Method: "post", Body: "<html><marquee>hello world</marquee></html>"}
-	tx := Transaction{
-		HTTP: &Http{Request: &request},
-	}
-	event := tx.toBeatEvent()
-	assert.Equal(t, common.MapStr{
-		"request": common.MapStr{
-			"method": request.Method,
-			"body": common.MapStr{
-				"original": request.Body,
-			},
+		"url": common.MapStr{
+			"original": url,
 		},
-	}, event.Fields["http"])
-}
-
-func TestTransactionTransformPage(t *testing.T) {
-	id := "123"
-	urlExample := "http://example.com/path"
-
-	tests := []struct {
-		Transaction Transaction
-		Output      common.MapStr
-		Msg         string
-	}{
-		{
-			Transaction: Transaction{
-				ID:        id,
-				Type:      "tx",
-				Timestamp: time.Now(),
-				Duration:  65.98,
-				URL:       ParseURL("https://localhost:8200/", "", ""),
-				Page: &Page{
-					URL: ParseURL(urlExample, "", ""),
-				},
-			},
-			Output: common.MapStr{
-				"domain":   "localhost",
-				"full":     "https://localhost:8200/",
-				"original": "https://localhost:8200/",
-				"path":     "/",
-				"port":     8200,
-				"scheme":   "https",
-			},
-			Msg: "With Page URL and Request URL",
-		},
-	}
-
-	for idx, test := range tests {
-		output := test.Transaction.toBeatEvent()
-		assert.Equal(t, test.Output, output.Fields["url"], fmt.Sprintf("Failed at idx %v; %s", idx, test.Msg))
-	}
+	}, event.Fields)
 }
 
 func TestTransactionTransformMarks(t *testing.T) {
@@ -295,54 +267,9 @@ func TestTransactionTransformMarks(t *testing.T) {
 	}
 
 	for idx, test := range tests {
-		output := test.Transaction.toBeatEvent()
-		marks, _ := output.Fields.GetValue("transaction.marks")
+		event := APMEvent{Transaction: &test.Transaction}
+		beatEvent := event.BeatEvent(context.Background())
+		marks, _ := beatEvent.Fields.GetValue("transaction.marks")
 		assert.Equal(t, test.Output, marks, fmt.Sprintf("Failed at idx %v; %s", idx, test.Msg))
-	}
-}
-
-func TestTransactionSession(t *testing.T) {
-	tests := []struct {
-		Transaction Transaction
-		Output      common.MapStr
-	}{{
-		Transaction: Transaction{
-			Session: TransactionSession{
-				ID: "session_id",
-			},
-		},
-		Output: common.MapStr{
-			"id": "session_id",
-		},
-	}, {
-		Transaction: Transaction{
-			Session: TransactionSession{
-				ID:       "session_id",
-				Sequence: 123,
-			},
-		},
-		Output: common.MapStr{
-			"id":       "session_id",
-			"sequence": 123,
-		},
-	}, {
-		Transaction: Transaction{
-			Session: TransactionSession{
-				// Sequence is ignored if ID is empty.
-				Sequence: 123,
-			},
-		},
-		Output: nil,
-	}}
-
-	for _, test := range tests {
-		output := test.Transaction.toBeatEvent()
-		session, err := output.Fields.GetValue("session")
-		if test.Output == nil {
-			assert.Equal(t, common.ErrKeyNotFound, err)
-		} else {
-			require.NoError(t, err)
-			assert.Equal(t, test.Output, session)
-		}
 	}
 }

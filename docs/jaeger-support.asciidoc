@@ -5,8 +5,6 @@
 <titleabbrev>Integrate with Jaeger</titleabbrev>
 ++++
 
-experimental::[]
-
 include::./jaeger-reference.asciidoc[tag=jaeger-intro]
 
 [float]
@@ -67,6 +65,3 @@ for more information.
 ==== Start sending span data
 
 That's it! Data sent from Jaeger clients to the APM Server can now be viewed in the APM app.
-
-// Make tab-widgets work
-include::./tab-widgets/code.asciidoc[]

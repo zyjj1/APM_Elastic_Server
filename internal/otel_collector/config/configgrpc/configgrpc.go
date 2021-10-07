@@ -15,12 +15,14 @@
 package configgrpc
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"strings"
 	"time"
 
-	"go.opencensus.io/plugin/ocgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/balancer/roundrobin"
 	"google.golang.org/grpc/credentials"
@@ -38,8 +40,6 @@ import (
 const (
 	CompressionUnsupported = ""
 	CompressionGzip        = "gzip"
-
-	PerRPCAuthTypeBearer = "bearer"
 )
 
 var (
@@ -158,6 +158,26 @@ type GRPCServerSettings struct {
 	Auth *configauth.Authentication `mapstructure:"auth,omitempty"`
 }
 
+// SanitizedEndpoint strips the prefix of either http:// or https:// from configgrpc.GRPCClientSettings.Endpoint.
+func (gcs *GRPCClientSettings) SanitizedEndpoint() string {
+	switch {
+	case gcs.isSchemeHTTP():
+		return strings.TrimPrefix(gcs.Endpoint, "http://")
+	case gcs.isSchemeHTTPS():
+		return strings.TrimPrefix(gcs.Endpoint, "https://")
+	default:
+		return gcs.Endpoint
+	}
+}
+
+func (gcs *GRPCClientSettings) isSchemeHTTP() bool {
+	return strings.HasPrefix(gcs.Endpoint, "http://")
+}
+
+func (gcs *GRPCClientSettings) isSchemeHTTPS() bool {
+	return strings.HasPrefix(gcs.Endpoint, "https://")
+}
+
 // ToDialOptions maps configgrpc.GRPCClientSettings to a slice of dial options for gRPC.
 func (gcs *GRPCClientSettings) ToDialOptions(ext map[config.ComponentID]component.Extension) ([]grpc.DialOption, error) {
 	var opts []grpc.DialOption
@@ -176,6 +196,8 @@ func (gcs *GRPCClientSettings) ToDialOptions(ext map[config.ComponentID]componen
 	tlsDialOption := grpc.WithInsecure()
 	if tlsCfg != nil {
 		tlsDialOption = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
+	} else if gcs.isSchemeHTTPS() {
+		tlsDialOption = grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{}))
 	}
 	opts = append(opts, tlsDialOption)
 
@@ -225,6 +247,10 @@ func (gcs *GRPCClientSettings) ToDialOptions(ext map[config.ComponentID]componen
 		}
 		opts = append(opts, grpc.WithDefaultServiceConfig(fmt.Sprintf(`{"loadBalancingPolicy":"%s"}`, gcs.BalancerName)))
 	}
+
+	// Enable OpenTelemetry observability plugin.
+	opts = append(opts, grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor()))
+	opts = append(opts, grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor()))
 
 	return opts, nil
 }
@@ -299,6 +325,9 @@ func (gss *GRPCServerSettings) ToServerOption(ext map[config.ComponentID]compone
 		}
 	}
 
+	uInterceptors := []grpc.UnaryServerInterceptor{}
+	sInterceptors := []grpc.StreamServerInterceptor{}
+
 	if gss.Auth != nil {
 		componentID, cperr := config.NewIDFromString(gss.Auth.AuthenticatorName)
 		if cperr != nil {
@@ -310,15 +339,22 @@ func (gss *GRPCServerSettings) ToServerOption(ext map[config.ComponentID]compone
 			return nil, err
 		}
 
-		opts = append(opts,
-			grpc.UnaryInterceptor(authenticator.GRPCUnaryServerInterceptor),
-			grpc.StreamInterceptor(authenticator.GRPCStreamServerInterceptor),
-		)
+		uInterceptors = append(uInterceptors, authenticator.GRPCUnaryServerInterceptor)
+		sInterceptors = append(sInterceptors, authenticator.GRPCStreamServerInterceptor)
 	}
 
-	// Enable OpenCensus observability plugin.
-	// TODO: Change to OpenTelemetry when collector is changed.
-	opts = append(opts, grpc.StatsHandler(&ocgrpc.ServerHandler{}))
+	// Enable OpenTelemetry observability plugin.
+	// TODO: Pass construct settings to have access to Tracer.
+	uInterceptors = append(uInterceptors, otelgrpc.UnaryServerInterceptor(
+		otelgrpc.WithTracerProvider(otel.GetTracerProvider()),
+		otelgrpc.WithPropagators(otel.GetTextMapPropagator()),
+	))
+	sInterceptors = append(sInterceptors, otelgrpc.StreamServerInterceptor(
+		otelgrpc.WithTracerProvider(otel.GetTracerProvider()),
+		otelgrpc.WithPropagators(otel.GetTextMapPropagator()),
+	))
+
+	opts = append(opts, grpc.ChainUnaryInterceptor(uInterceptors...), grpc.ChainStreamInterceptor(sInterceptors...))
 
 	return opts, nil
 }

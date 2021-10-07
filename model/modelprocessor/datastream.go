@@ -39,34 +39,31 @@ func (s *SetDataStream) ProcessBatch(ctx context.Context, b *model.Batch) error 
 }
 
 func (s *SetDataStream) setDataStream(event *model.APMEvent) {
-	switch {
-	case event.Transaction != nil || event.Span != nil:
+	switch event.Processor {
+	case model.SpanProcessor, model.TransactionProcessor:
 		event.DataStream.Type = datastreams.TracesType
 		event.DataStream.Dataset = model.TracesDataset
-	case event.Error != nil:
+	case model.ErrorProcessor:
 		event.DataStream.Type = datastreams.LogsType
 		event.DataStream.Dataset = model.ErrorsDataset
-	case event.Metricset != nil:
+	case model.LogProcessor:
+		event.DataStream.Type = datastreams.LogsType
+		event.DataStream.Dataset = model.AppLogsDataset
+	case model.MetricsetProcessor:
 		event.DataStream.Type = datastreams.MetricsType
 		// Metrics that include well-defined transaction/span fields
 		// (i.e. breakdown metrics, transaction and span metrics) will
 		// be stored separately from application and runtime metrics.
 		event.DataStream.Dataset = model.InternalMetricsDataset
-		if isApplicationMetricset(event.Metricset) {
+		if event.Transaction == nil && event.Span == nil {
 			event.DataStream.Dataset = fmt.Sprintf(
 				"%s.%s", model.AppMetricsDataset,
-				datastreams.NormalizeServiceName(event.Metricset.Metadata.Service.Name),
+				datastreams.NormalizeServiceName(event.Service.Name),
 			)
 		}
-	case event.ProfileSample != nil:
+	case model.ProfileProcessor:
 		event.DataStream.Type = datastreams.MetricsType
 		event.DataStream.Dataset = model.ProfilesDataset
 	}
 	event.DataStream.Namespace = s.Namespace
-}
-
-func isApplicationMetricset(ms *model.Metricset) bool {
-	return ms.Event == (model.MetricsetEventCategorization{}) &&
-		ms.Transaction == (model.MetricsetTransaction{}) &&
-		ms.Span == (model.MetricsetSpan{})
 }

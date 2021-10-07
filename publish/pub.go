@@ -27,7 +27,8 @@ import (
 	"go.elastic.co/apm"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
-	"github.com/elastic/beats/v7/libbeat/common"
+
+	"github.com/elastic/apm-server/model"
 )
 
 type Reporter func(context.Context, PendingReq) error
@@ -53,7 +54,6 @@ type Publisher struct {
 
 type PendingReq struct {
 	Transformable Transformer
-	Trace         bool
 }
 
 // Transformer is an interface implemented by types that can be transformed into beat.Events.
@@ -87,21 +87,7 @@ func NewPublisher(pipeline beat.Pipeline, tracer *apm.Tracer, cfg *PublisherConf
 		return nil, errors.Wrap(err, "invalid config")
 	}
 
-	observerFields := common.MapStr{
-		"type":         cfg.Info.Beat,
-		"hostname":     cfg.Info.Hostname,
-		"version":      cfg.Info.Version,
-		"id":           cfg.Info.ID.String(),
-		"ephemeral_id": cfg.Info.EphemeralID.String(),
-	}
-	if version, err := common.NewVersion(cfg.Info.Version); err == nil {
-		observerFields["version_major"] = version.Major
-	}
-
-	processingCfg := beat.ProcessingConfig{
-		Fields:    common.MapStr{"observer": observerFields},
-		Processor: cfg.Processor,
-	}
+	processingCfg := beat.ProcessingConfig{Processor: cfg.Processor}
 	if cfg.Pipeline != "" {
 		processingCfg.Meta = map[string]interface{}{"pipeline": cfg.Pipeline}
 	}
@@ -169,6 +155,12 @@ func (p *Publisher) Stop(ctx context.Context) error {
 	return p.client.Close()
 }
 
+// ProcessBatch transforms batch to beat.Events, and sends them to the libbeat
+// publishing pipeline.
+func (p *Publisher) ProcessBatch(ctx context.Context, batch *model.Batch) error {
+	return p.Send(ctx, PendingReq{Transformable: batch})
+}
+
 // Send tries to forward pendingReq to the publishers worker. If the queue is full,
 // an error is returned.
 //
@@ -196,19 +188,7 @@ func (p *Publisher) Send(ctx context.Context, req PendingReq) error {
 func (p *Publisher) run() {
 	ctx := context.Background()
 	for req := range p.pendingRequests {
-		p.processPendingReq(ctx, req)
+		events := req.Transformable.Transform(ctx)
+		p.client.PublishAll(events)
 	}
-}
-
-func (p *Publisher) processPendingReq(ctx context.Context, req PendingReq) {
-	var tx *apm.Transaction
-	if req.Trace {
-		tx = p.tracer.StartTransaction("ProcessPending", "Publisher")
-		defer tx.End()
-		ctx = apm.ContextWithTransaction(ctx, tx)
-	}
-	events := req.Transformable.Transform(ctx)
-	span := tx.StartSpan("PublishAll", "Publisher", nil)
-	defer span.End()
-	p.client.PublishAll(events)
 }

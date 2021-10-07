@@ -6,13 +6,15 @@
             "version": "3.14.0"
         },
         "ecs": {
-            "version": "1.10.0"
+            "version": "1.12.0"
         },
         "event": {
             "outcome": "unknown"
         },
         "http": {
-            "request.method": "GET",
+            "request": {
+                "method": "GET"
+            },
             "response": {
                 "status_code": 200
             }
@@ -56,11 +58,9 @@
                 "method": "GET",
                 "response": {
                     "status_code": 200
-                },
-                "url": {
-                    "original": "http://localhost:8000"
                 }
             },
+            "http.url.original": "http://localhost:8000",
             "id": "0aaaaaaaaaaaaaaa",
             "name": "SELECT FROM product_types",
             "stacktrace": [
@@ -115,7 +115,9 @@
         "transaction": {
             "id": "945254c567a5417e"
         },
-        "url.original": "http://localhost:8000"
+        "url": {
+            "original": "http://localhost:8000"
+        }
     },
     {
         "@timestamp": "2017-05-30T18:53:42.281Z",
@@ -129,7 +131,7 @@
             "port": 5432
         },
         "ecs": {
-            "version": "1.10.0"
+            "version": "1.12.0"
         },
         "event": {
             "outcome": "unknown"
@@ -198,7 +200,7 @@
             "version": "3.14.0"
         },
         "ecs": {
-            "version": "1.10.0"
+            "version": "1.12.0"
         },
         "event": {
             "outcome": "unknown"
@@ -251,7 +253,7 @@
             "version": "3.14.0"
         },
         "ecs": {
-            "version": "1.10.0"
+            "version": "1.12.0"
         },
         "event": {
             "outcome": "unknown"
@@ -310,7 +312,7 @@
             ]
         },
         "ecs": {
-            "version": "1.10.0"
+            "version": "1.12.0"
         },
         "event": {
             "outcome": "unknown"

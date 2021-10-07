@@ -49,6 +49,8 @@ type Config struct {
 	RUM                       *RUMConfig         `json:"apm-server.rum,omitempty"`
 	DataStreams               *DataStreamsConfig `json:"apm-server.data_streams,omitempty"`
 	DefaultServiceEnvironment string             `json:"apm-server.default_service_environment,omitempty"`
+	KibanaAgentConfig         *KibanaAgentConfig `json:"apm-server.agent.config,omitempty"`
+	TLS                       *TLSConfig         `json:"apm-server.ssl,omitempty"`
 
 	// AgentAuth holds configuration for APM agent authorization.
 	AgentAuth AgentAuthConfig `json:"apm-server.auth"`
@@ -81,6 +83,35 @@ type Config struct {
 // in the form ["-E", "k=v", "-E", "k=v", ...]
 func (cfg Config) Args() ([]string, error) {
 	return configArgs(cfg, nil)
+}
+
+// TLSConfig holds configuration to TLS encryption of agent/server communication.
+type TLSConfig struct {
+	// ClientAuthentication controls whether TLS client authentication is
+	// enabled, and optional or required. If this is non-empty, then
+	// `apm-server.ssl.certificate_authorities` will be set to the server's
+	// self-signed certificate path.
+	ClientAuthentication string `json:"client_authentication,omitempty"`
+
+	CipherSuites       []string `json:"cipher_suites,omitempty"`
+	SupportedProtocols []string `json:"supported_protocols,omitempty"`
+}
+
+// KibanaAgentConfig holds configuration related to the Kibana-based
+// implementation of agent configuration.
+type KibanaAgentConfig struct {
+	CacheExpiration time.Duration
+}
+
+func (c *KibanaAgentConfig) MarshalJSON() ([]byte, error) {
+	// time.Duration is encoded as int64.
+	// Convert time.Durations to durations, to encode as duration strings.
+	type config struct {
+		CacheExpiration string `json:"cache.expiration,omitempty"`
+	}
+	return json.Marshal(config{
+		CacheExpiration: durationString(c.CacheExpiration),
+	})
 }
 
 // LoggingConfig holds APM Server logging configuration.
@@ -180,7 +211,8 @@ type RUMSourcemapCacheConfig struct {
 
 // DataStreamsConfig holds APM Server data streams configuration.
 type DataStreamsConfig struct {
-	Enabled bool `json:"enabled"`
+	Enabled            bool  `json:"enabled"`
+	WaitForIntegration *bool `json:"wait_for_integration,omitempty"`
 }
 
 // APIKeyConfig holds agent auth configuration.

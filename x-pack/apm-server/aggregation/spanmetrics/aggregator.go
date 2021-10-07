@@ -66,7 +66,9 @@ type Aggregator struct {
 
 	config AggregatorConfig
 
-	mu               sync.RWMutex
+	mu sync.RWMutex
+	// These two metricsBuffer are set to the same size and act as buffers
+	// for caching and then publishing the metrics as batches.
 	active, inactive *metricsBuffer
 }
 
@@ -148,6 +150,11 @@ func (a *Aggregator) publish(ctx context.Context) error {
 	// to block spanMetrics updaters. After the lock is released nothing
 	// will be accessing a.inactive.
 	a.mu.Lock()
+
+	// EXPLAIN: We swap active <-> inactive, so that we're only working on the
+	// inactive property while publish is running. `a.active` is the buffer that
+	// receives/stores/updates the metricsets, once swapped, we're working on the
+	// `a.inactive` which we're going to process and publish.
 	a.active, a.inactive = a.inactive, a.active
 	a.mu.Unlock()
 
@@ -161,7 +168,7 @@ func (a *Aggregator) publish(ctx context.Context) error {
 	batch := make(model.Batch, 0, size)
 	for key, metrics := range a.inactive.m {
 		metricset := makeMetricset(now, key, metrics, a.config.Interval.Milliseconds())
-		batch = append(batch, model.APMEvent{Metricset: &metricset})
+		batch = append(batch, metricset)
 		delete(a.inactive.m, key)
 	}
 	a.config.Logger.Debugf("publishing %d metricsets", len(batch))
@@ -169,7 +176,8 @@ func (a *Aggregator) publish(ctx context.Context) error {
 }
 
 // ProcessBatch aggregates all spans contained in "b", adding to it any
-// metricsets requiring immediate publication.
+// metricsets requiring immediate publication. It also aggregates transactions
+// where transaction.DroppedSpansStats > 0.
 //
 // This method is expected to be used immediately prior to publishing
 // the events.
@@ -177,44 +185,91 @@ func (a *Aggregator) ProcessBatch(ctx context.Context, b *model.Batch) error {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	for _, event := range *b {
-		if event.Span == nil {
+		if event.Processor == model.SpanProcessor {
+			if msEvent := a.processSpan(&event); msEvent.Metricset != nil {
+				*b = append(*b, msEvent)
+			}
 			continue
 		}
-		if metricset := a.processSpan(event.Span); metricset != nil {
-			*b = append(*b, model.APMEvent{Metricset: metricset})
+
+		tx := event.Transaction
+		if event.Processor == model.TransactionProcessor && tx != nil {
+			for _, dss := range tx.DroppedSpansStats {
+				if msEvent := a.processDroppedSpanStats(&event, dss); msEvent.Metricset != nil {
+					*b = append(*b, msEvent)
+				}
+			}
+			// NOTE(marclop) The event.Transaction.DroppedSpansStats is unset
+			// via the `modelprocessor.DroppedSpansStatsDiscarder` appended just
+			// before the Elasticsearch publisher.
+			continue
 		}
 	}
 	return nil
 }
 
-func (a *Aggregator) processSpan(span *model.Span) *model.Metricset {
-	if span.DestinationService == nil || span.DestinationService.Resource == "" {
-		return nil
+func (a *Aggregator) processSpan(event *model.APMEvent) model.APMEvent {
+	if event.Span.DestinationService == nil || event.Span.DestinationService.Resource == "" {
+		return model.APMEvent{}
 	}
-	if span.RepresentativeCount <= 0 {
+	if event.Span.RepresentativeCount <= 0 {
 		// RepresentativeCount is zero when the sample rate is unknown.
 		// We cannot calculate accurate span metrics without the sample
 		// rate, so we don't calculate any at all in this case.
-		return nil
+		return model.APMEvent{}
+	}
+
+	// For composite spans we use the composite sum duration, which is the sum of
+	// pre-aggregated spans and excludes time gaps that are counted in the reported
+	// span duration. For non-composite spans we just use the reported span duration.
+	count := 1
+	duration := event.Event.Duration
+	if event.Span.Composite != nil {
+		count = event.Span.Composite.Count
+		duration = time.Duration(event.Span.Composite.Sum * float64(time.Millisecond))
 	}
 
 	key := aggregationKey{
-		serviceEnvironment: span.Metadata.Service.Environment,
-		serviceName:        span.Metadata.Service.Name,
-		agentName:          span.Metadata.Service.Agent.Name,
-		outcome:            span.Outcome,
-		resource:           span.DestinationService.Resource,
+		serviceEnvironment: event.Service.Environment,
+		serviceName:        event.Service.Name,
+		agentName:          event.Agent.Name,
+		outcome:            event.Event.Outcome,
+		resource:           event.Span.DestinationService.Resource,
 	}
-	duration := time.Duration(span.Duration * float64(time.Millisecond))
 	metrics := spanMetrics{
-		count: span.RepresentativeCount,
-		sum:   float64(duration.Microseconds()) * span.RepresentativeCount,
+		count: float64(count) * event.Span.RepresentativeCount,
+		sum:   float64(duration) * event.Span.RepresentativeCount,
 	}
 	if a.active.storeOrUpdate(key, metrics) {
-		return nil
+		return model.APMEvent{}
 	}
-	metricset := makeMetricset(time.Now(), key, metrics, 0)
-	return &metricset
+	return makeMetricset(time.Now(), key, metrics, 0)
+}
+
+func (a *Aggregator) processDroppedSpanStats(event *model.APMEvent, dss model.DroppedSpanStats) model.APMEvent {
+	representativeCount := event.Transaction.RepresentativeCount
+	if representativeCount <= 0 {
+		// RepresentativeCount is zero when the sample rate is unknown.
+		// We cannot calculate accurate span metrics without the sample
+		// rate, so we don't calculate any at all in this case.
+		return model.APMEvent{}
+	}
+
+	key := aggregationKey{
+		serviceEnvironment: event.Service.Environment,
+		serviceName:        event.Service.Name,
+		agentName:          event.Agent.Name,
+		outcome:            event.Event.Outcome,
+		resource:           dss.DestinationServiceResource,
+	}
+	metrics := spanMetrics{
+		count: float64(dss.Duration.Count) * representativeCount,
+		sum:   float64(dss.Duration.Sum) * representativeCount,
+	}
+	if a.active.storeOrUpdate(key, metrics) {
+		return model.APMEvent{}
+	}
+	return makeMetricset(time.Now(), key, metrics, 0)
 }
 
 type metricsBuffer struct {
@@ -257,41 +312,29 @@ type spanMetrics struct {
 	sum   float64
 }
 
-func makeMetricset(timestamp time.Time, key aggregationKey, metrics spanMetrics, interval int64) model.Metricset {
-	out := model.Metricset{
+func makeMetricset(timestamp time.Time, key aggregationKey, metrics spanMetrics, interval int64) model.APMEvent {
+	return model.APMEvent{
 		Timestamp: timestamp,
-		Name:      metricsetName,
-		Metadata: model.Metadata{
-			Service: model.Service{
-				Name:        key.serviceName,
-				Environment: key.serviceEnvironment,
-				Agent:       model.Agent{Name: key.agentName},
-			},
+		Agent:     model.Agent{Name: key.agentName},
+		Service: model.Service{
+			Name:        key.serviceName,
+			Environment: key.serviceEnvironment,
 		},
-		Event: model.MetricsetEventCategorization{
+		Event: model.Event{
 			Outcome: key.outcome,
 		},
-		Span: model.MetricsetSpan{
-			DestinationService: model.DestinationService{Resource: key.resource},
+		Processor: model.MetricsetProcessor,
+		Metricset: &model.Metricset{
+			Name: metricsetName,
 		},
-		Samples: map[string]model.MetricsetSample{
-			"span.destination.service.response_time.count": {
-				Value: math.Round(metrics.count),
-			},
-			"span.destination.service.response_time.sum.us": {
-				Value: math.Round(metrics.sum),
+		Span: &model.Span{
+			DestinationService: &model.DestinationService{
+				Resource: key.resource,
+				ResponseTime: model.AggregatedDuration{
+					Count: int(math.Round(metrics.count)),
+					Sum:   time.Duration(math.Round(metrics.sum)),
+				},
 			},
 		},
 	}
-	if interval > 0 {
-		// Only set metricset.period for a positive interval.
-		//
-		// An interval of zero means the metricset is computed
-		// from an instantaneous value, meaning there is no
-		// aggregation period.
-		out.Samples["metricset.period"] = model.MetricsetSample{
-			Value: float64(interval),
-		}
-	}
-	return out
 }

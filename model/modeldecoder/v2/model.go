@@ -62,14 +62,13 @@ type transactionRoot struct {
 // other structs
 
 type context struct {
+	// Cloud holds fields related to the cloud or infrastructure the events
+	// are coming from.
+	Cloud contextCloud `json:"cloud"`
 	// Custom can contain additional metadata to be stored with the event.
 	// The format is unspecified and can be deeply nested objects.
 	// The information will not be indexed or searchable in Elasticsearch.
 	Custom common.MapStr `json:"custom"`
-	// Experimental information is only processed when APM Server is started
-	// in development mode and should only be used by APM agent developers
-	// implementing new, unreleased features. The format is unspecified.
-	Experimental nullable.Interface `json:"experimental"`
 	// Message holds details related to message receiving and publishing
 	// if the captured event integrates with a messaging system
 	Message contextMessage `json:"message"`
@@ -97,6 +96,52 @@ type context struct {
 	User user `json:"user"`
 }
 
+type faas struct {
+	// Indicates whether a function invocation was a cold start or not.
+	Coldstart nullable.Bool `json:"coldstart"`
+	// The request id of the function invocation.
+	Execution nullable.String `json:"execution"`
+	// Trigger attributes.
+	Trigger trigger `json:"trigger"`
+}
+
+type trigger struct {
+	// The trigger type.
+	Type nullable.String `json:"type"`
+	// The id of the origin trigger request.
+	RequestID nullable.String `json:"request_id"`
+}
+
+type contextCloud struct {
+	// Origin contains the self-nested field groups for cloud.
+	Origin contextCloudOrigin `json:"origin"`
+}
+
+type contextCloudOrigin struct {
+	// The cloud account or organization id used to identify
+	// different entities in a multi-tenant environment.
+	Account contextCloudOriginAccount `json:"account"`
+	// Name of the cloud provider.
+	Provider nullable.String `json:"provider"`
+	// Region in which this host, resource, or service is located.
+	Region nullable.String `json:"region"`
+	// The cloud service name is intended to distinguish services running
+	// on different platforms within a provider.
+	Service contextCloudOriginService `json:"service"`
+}
+
+type contextCloudOriginAccount struct {
+	// The cloud account or organization id used to identify
+	// different entities in a multi-tenant environment.
+	ID nullable.String `json:"id"`
+}
+
+type contextCloudOriginService struct {
+	// The cloud service name is intended to distinguish services running
+	// on different platforms within a provider.
+	Name nullable.String `json:"name"`
+}
+
 type contextMessage struct {
 	// Age of the message. If the monitored messaging framework provides a
 	// timestamp for the message, agents may use it. Otherwise, the sending
@@ -110,6 +155,9 @@ type contextMessage struct {
 	Headers nullable.HTTPHeader `json:"headers"`
 	// Queue holds information about the message queue where the message is received.
 	Queue contextMessageQueue `json:"queue"`
+	// RoutingKey holds the optional routing key of the received message as set
+	// on the queuing system, such as in RabbitMQ.
+	RoutingKey nullable.String `json:"routing_key"`
 }
 
 type contextMessageAge struct {
@@ -178,6 +226,7 @@ type contextRequestURL struct {
 
 type contextRequestSocket struct {
 	// Encrypted indicates whether a request was sent as TLS/HTTPS request.
+	// DEPRECATED: this field will be removed in a future release.
 	Encrypted nullable.Bool `json:"encrypted"`
 	// RemoteAddress holds the network address sending the request. It should
 	// be obtained through standard APIs and not be parsed from any headers
@@ -211,6 +260,8 @@ type contextService struct {
 	// Framework holds information about the framework used in the
 	// monitored service.
 	Framework contextServiceFramework `json:"framework"`
+	// ID holds a unique identifier for the service.
+	ID nullable.String `json:"string"`
 	// Language holds information about the programming language of the
 	// monitored service.
 	Language contextServiceLanguage `json:"language"`
@@ -218,11 +269,22 @@ type contextService struct {
 	Name nullable.String `json:"name" validate:"maxLength=1024,pattern=patternAlphaNumericExt"`
 	// Node must be a unique meaningful name of the service node.
 	Node contextServiceNode `json:"node"`
+	// Origin contains the self-nested field groups for service.
+	Origin contextServiceOrigin `json:"origin"`
 	// Runtime holds information about the language runtime running the
 	// monitored service
 	Runtime contextServiceRuntime `json:"runtime"`
 	// Version of the monitored service.
 	Version nullable.String `json:"version" validate:"maxLength=1024"`
+}
+
+type contextServiceOrigin struct {
+	// Immutable id of the service emitting this event.
+	ID nullable.String `json:"id"`
+	// Immutable name of the service emitting this event.
+	Name nullable.String `json:"name"`
+	// The version of the service the data was collected from.
+	Version nullable.String `json:"version"`
 }
 
 type contextServiceAgent struct {
@@ -356,6 +418,9 @@ type metadata struct {
 	System metadataSystem `json:"system"`
 	// User metadata, which can be overwritten on a per event basis.
 	User user `json:"user"`
+	// Network holds information about the network over which the
+	// monitored service is communicating.
+	Network network `json:"network"`
 }
 
 type metadataCloud struct {
@@ -430,6 +495,8 @@ type metadataService struct {
 	// Framework holds information about the framework used in the
 	// monitored service.
 	Framework metadataServiceFramework `json:"framework"`
+	// ID holds a unique identifier for the running service.
+	ID nullable.String `json:"id"`
 	// Language holds information about the programming language of the
 	// monitored service.
 	Language metadataServiceLanguage `json:"language"`
@@ -530,6 +597,14 @@ type metadataSystemKubernetesPod struct {
 	UID nullable.String `json:"uid" validate:"maxLength=1024"`
 }
 
+type network struct {
+	Connection networkConnection `json:"connection"`
+}
+
+type networkConnection struct {
+	Type nullable.String `json:"type" validate:"maxLength=1024"`
+}
+
 type metricset struct {
 	// Timestamp holds the recorded time of the event, UTC based and formatted
 	// as microseconds since Unix epoch
@@ -605,9 +680,12 @@ type span struct {
 	Action nullable.String `json:"action" validate:"maxLength=1024"`
 	// ChildIDs holds a list of successor transactions and/or spans.
 	ChildIDs []string `json:"child_ids" validate:"maxLength=1024"`
+	// Composite holds details on a group of spans represented by a single one.
+	Composite spanComposite `json:"composite"`
 	// Context holds arbitrary contextual information for the event.
 	Context spanContext `json:"context"`
-	// Duration of the span in milliseconds
+	// Duration of the span in milliseconds. When the span is a composite one,
+	// duration is the gross duration, including "whitespace" in between spans.
 	Duration nullable.Float64 `json:"duration" validate:"required,min=0"`
 	// ID holds the hex encoded 64 random bits ID of the event.
 	ID nullable.String `json:"id" validate:"required,maxLength=1024"`
@@ -651,10 +729,6 @@ type spanContext struct {
 	Database spanContextDatabase `json:"db"`
 	// Destination contains contextual data about the destination of spans
 	Destination spanContextDestination `json:"destination"`
-	// Experimental information is only processed when APM Server is started
-	// in development mode and should only be used by APM agent developers
-	// implementing new, unreleased features. The format is unspecified.
-	Experimental nullable.Interface `json:"experimental" `
 	// HTTP contains contextual information when the span concerns an HTTP request.
 	HTTP spanContextHTTP `json:"http"`
 	// Message holds details related to message receiving and publishing
@@ -768,12 +842,29 @@ type stacktraceFrame struct {
 	_    struct{}      `validate:"requiredAnyOf=classname;filename"`
 }
 
+type spanComposite struct {
+	// Count is the number of compressed spans the composite span represents.
+	// The minimum count is 2, as a composite span represents at least two spans.
+	Count nullable.Int `json:"count" validate:"required,min=2"`
+	// Sum is the durations of all compressed spans this composite span
+	// represents in milliseconds.
+	Sum nullable.Float64 `json:"sum" validate:"required,min=0"`
+	// A string value indicating which compression strategy was used. The valid
+	// values are `exact_match` and `same_kind`.
+	CompressionStrategy nullable.String `json:"compression_strategy" validate:"required"`
+}
+
 type transaction struct {
 	// Context holds arbitrary contextual information for the event.
 	Context context `json:"context"`
+	// DroppedSpanStats holds information about spans that were dropped
+	// (for example due to transaction_max_spans or exit_span_min_duration).
+	DroppedSpanStats []transactionDroppedSpanStats `json:"dropped_spans_stats"`
 	// Duration how long the transaction took to complete, in milliseconds
 	// with 3 decimal points.
 	Duration nullable.Float64 `json:"duration" validate:"required,min=0"`
+	// FAAS holds fields related to Function as a Service events.
+	FAAS faas `json:"faas"`
 	// ID holds the hex encoded 64 random bits ID of the event.
 	ID nullable.String `json:"id" validate:"required,maxLength=1024"`
 	// Marks capture the timing of a significant event during the lifetime of
@@ -886,4 +977,28 @@ type user struct {
 	Email nullable.String `json:"email" validate:"maxLength=1024"`
 	// Name of the user.
 	Name nullable.String `json:"username" validate:"maxLength=1024"`
+}
+
+type transactionDroppedSpanStats struct {
+	// DestinationServiceResource identifies the destination service resource
+	// being operated on. e.g. 'http://elastic.co:80', 'elasticsearch', 'rabbitmq/queue_name'.
+	DestinationServiceResource nullable.String `json:"destination_service_resource" validate:"maxLength=1024"`
+	// Outcome of the span: success, failure, or unknown. Outcome may be one of
+	// a limited set of permitted values describing the success or failure of
+	// the span. It can be used for calculating error rates for outgoing requests.
+	Outcome nullable.String `json:"outcome" validate:"enum=enumOutcome"`
+	// Duration holds duration aggregations about the dropped span.
+	Duration transactionDroppedSpansDuration `json:"duration"`
+}
+
+type transactionDroppedSpansDuration struct {
+	// Count holds the number of times the dropped span happened.
+	Count nullable.Int `json:"count" validate:"min=1"`
+	// Sum holds dimensions about the dropped span's duration.
+	Sum transactionDroppedSpansDurationSum `json:"sum"`
+}
+
+type transactionDroppedSpansDurationSum struct {
+	// Us represents the summation of the span duration.
+	Us nullable.Int `json:"us" validate:"min=0"`
 }

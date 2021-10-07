@@ -18,6 +18,7 @@
 package api
 
 import (
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"regexp"
@@ -78,27 +79,26 @@ func NewMux(
 	beaterConfig *config.Config,
 	report publish.Reporter,
 	batchProcessor model.BatchProcessor,
+	authenticator *auth.Authenticator,
 	fetcher agentcfg.Fetcher,
 	ratelimitStore *ratelimit.Store,
 	sourcemapStore *sourcemap.Store,
+	fleetManaged bool,
+	publishReady func() bool,
 ) (*http.ServeMux, error) {
 	pool := request.NewContextPool()
 	mux := http.NewServeMux()
 	logger := logp.NewLogger(logs.Handler)
 
-	auth, err := auth.NewAuthenticator(beaterConfig.AgentAuth)
-	if err != nil {
-		return nil, err
-	}
-
 	builder := routeBuilder{
 		info:           beatInfo,
 		cfg:            beaterConfig,
-		authenticator:  auth,
+		authenticator:  authenticator,
 		reporter:       report,
 		batchProcessor: batchProcessor,
 		ratelimitStore: ratelimitStore,
 		sourcemapStore: sourcemapStore,
+		fleetManaged:   fleetManaged,
 	}
 
 	type route struct {
@@ -106,7 +106,7 @@ func NewMux(
 		handlerFn func() (request.Handler, error)
 	}
 	routeMap := []route{
-		{RootPath, builder.rootHandler},
+		{RootPath, builder.rootHandler(publishReady)},
 		{AssetSourcemapPath, builder.sourcemapHandler},
 		{AgentConfigPath, builder.backendAgentConfigHandler(fetcher)},
 		{AgentConfigRUMPath, builder.rumAgentConfigHandler(fetcher)},
@@ -150,6 +150,7 @@ type routeBuilder struct {
 	batchProcessor model.BatchProcessor
 	ratelimitStore *ratelimit.Store
 	sourcemapStore *sourcemap.Store
+	fleetManaged   bool
 }
 
 func (r *routeBuilder) profileHandler() (request.Handler, error) {
@@ -213,20 +214,25 @@ func (r *routeBuilder) sourcemapHandler() (request.Handler, error) {
 	return middleware.Wrap(h, sourcemapMiddleware(r.cfg, r.authenticator, r.ratelimitStore)...)
 }
 
-func (r *routeBuilder) rootHandler() (request.Handler, error) {
-	h := root.Handler(root.HandlerConfig{Version: r.info.Version})
-	return middleware.Wrap(h, rootMiddleware(r.cfg, r.authenticator)...)
+func (r *routeBuilder) rootHandler(publishReady func() bool) func() (request.Handler, error) {
+	return func() (request.Handler, error) {
+		h := root.Handler(root.HandlerConfig{
+			Version:      r.info.Version,
+			PublishReady: publishReady,
+		})
+		return middleware.Wrap(h, rootMiddleware(r.cfg, r.authenticator)...)
+	}
 }
 
 func (r *routeBuilder) backendAgentConfigHandler(f agentcfg.Fetcher) func() (request.Handler, error) {
 	return func() (request.Handler, error) {
-		return agentConfigHandler(r.cfg, r.authenticator, r.ratelimitStore, backendMiddleware, f)
+		return agentConfigHandler(r.cfg, r.authenticator, r.ratelimitStore, backendMiddleware, f, r.fleetManaged)
 	}
 }
 
 func (r *routeBuilder) rumAgentConfigHandler(f agentcfg.Fetcher) func() (request.Handler, error) {
 	return func() (request.Handler, error) {
-		return agentConfigHandler(r.cfg, r.authenticator, r.ratelimitStore, rumMiddleware, f)
+		return agentConfigHandler(r.cfg, r.authenticator, r.ratelimitStore, rumMiddleware, f, r.fleetManaged)
 	}
 }
 
@@ -238,11 +244,12 @@ func agentConfigHandler(
 	ratelimitStore *ratelimit.Store,
 	middlewareFunc middlewareFunc,
 	f agentcfg.Fetcher,
+	fleetManaged bool,
 ) (request.Handler, error) {
 	mw := middlewareFunc(cfg, authenticator, ratelimitStore, agent.MonitoringMap)
 	h := agent.NewHandler(f, cfg.KibanaAgentConfig, cfg.DefaultServiceEnvironment, cfg.AgentAuth.Anonymous.AllowAgent)
 
-	if !cfg.Kibana.Enabled && cfg.AgentConfigs == nil {
+	if !cfg.Kibana.Enabled && !fleetManaged {
 		msg := "Agent remote configuration is disabled. " +
 			"Configure the `apm-server.kibana` section in apm-server.yml to enable it. " +
 			"If you are using a RUM agent, you also need to configure the `apm-server.rum` section. " +
@@ -305,17 +312,25 @@ func rootMiddleware(cfg *config.Config, authenticator *auth.Authenticator) []mid
 	)
 }
 
-func emptyRequestMetadata(c *request.Context) model.Metadata {
-	return model.Metadata{}
+func emptyRequestMetadata(c *request.Context) model.APMEvent {
+	return model.APMEvent{}
 }
 
-func backendRequestMetadata(c *request.Context) model.Metadata {
-	return model.Metadata{System: model.System{IP: c.SourceIP}}
+func backendRequestMetadata(c *request.Context) model.APMEvent {
+	return model.APMEvent{Host: model.Host{
+		IP: c.ClientIP,
+	}}
 }
 
-func rumRequestMetadata(c *request.Context) model.Metadata {
-	return model.Metadata{
-		Client:    model.Client{IP: c.SourceIP},
+func rumRequestMetadata(c *request.Context) model.APMEvent {
+	var source model.Source
+	if tcpAddr, ok := c.SourceAddr.(*net.TCPAddr); ok {
+		source.IP = tcpAddr.IP
+		source.Port = tcpAddr.Port
+	}
+	return model.APMEvent{
+		Client:    model.Client{IP: c.ClientIP},
+		Source:    source,
 		UserAgent: model.UserAgent{Original: c.UserAgent},
 	}
 }

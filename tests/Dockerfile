@@ -1,4 +1,4 @@
-FROM golang:1.16.5
+FROM golang:1.16.6
 MAINTAINER Nicolas Ruflin <ruflin@elastic.co>
 
 RUN apt-get update
@@ -28,6 +28,7 @@ COPY --chown=$UID go.mod go.sum ./
 COPY --chown=$UID approvaltest/go.mod approvaltest/go.sum ./approvaltest/
 COPY --chown=$UID systemtest/go.mod systemtest/go.sum ./systemtest/
 COPY --chown=$UID internal/otel_collector/go.mod internal/otel_collector/go.sum ./internal/otel_collector/
+COPY --chown=$UID internal/glog/go.mod internal/glog/go.sum ./internal/glog/
 RUN go mod download all
 RUN cd approvaltest && go mod download
 RUN cd systemtest && go mod download

@@ -92,8 +92,13 @@ func TestKeepUnsampledWarning(t *testing.T) {
 
 func TestTailSampling(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
+	cleanupFleet(t, systemtest.Fleet)
+	integrationPackage := getAPMIntegrationPackage(t, systemtest.Fleet)
+	err := systemtest.Fleet.InstallPackage(integrationPackage.Name, integrationPackage.Version)
+	require.NoError(t, err)
 
 	srv1 := apmservertest.NewUnstartedServer(t)
+	srv1.Config.DataStreams = &apmservertest.DataStreamsConfig{Enabled: true}
 	srv1.Config.Sampling = &apmservertest.SamplingConfig{
 		Tail: &apmservertest.TailSamplingConfig{
 			Enabled:  true,
@@ -105,6 +110,7 @@ func TestTailSampling(t *testing.T) {
 	require.NoError(t, srv1.Start())
 
 	srv2 := apmservertest.NewUnstartedServer(t)
+	srv2.Config.DataStreams = &apmservertest.DataStreamsConfig{Enabled: true}
 	srv2.Config.Sampling = srv1.Config.Sampling
 	require.NoError(t, srv2.Start())
 
@@ -128,12 +134,12 @@ func TestTailSampling(t *testing.T) {
 
 	// Flush the data stream while the test is running, as we have no
 	// control over the settings for the sampled traces index template.
-	refreshPeriodically(t, 250*time.Millisecond, "apm-sampled-traces")
+	refreshPeriodically(t, 250*time.Millisecond, "traces-apm.sampled-*")
 
 	for _, transactionType := range []string{"parent", "child"} {
 		var result estest.SearchResult
 		t.Logf("waiting for %d %q transactions", expected, transactionType)
-		_, err := systemtest.Elasticsearch.Search("apm-*").WithQuery(estest.TermQuery{
+		_, err := systemtest.Elasticsearch.Search("traces-*").WithQuery(estest.TermQuery{
 			Field: "transaction.type",
 			Value: transactionType,
 		}).WithSize(total).Do(context.Background(), &result,
@@ -172,8 +178,17 @@ func TestTailSamplingUnlicensed(t *testing.T) {
 	require.NoError(t, es.Start())
 	defer es.Close()
 
+	// Data streams are required for tail-based sampling, but since we're using
+	// an ephemeral Elasticsearch container it's not straightforward to install
+	// the integration package. We won't be indexing anything, so just don't wait
+	// for the integration package to be installed in this test.
+	waitForIntegration := false
 	srv := apmservertest.NewUnstartedServer(t)
 	srv.Config.Output.Elasticsearch.Hosts = []string{es.Addr}
+	srv.Config.DataStreams = &apmservertest.DataStreamsConfig{
+		Enabled:            true,
+		WaitForIntegration: &waitForIntegration,
+	}
 	srv.Config.Sampling = &apmservertest.SamplingConfig{
 		Tail: &apmservertest.TailSamplingConfig{
 			Enabled:  true,
@@ -183,14 +198,22 @@ func TestTailSamplingUnlicensed(t *testing.T) {
 	}
 	require.NoError(t, srv.Start())
 
+	// Send some transactions to trigger an indexing attempt.
+	tracer := srv.Tracer()
+	for i := 0; i < 100; i++ {
+		tx := tracer.StartTransaction("GET /", "parent")
+		tx.Duration = time.Second * time.Duration(i+1)
+		tx.End()
+	}
+	tracer.Flush(nil)
+
 	timeout := time.After(time.Minute)
 	logs := srv.Logs.Iterator()
-	for {
+	var done bool
+	for !done {
 		select {
 		case entry := <-logs.C():
-			if strings.Contains(entry.Message, "invalid license") {
-				return
-			}
+			done = strings.Contains(entry.Message, "invalid license")
 		case <-timeout:
 			t.Fatal("timed out waiting for log message")
 		}
@@ -198,9 +221,13 @@ func TestTailSamplingUnlicensed(t *testing.T) {
 
 	// Due to the failing license check, APM Server will refuse to index anything.
 	var result estest.SearchResult
-	_, err = es.Client.Search("apm-*").Do(context.Background(), &result)
+	_, err = es.Client.Search("traces-apm*").Do(context.Background(), &result)
 	assert.NoError(t, err)
 	assert.Empty(t, result.Hits.Hits)
+
+	// The server will wait for the enqueued events to be published before
+	// shutting down gracefully, so shutdown forcefully.
+	srv.Kill()
 }
 
 func refreshPeriodically(t *testing.T, interval time.Duration, index ...string) {

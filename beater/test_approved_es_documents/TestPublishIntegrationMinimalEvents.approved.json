@@ -7,7 +7,7 @@
                 "version": "3.14.0"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "error": {
                 "grouping_key": "0b9cba09845a097a271c6beb4c6207f3",
@@ -19,9 +19,9 @@
             "host": {
                 "ip": "127.0.0.1"
             },
+            "message": "error log message",
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -45,7 +45,7 @@
                 "version": "3.14.0"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "error": {
                 "exception": [
@@ -59,9 +59,9 @@
             "host": {
                 "ip": "127.0.0.1"
             },
+            "message": "error exception message",
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -85,7 +85,7 @@
                 "version": "3.14.0"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "error": {
                 "exception": [
@@ -101,7 +101,6 @@
             },
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -125,7 +124,7 @@
                 "version": "3.14.0"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "event": {
                 "outcome": "unknown"
@@ -135,7 +134,6 @@
             },
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -176,7 +174,7 @@
                 "version": "3.14.0"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "event": {
                 "outcome": "unknown"
@@ -186,7 +184,6 @@
             },
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -224,7 +221,7 @@
                 "version": "3.14.0"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "event": {
                 "outcome": "unknown"
@@ -237,7 +234,6 @@
             },
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",
@@ -276,7 +272,7 @@
                 "version": "3.14.0"
             },
             "ecs": {
-                "version": "1.10.0"
+                "version": "1.12.0"
             },
             "host": {
                 "ip": "127.0.0.1"
@@ -284,7 +280,6 @@
             "metricset.name": "app",
             "observer": {
                 "ephemeral_id": "00000000-0000-0000-0000-000000000000",
-                "hostname": "",
                 "id": "fbba762a-14dd-412c-b7e9-b79f903eb492",
                 "type": "test-apm-server",
                 "version": "1.2.3",

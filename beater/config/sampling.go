@@ -30,7 +30,7 @@ import (
 // SamplingConfig holds configuration related to sampling.
 type SamplingConfig struct {
 	// KeepUnsampled controls whether unsampled
-	// transactions should be recorded.
+	// transactions should be recorded. Deprecated.
 	KeepUnsampled bool `config:"keep_unsampled"`
 
 	// Tail holds tail-sampling configuration.
@@ -50,7 +50,6 @@ type TailSamplingConfig struct {
 	ESConfig              *elasticsearch.Config `config:"elasticsearch"`
 	Interval              time.Duration         `config:"interval" validate:"min=1s"`
 	IngestRateDecayFactor float64               `config:"ingest_rate_decay" validate:"min=0, max=1"`
-	StorageDir            string                `config:"storage_dir"`
 	StorageGCInterval     time.Duration         `config:"storage_gc_interval" validate:"min=1s"`
 	TTL                   time.Duration         `config:"ttl" validate:"min=1s"`
 
@@ -108,9 +107,12 @@ func (c *TailSamplingConfig) Validate() error {
 	return nil
 }
 
-func (c *TailSamplingConfig) setup(log *logp.Logger, outputESCfg *common.Config) error {
+func (c *TailSamplingConfig) setup(log *logp.Logger, dataStreamsEnabled bool, outputESCfg *common.Config) error {
 	if !c.Enabled {
 		return nil
+	}
+	if !dataStreamsEnabled {
+		return errors.New("tail-sampling requires data streams to be enabled")
 	}
 	if !c.esConfigured && outputESCfg != nil {
 		log.Info("Falling back to elasticsearch output for tail-sampling")
@@ -124,8 +126,7 @@ func (c *TailSamplingConfig) setup(log *logp.Logger, outputESCfg *common.Config)
 func defaultSamplingConfig() SamplingConfig {
 	tail := defaultTailSamplingConfig()
 	return SamplingConfig{
-		// In a future major release we will set this to
-		// false, and then later remove the option.
+		// In 8.0 this will be set to false, and later removed.
 		KeepUnsampled: true,
 		Tail:          tail,
 	}
@@ -137,7 +138,6 @@ func defaultTailSamplingConfig() TailSamplingConfig {
 		ESConfig:              elasticsearch.DefaultConfig(),
 		Interval:              1 * time.Minute,
 		IngestRateDecayFactor: 0.25,
-		StorageDir:            "tail_sampling",
 		StorageGCInterval:     5 * time.Minute,
 		TTL:                   30 * time.Minute,
 	}

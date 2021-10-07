@@ -80,10 +80,10 @@ func RegisterGRPCServices(grpcServer *grpc.Server, processor model.BatchProcesso
 	// dynamically registered and unregistered.
 	setCurrentMonitoredConsumer(consumer)
 
-	if err := otlpreceiver.RegisterTraceReceiver(context.Background(), consumer, grpcServer, nil); err != nil {
+	if err := otlpreceiver.RegisterTraceReceiver(context.Background(), consumer, grpcServer); err != nil {
 		return errors.Wrap(err, "failed to register OTLP trace receiver")
 	}
-	if err := otlpreceiver.RegisterMetricsReceiver(context.Background(), consumer, grpcServer, nil); err != nil {
+	if err := otlpreceiver.RegisterMetricsReceiver(context.Background(), consumer, grpcServer); err != nil {
 		return errors.Wrap(err, "failed to register OTLP metrics receiver")
 	}
 	return nil
@@ -101,15 +101,15 @@ func setCurrentMonitoredConsumer(c *otel.Consumer) {
 }
 
 func collectMetricsMonitoring(mode monitoring.Mode, V monitoring.Visitor) {
+	V.OnRegistryStart()
+	defer V.OnRegistryFinished()
+
 	currentMonitoredConsumerMu.RLock()
 	c := currentMonitoredConsumer
 	currentMonitoredConsumerMu.RUnlock()
 	if c == nil {
 		return
 	}
-
-	V.OnRegistryStart()
-	defer V.OnRegistryFinished()
 
 	stats := c.Stats()
 	monitoring.ReportInt(V, "unsupported_dropped", stats.UnsupportedMetricsDropped)

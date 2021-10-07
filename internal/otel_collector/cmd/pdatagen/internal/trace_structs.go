@@ -17,14 +17,16 @@ package internal
 var traceFile = &File{
 	Name: "trace",
 	imports: []string{
-		`otlptrace "go.opentelemetry.io/collector/internal/data/protogen/trace/v1"`,
+		`"sort"`,
+		``,
+		`otlptrace "go.opentelemetry.io/collector/model/internal/data/protogen/trace/v1"`,
 	},
 	testImports: []string{
 		`"testing"`,
 		``,
 		`"github.com/stretchr/testify/assert"`,
 		``,
-		`otlptrace "go.opentelemetry.io/collector/internal/data/protogen/trace/v1"`,
+		`otlptrace "go.opentelemetry.io/collector/model/internal/data/protogen/trace/v1"`,
 	},
 	structs: []baseStruct{
 		resourceSpansSlice,
@@ -52,6 +54,7 @@ var resourceSpans = &messageValueStruct{
 	originFullName: "otlptrace.ResourceSpans",
 	fields: []baseField{
 		resourceField,
+		schemaURLField,
 		&sliceField{
 			fieldName:       "InstrumentationLibrarySpans",
 			originFieldName: "InstrumentationLibrarySpans",
@@ -71,6 +74,7 @@ var instrumentationLibrarySpans = &messageValueStruct{
 	originFullName: "otlptrace.InstrumentationLibrarySpans",
 	fields: []baseField{
 		instrumentationLibraryField,
+		schemaURLField,
 		&sliceField{
 			fieldName:       "Spans",
 			originFieldName: "Spans",

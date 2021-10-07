@@ -23,6 +23,7 @@ import (
 
 	"github.com/elastic/apm-server/beater"
 	"github.com/elastic/apm-server/beater/config"
+	"github.com/elastic/apm-server/elasticsearch"
 	"github.com/elastic/apm-server/model/modelprocessor"
 )
 
@@ -61,8 +62,10 @@ func TestMonitoring(t *testing.T) {
 	home := t.TempDir()
 	err := paths.InitPaths(&paths.Path{Home: home})
 	require.NoError(t, err)
+	defer closeBadger() // close badger.DB so data dir can be deleted on Windows
 
 	cfg := config.DefaultConfig()
+	cfg.DataStreams.Enabled = true
 	cfg.Aggregation.Transactions.Enabled = true
 	cfg.Sampling.Tail.Enabled = true
 	cfg.Sampling.Tail.Policies = []config.TailSamplingPolicy{{SampleRate: 0.1}}
@@ -70,12 +73,13 @@ func TestMonitoring(t *testing.T) {
 	// Call the wrapped runServer twice, to ensure metric registration does not panic.
 	for i := 0; i < 2; i++ {
 		err := runServer(context.Background(), beater.ServerParams{
-			Config:         cfg,
-			Logger:         logp.NewLogger(""),
-			Tracer:         apmtest.DiscardTracer,
-			BatchProcessor: modelprocessor.Nop{},
-			Managed:        true,
-			Namespace:      "default",
+			Config:                 cfg,
+			Logger:                 logp.NewLogger(""),
+			Tracer:                 apmtest.DiscardTracer,
+			BatchProcessor:         modelprocessor.Nop{},
+			Managed:                true,
+			Namespace:              "default",
+			NewElasticsearchClient: elasticsearch.NewClient,
 		})
 		assert.Equal(t, runServerError, err)
 		assert.NotEqual(t, monitoring.MakeFlatSnapshot(), aggregationMonitoringSnapshot)

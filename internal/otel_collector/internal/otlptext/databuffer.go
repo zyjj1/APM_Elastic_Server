@@ -15,21 +15,21 @@
 package otlptext
 
 import (
+	"bytes"
 	"fmt"
 	"strconv"
 	"strings"
 
-	"go.opentelemetry.io/collector/consumer/pdata"
-	tracetranslator "go.opentelemetry.io/collector/translator/trace"
+	"go.opentelemetry.io/collector/model/pdata"
 )
 
 type dataBuffer struct {
-	str strings.Builder
+	buf bytes.Buffer
 }
 
 func (b *dataBuffer) logEntry(format string, a ...interface{}) {
-	b.str.WriteString(fmt.Sprintf(format, a...))
-	b.str.WriteString("\n")
+	b.buf.WriteString(fmt.Sprintf(format, a...))
+	b.buf.WriteString("\n")
 }
 
 func (b *dataBuffer) logAttr(label string, value string) {
@@ -44,18 +44,6 @@ func (b *dataBuffer) logAttributeMap(label string, am pdata.AttributeMap) {
 	b.logEntry("%s:", label)
 	am.Range(func(k string, v pdata.AttributeValue) bool {
 		b.logEntry("     -> %s: %s(%s)", k, v.Type().String(), attributeValueToString(v))
-		return true
-	})
-}
-
-func (b *dataBuffer) logStringMap(description string, sm pdata.StringMap) {
-	if sm.Len() == 0 {
-		return
-	}
-
-	b.logEntry("%s:", description)
-	sm.Range(func(k string, v string) bool {
-		b.logEntry("     -> %s: %s", k, v)
 		return true
 	})
 }
@@ -79,24 +67,13 @@ func (b *dataBuffer) logMetricDataPoints(m pdata.Metric) {
 	switch m.DataType() {
 	case pdata.MetricDataTypeNone:
 		return
-	case pdata.MetricDataTypeIntGauge:
-		b.logIntDataPoints(m.IntGauge().DataPoints())
-	case pdata.MetricDataTypeDoubleGauge:
-		b.logDoubleDataPoints(m.DoubleGauge().DataPoints())
-	case pdata.MetricDataTypeIntSum:
-		data := m.IntSum()
+	case pdata.MetricDataTypeGauge:
+		b.logNumberDataPoints(m.Gauge().DataPoints())
+	case pdata.MetricDataTypeSum:
+		data := m.Sum()
 		b.logEntry("     -> IsMonotonic: %t", data.IsMonotonic())
 		b.logEntry("     -> AggregationTemporality: %s", data.AggregationTemporality().String())
-		b.logIntDataPoints(data.DataPoints())
-	case pdata.MetricDataTypeDoubleSum:
-		data := m.DoubleSum()
-		b.logEntry("     -> IsMonotonic: %t", data.IsMonotonic())
-		b.logEntry("     -> AggregationTemporality: %s", data.AggregationTemporality().String())
-		b.logDoubleDataPoints(data.DataPoints())
-	case pdata.MetricDataTypeIntHistogram:
-		data := m.IntHistogram()
-		b.logEntry("     -> AggregationTemporality: %s", data.AggregationTemporality().String())
-		b.logIntHistogramDataPoints(data.DataPoints())
+		b.logNumberDataPoints(data.DataPoints())
 	case pdata.MetricDataTypeHistogram:
 		data := m.Histogram()
 		b.logEntry("     -> AggregationTemporality: %s", data.AggregationTemporality().String())
@@ -107,27 +84,20 @@ func (b *dataBuffer) logMetricDataPoints(m pdata.Metric) {
 	}
 }
 
-func (b *dataBuffer) logIntDataPoints(ps pdata.IntDataPointSlice) {
+func (b *dataBuffer) logNumberDataPoints(ps pdata.NumberDataPointSlice) {
 	for i := 0; i < ps.Len(); i++ {
 		p := ps.At(i)
-		b.logEntry("IntDataPoints #%d", i)
-		b.logDataPointLabels(p.LabelsMap())
+		b.logEntry("NumberDataPoints #%d", i)
+		b.logDataPointAttributes(p.Attributes())
 
 		b.logEntry("StartTimestamp: %s", p.StartTimestamp())
 		b.logEntry("Timestamp: %s", p.Timestamp())
-		b.logEntry("Value: %d", p.Value())
-	}
-}
-
-func (b *dataBuffer) logDoubleDataPoints(ps pdata.DoubleDataPointSlice) {
-	for i := 0; i < ps.Len(); i++ {
-		p := ps.At(i)
-		b.logEntry("DoubleDataPoints #%d", i)
-		b.logDataPointLabels(p.LabelsMap())
-
-		b.logEntry("StartTimestamp: %s", p.StartTimestamp())
-		b.logEntry("Timestamp: %s", p.Timestamp())
-		b.logEntry("Value: %f", p.Value())
+		switch p.Type() {
+		case pdata.MetricValueTypeInt:
+			b.logEntry("Value: %d", p.IntVal())
+		case pdata.MetricValueTypeDouble:
+			b.logEntry("Value: %f", p.DoubleVal())
+		}
 	}
 }
 
@@ -135,39 +105,12 @@ func (b *dataBuffer) logDoubleHistogramDataPoints(ps pdata.HistogramDataPointSli
 	for i := 0; i < ps.Len(); i++ {
 		p := ps.At(i)
 		b.logEntry("HistogramDataPoints #%d", i)
-		b.logDataPointLabels(p.LabelsMap())
+		b.logDataPointAttributes(p.Attributes())
 
 		b.logEntry("StartTimestamp: %s", p.StartTimestamp())
 		b.logEntry("Timestamp: %s", p.Timestamp())
 		b.logEntry("Count: %d", p.Count())
 		b.logEntry("Sum: %f", p.Sum())
-
-		bounds := p.ExplicitBounds()
-		if len(bounds) != 0 {
-			for i, bound := range bounds {
-				b.logEntry("ExplicitBounds #%d: %f", i, bound)
-			}
-		}
-
-		buckets := p.BucketCounts()
-		if len(buckets) != 0 {
-			for j, bucket := range buckets {
-				b.logEntry("Buckets #%d, Count: %d", j, bucket)
-			}
-		}
-	}
-}
-
-func (b *dataBuffer) logIntHistogramDataPoints(ps pdata.IntHistogramDataPointSlice) {
-	for i := 0; i < ps.Len(); i++ {
-		p := ps.At(i)
-		b.logEntry("HistogramDataPoints #%d", i)
-		b.logDataPointLabels(p.LabelsMap())
-
-		b.logEntry("StartTimestamp: %s", p.StartTimestamp())
-		b.logEntry("Timestamp: %s", p.Timestamp())
-		b.logEntry("Count: %d", p.Count())
-		b.logEntry("Sum: %d", p.Sum())
 
 		bounds := p.ExplicitBounds()
 		if len(bounds) != 0 {
@@ -189,7 +132,7 @@ func (b *dataBuffer) logDoubleSummaryDataPoints(ps pdata.SummaryDataPointSlice) 
 	for i := 0; i < ps.Len(); i++ {
 		p := ps.At(i)
 		b.logEntry("SummaryDataPoints #%d", i)
-		b.logDataPointLabels(p.LabelsMap())
+		b.logDataPointAttributes(p.Attributes())
 
 		b.logEntry("StartTimestamp: %s", p.StartTimestamp())
 		b.logEntry("Timestamp: %s", p.Timestamp())
@@ -204,8 +147,8 @@ func (b *dataBuffer) logDoubleSummaryDataPoints(ps pdata.SummaryDataPointSlice) 
 	}
 }
 
-func (b *dataBuffer) logDataPointLabels(labels pdata.StringMap) {
-	b.logStringMap("Data point labels", labels)
+func (b *dataBuffer) logDataPointAttributes(labels pdata.AttributeMap) {
+	b.logAttributeMap("Data point attributes", labels)
 }
 
 func (b *dataBuffer) logLogRecord(lr pdata.LogRecord) {
@@ -304,7 +247,7 @@ func attributeMapToString(av pdata.AttributeMap) string {
 	b.WriteString("{\n")
 
 	av.Sort().Range(func(k string, v pdata.AttributeValue) bool {
-		fmt.Fprintf(&b, "     -> %s: %s(%s)\n", k, v.Type(), tracetranslator.AttributeValueToString(v))
+		fmt.Fprintf(&b, "     -> %s: %s(%s)\n", k, v.Type(), v.AsString())
 		return true
 	})
 	b.WriteByte('}')

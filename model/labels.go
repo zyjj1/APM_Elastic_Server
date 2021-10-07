@@ -18,52 +18,25 @@
 package model
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/elastic/beats/v7/libbeat/common"
 )
 
-// If either or both globalLabels/eventLabels is non-empty, set a "labels"
-// field in out to the combination of the labels.
-//
 // Label keys are sanitized, replacing the reserved characters '.', '*' and '"'
-// with '_'. Event-specific labels take precedence over global labels.
-// Null-valued labels are omitted.
-func maybeSetLabels(out *mapStr, globalLabels, eventLabels common.MapStr) {
-	n := len(globalLabels) + len(eventLabels)
-	if n == 0 {
-		return
-	}
-	combined := make(common.MapStr, n)
-	for k, v := range globalLabels {
+// with '_'. Null-valued labels are omitted.
+func sanitizeLabels(labels common.MapStr) common.MapStr {
+	for k, v := range labels {
 		if v == nil {
+			delete(labels, k)
 			continue
 		}
-		k := sanitizeLabelKey(k)
-		combined[k] = normalizeLabelValue(v)
-	}
-	for k, v := range eventLabels {
-		k := sanitizeLabelKey(k)
-		if v == nil {
-			delete(combined, k)
-		} else {
-			combined[k] = normalizeLabelValue(v)
+		if k2 := sanitizeLabelKey(k); k != k2 {
+			delete(labels, k)
+			labels[k2] = v
 		}
 	}
-	out.set("labels", combined)
-}
-
-// normalizeLabelValue transforms v into one of the accepted label value types:
-// string, number, or boolean.
-func normalizeLabelValue(v interface{}) interface{} {
-	switch v := v.(type) {
-	case json.Number:
-		if floatVal, err := v.Float64(); err == nil {
-			return common.Float(floatVal)
-		}
-	}
-	return v // types are guaranteed by decoders
+	return labels
 }
 
 func sanitizeLabelKey(k string) string {

@@ -26,11 +26,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/elastic/beats/v7/libbeat/common"
-
 	"github.com/elastic/apm-server/decoder"
 	"github.com/elastic/apm-server/model"
 	"github.com/elastic/apm-server/model/modeldecoder"
+	"github.com/elastic/apm-server/model/modeldecoder/modeldecoderutil"
 	"github.com/elastic/apm-server/model/modeldecoder/nullable"
 )
 
@@ -43,11 +42,6 @@ var (
 	metadataRootPool = sync.Pool{
 		New: func() interface{} {
 			return &metadataRoot{}
-		},
-	}
-	metricsetRootPool = sync.Pool{
-		New: func() interface{} {
-			return &metricsetRoot{}
 		},
 	}
 	transactionRootPool = sync.Pool{
@@ -75,15 +69,6 @@ func releaseMetadataRoot(m *metadataRoot) {
 	metadataRootPool.Put(m)
 }
 
-func fetchMetricsetRoot() *metricsetRoot {
-	return metricsetRootPool.Get().(*metricsetRoot)
-}
-
-func releaseMetricsetRoot(root *metricsetRoot) {
-	root.Reset()
-	metricsetRootPool.Put(root)
-}
-
 func fetchTransactionRoot() *transactionRoot {
 	return transactionRootPool.Get().(*transactionRoot)
 }
@@ -93,10 +78,8 @@ func releaseTransactionRoot(m *transactionRoot) {
 	transactionRootPool.Put(m)
 }
 
-// DecodeNestedMetadata uses the given decoder to create the input models,
-// then runs the defined validations on the input models
-// and finally maps the values fom the input model to the given *model.Metadata instance
-func DecodeNestedMetadata(d decoder.Decoder, out *model.Metadata) error {
+// DecodeNestedMetadata decodes metadata from d, updating out.
+func DecodeNestedMetadata(d decoder.Decoder, out *model.APMEvent) error {
 	root := fetchMetadataRoot()
 	defer releaseMetadataRoot(root)
 	if err := d.Decode(root); err != nil && err != io.EOF {
@@ -109,12 +92,10 @@ func DecodeNestedMetadata(d decoder.Decoder, out *model.Metadata) error {
 	return nil
 }
 
-// DecodeNestedError uses the given decoder to create the input model,
-// then runs the defined validations on the input model
-// and finally maps the values fom the input model to the given *model.Error instance
+// DecodeNestedError decodes an error from d, appending it to batch.
 //
 // DecodeNestedError should be used when the stream in the decoder contains the `error` key
-func DecodeNestedError(d decoder.Decoder, input *modeldecoder.Input, out *model.Error) error {
+func DecodeNestedError(d decoder.Decoder, input *modeldecoder.Input, batch *model.Batch) error {
 	root := fetchErrorRoot()
 	defer releaseErrorRoot(root)
 	if err := d.Decode(root); err != nil && err != io.EOF {
@@ -123,42 +104,17 @@ func DecodeNestedError(d decoder.Decoder, input *modeldecoder.Input, out *model.
 	if err := root.validate(); err != nil {
 		return modeldecoder.NewValidationErr(err)
 	}
-	mapToErrorModel(&root.Error, &input.Metadata, input.RequestTime, out)
+	event := input.Base
+	mapToErrorModel(&root.Error, &event)
+	*batch = append(*batch, event)
 	return nil
 }
 
-// DecodeNestedMetricset uses the given decoder to create the input model,
-// then runs the defined validations on the input model
-// and finally maps the values fom the input model to the given *model.Metricset instance
-//
-// DecodeNestedMetricset should be used when the stream in the decoder contains the `metricset` key
-func DecodeNestedMetricset(d decoder.Decoder, input *modeldecoder.Input, out *model.Metricset) error {
-	root := fetchMetricsetRoot()
-	defer releaseMetricsetRoot(root)
-	if err := d.Decode(root); err != nil && err != io.EOF {
-		return modeldecoder.NewDecoderErrFromJSONIter(err)
-	}
-	if err := root.validate(); err != nil {
-		return modeldecoder.NewValidationErr(err)
-	}
-	mapToMetricsetModel(&root.Metricset, &input.Metadata, input.RequestTime, out)
-	return nil
-}
-
-// Transaction is a wrapper around input models that can be nested inside a
-// RUM v3 transaction
-type Transaction struct {
-	Transaction model.Transaction
-	Metricsets  []*model.Metricset
-	Spans       []*model.Span
-}
-
-// DecodeNestedTransaction uses the given decoder to create the input model,
-// then runs the defined validations on the input model
-// and finally maps the values fom the input model to the given *model.Transaction instance
+// DecodeNestedTransaction a transaction and zero or more nested spans and
+// metricsets, appending them to batch.
 //
 // DecodeNestedTransaction should be used when the decoder contains the `transaction` key
-func DecodeNestedTransaction(d decoder.Decoder, input *modeldecoder.Input, out *Transaction) error {
+func DecodeNestedTransaction(d decoder.Decoder, input *modeldecoder.Input, batch *model.Batch) error {
 	root := fetchTransactionRoot()
 	defer releaseTransactionRoot(root)
 	if err := d.Decode(root); err != nil && err != io.EOF {
@@ -167,79 +123,82 @@ func DecodeNestedTransaction(d decoder.Decoder, input *modeldecoder.Input, out *
 	if err := root.validate(); err != nil {
 		return modeldecoder.NewValidationErr(err)
 	}
-	mapToTransactionModel(&root.Transaction, &input.Metadata, input.RequestTime, &out.Transaction)
+
+	transaction := input.Base
+	mapToTransactionModel(&root.Transaction, &transaction)
+	*batch = append(*batch, transaction)
+
 	for _, m := range root.Transaction.Metricsets {
-		var outM model.Metricset
-		mapToMetricsetModel(&m, &input.Metadata, input.RequestTime, &outM)
-		outM.Transaction.Name = out.Transaction.Name
-		outM.Transaction.Type = out.Transaction.Type
-		out.Metricsets = append(out.Metricsets, &outM)
-	}
-	out.Spans = make([]*model.Span, len(root.Transaction.Spans))
-	for idx, s := range root.Transaction.Spans {
-		var outS model.Span
-		mapToSpanModel(&s, &input.Metadata, input.RequestTime, &outS)
-		outS.TransactionID = out.Transaction.ID
-		outS.TraceID = out.Transaction.TraceID
-		if s.ParentIndex.IsSet() && s.ParentIndex.Val >= 0 && s.ParentIndex.Val < idx {
-			outS.ParentID = out.Spans[s.ParentIndex.Val].ID
-		} else {
-			outS.ParentID = out.Transaction.ID
+		event := input.Base
+		event.Transaction = &model.Transaction{
+			Name: transaction.Transaction.Name,
+			Type: transaction.Transaction.Type,
 		}
-		out.Spans[idx] = &outS
+		mapToTransactionMetricsetModel(&m, &event)
+		*batch = append(*batch, event)
+	}
+
+	offset := len(*batch)
+	for _, s := range root.Transaction.Spans {
+		event := input.Base
+		mapToSpanModel(&s, &event)
+		event.Transaction = &model.Transaction{ID: transaction.Transaction.ID}
+		event.Parent.ID = transaction.Transaction.ID // may be overridden later
+		event.Trace = transaction.Trace
+		*batch = append(*batch, event)
+	}
+	spans := (*batch)[offset:]
+	for i, s := range root.Transaction.Spans {
+		if s.ParentIndex.IsSet() && s.ParentIndex.Val >= 0 && s.ParentIndex.Val < len(spans) {
+			spans[i].Parent.ID = spans[s.ParentIndex.Val].Span.ID
+		}
 	}
 	return nil
 }
 
-func mapToErrorModel(from *errorEvent, metadata *model.Metadata, reqTime time.Time, out *model.Error) {
-	// set metadata information
-	if metadata != nil {
-		out.Metadata = *metadata
-	}
-	if from == nil {
-		return
-	}
+func mapToErrorModel(from *errorEvent, event *model.APMEvent) {
+	out := &model.Error{}
+	event.Error = out
+	event.Processor = model.ErrorProcessor
+
 	// overwrite metadata with event specific information
-	mapToServiceModel(from.Context.Service, &out.Metadata.Service)
-	overwriteUserInMetadataModel(from.Context.User, &out.Metadata)
-	mapToUserAgentModel(from.Context.Request.Headers, &out.Metadata)
+	mapToServiceModel(from.Context.Service, &event.Service)
+	mapToAgentModel(from.Context.Service.Agent, &event.Agent)
+	overwriteUserInMetadataModel(from.Context.User, event)
+	mapToUserAgentModel(from.Context.Request.Headers, &event.UserAgent)
 
 	// map errorEvent specific data
 	if from.Context.IsSet() {
-		// metadata labels and context labels are merged only in the output model
 		if len(from.Context.Tags) > 0 {
-			out.Labels = from.Context.Tags.Clone()
+			event.Labels = modeldecoderutil.MergeLabels(
+				event.Labels,
+				modeldecoderutil.NormalizeLabelValues(from.Context.Tags),
+			)
 		}
 		if from.Context.Request.IsSet() {
-			out.HTTP = &model.Http{Request: &model.Req{}}
-			mapToRequestModel(from.Context.Request, out.HTTP.Request)
+			event.HTTP.Request = &model.HTTPRequest{}
+			mapToRequestModel(from.Context.Request, event.HTTP.Request)
 			if from.Context.Request.HTTPVersion.IsSet() {
-				out.HTTP.Version = from.Context.Request.HTTPVersion.Val
+				event.HTTP.Version = from.Context.Request.HTTPVersion.Val
 			}
 		}
 		if from.Context.Response.IsSet() {
-			if out.HTTP == nil {
-				out.HTTP = &model.Http{}
-			}
-			out.HTTP.Response = &model.Resp{}
-			mapToResponseModel(from.Context.Response, out.HTTP.Response)
+			event.HTTP.Response = &model.HTTPResponse{}
+			mapToResponseModel(from.Context.Response, event.HTTP.Response)
 		}
 		if from.Context.Page.IsSet() {
-			out.Page = &model.Page{}
-			mapToPageModel(from.Context.Page, out.Page)
-			out.URL = out.Page.URL
-			if out.Page.Referer != "" {
-				if out.HTTP == nil {
-					out.HTTP = &model.Http{}
+			if from.Context.Page.URL.IsSet() {
+				event.URL = model.ParseURL(from.Context.Page.URL.Val, "", "")
+			}
+			if from.Context.Page.Referer.IsSet() {
+				if event.HTTP.Request == nil {
+					event.HTTP.Request = &model.HTTPRequest{}
 				}
-				if out.HTTP.Request == nil {
-					out.HTTP.Request = &model.Req{}
-				}
-				out.HTTP.Request.Referer = out.Page.Referer
+				event.HTTP.Request.Referrer = from.Context.Page.Referer.Val
 			}
 		}
 		if len(from.Context.Custom) > 0 {
-			out.Custom = from.Context.Custom.Clone()
+			out.Custom = modeldecoderutil.NormalizeLabelValues(from.Context.Custom.Clone())
 		}
 	}
 	if from.Culprit.IsSet() {
@@ -276,25 +235,25 @@ func mapToErrorModel(from *errorEvent, metadata *model.Metadata, reqTime time.Ti
 		out.Log = &log
 	}
 	if from.ParentID.IsSet() {
-		out.ParentID = from.ParentID.Val
+		event.Parent.ID = from.ParentID.Val
 	}
-	if from.Timestamp.Val.IsZero() {
-		out.Timestamp = reqTime
-	} else {
-		out.Timestamp = from.Timestamp.Val
+	if !from.Timestamp.Val.IsZero() {
+		event.Timestamp = from.Timestamp.Val
 	}
 	if from.TraceID.IsSet() {
-		out.TraceID = from.TraceID.Val
+		event.Trace.ID = from.TraceID.Val
 	}
-	if from.Transaction.Sampled.IsSet() {
-		val := from.Transaction.Sampled.Val
-		out.TransactionSampled = &val
-	}
-	if from.Transaction.Type.IsSet() {
-		out.TransactionType = from.Transaction.Type.Val
-	}
-	if from.TransactionID.IsSet() {
-		out.TransactionID = from.TransactionID.Val
+	if from.Transaction.IsSet() {
+		event.Transaction = &model.Transaction{}
+		if from.Transaction.Sampled.IsSet() {
+			event.Transaction.Sampled = from.Transaction.Sampled.Val
+		}
+		if from.Transaction.Type.IsSet() {
+			event.Transaction.Type = from.Transaction.Type.Val
+		}
+		if from.TransactionID.IsSet() {
+			event.Transaction.ID = from.TransactionID.Val
+		}
 	}
 }
 
@@ -306,7 +265,7 @@ func mapToExceptionModel(from errorException, out *model.Exception) {
 		out.Attributes = from.Attributes.Clone()
 	}
 	if from.Code.IsSet() {
-		out.Code = from.Code.Val
+		out.Code = modeldecoderutil.ExceptionCodeString(from.Code.Val)
 	}
 	if len(from.Cause) > 0 {
 		out.Cause = make([]model.Exception, len(from.Cause))
@@ -334,19 +293,18 @@ func mapToExceptionModel(from errorException, out *model.Exception) {
 	}
 }
 
-func mapToMetadataModel(m *metadata, out *model.Metadata) {
+func mapToMetadataModel(m *metadata, out *model.APMEvent) {
 	// Labels
 	if len(m.Labels) > 0 {
-		out.Labels = common.MapStr{}
-		out.Labels.Update(m.Labels)
+		out.Labels = modeldecoderutil.NormalizeLabelValues(m.Labels.Clone())
 	}
 
 	// Service
 	if m.Service.Agent.Name.IsSet() {
-		out.Service.Agent.Name = m.Service.Agent.Name.Val
+		out.Agent.Name = m.Service.Agent.Name.Val
 	}
 	if m.Service.Agent.Version.IsSet() {
-		out.Service.Agent.Version = m.Service.Agent.Version.Val
+		out.Agent.Version = m.Service.Agent.Version.Val
 	}
 	if m.Service.Environment.IsSet() {
 		out.Service.Environment = m.Service.Environment.Val
@@ -389,73 +347,47 @@ func mapToMetadataModel(m *metadata, out *model.Metadata) {
 	if m.User.Name.IsSet() {
 		out.User.Name = m.User.Name.Val
 	}
+
+	// Network
+	if m.Network.Connection.Type.IsSet() {
+		out.Network.Connection.Type = m.Network.Connection.Type.Val
+	}
 }
 
-func mapToMetricsetModel(from *metricset, metadata *model.Metadata, reqTime time.Time, out *model.Metricset) {
-	// set metadata as they are - no values are overwritten by the event
-	if metadata != nil {
-		out.Metadata = *metadata
-	}
-	if from == nil {
-		return
-	}
-	// set timestamp from requst time
-	out.Timestamp = reqTime
+func mapToTransactionMetricsetModel(from *transactionMetricset, event *model.APMEvent) {
+	event.Metricset = &model.Metricset{}
+	event.Processor = model.MetricsetProcessor
 
-	// map samples information
+	if from.Span.IsSet() {
+		event.Span = &model.Span{}
+		if from.Span.Subtype.IsSet() {
+			event.Span.Subtype = from.Span.Subtype.Val
+		}
+		if from.Span.Type.IsSet() {
+			event.Span.Type = from.Span.Type.Val
+		}
+	}
+
 	if from.Samples.IsSet() {
-		out.Samples = make(map[string]model.MetricsetSample)
-		if from.Samples.TransactionDurationCount.Value.IsSet() {
-			out.Samples[metricsetSamplesTransactionDurationCountName] = model.MetricsetSample{
-				Value: from.Samples.TransactionDurationCount.Value.Val,
+		if event.Transaction != nil {
+			if value := from.Samples.TransactionBreakdownCount.Value; value.IsSet() {
+				event.Transaction.BreakdownCount = int(value.Val)
 			}
 		}
-		if from.Samples.TransactionDurationSum.Value.IsSet() {
-			out.Samples[metricsetSamplesTransactionDurationSumName] = model.MetricsetSample{
-				Value: from.Samples.TransactionDurationSum.Value.Val,
+		if event.Span != nil {
+			if value := from.Samples.SpanSelfTimeCount.Value; value.IsSet() {
+				event.Span.SelfTime.Count = int(value.Val)
+			}
+			if value := from.Samples.SpanSelfTimeSum.Value; value.IsSet() {
+				event.Span.SelfTime.Sum = time.Duration(value.Val * 1000)
 			}
 		}
-		if from.Samples.TransactionBreakdownCount.Value.IsSet() {
-			out.Samples[metricsetSamplesTransactionBreakdownCountName] = model.MetricsetSample{
-				Value: from.Samples.TransactionBreakdownCount.Value.Val,
-			}
-		}
-		if from.Samples.SpanSelfTimeCount.Value.IsSet() {
-			out.Samples[metricsetSamplesSpanSelfTimeCountName] = model.MetricsetSample{
-				Value: from.Samples.SpanSelfTimeCount.Value.Val,
-			}
-		}
-		if from.Samples.SpanSelfTimeSum.Value.IsSet() {
-			out.Samples[metricsetSamplesSpanSelfTimeSumName] = model.MetricsetSample{
-				Value: from.Samples.SpanSelfTimeSum.Value.Val,
-			}
-		}
-	}
-
-	if len(from.Tags) > 0 {
-		out.Labels = from.Tags.Clone()
-	}
-	// map span information
-	if from.Span.Subtype.IsSet() {
-		out.Span.Subtype = from.Span.Subtype.Val
-	}
-	if from.Span.Type.IsSet() {
-		out.Span.Type = from.Span.Type.Val
 	}
 }
 
-func mapToPageModel(from contextPage, out *model.Page) {
-	if from.URL.IsSet() {
-		out.URL = model.ParseURL(from.URL.Val, "", "")
-	}
-	if from.Referer.IsSet() {
-		out.Referer = from.Referer.Val
-	}
-}
-
-func mapToResponseModel(from contextResponse, out *model.Resp) {
+func mapToResponseModel(from contextResponse, out *model.HTTPResponse) {
 	if from.Headers.IsSet() {
-		out.Headers = from.Headers.Val.Clone()
+		out.Headers = modeldecoderutil.HTTPHeadersToMap(from.Headers.Val.Clone())
 	}
 	if from.StatusCode.IsSet() {
 		out.StatusCode = from.StatusCode.Val
@@ -474,7 +406,7 @@ func mapToResponseModel(from contextResponse, out *model.Resp) {
 	}
 }
 
-func mapToRequestModel(from contextRequest, out *model.Req) {
+func mapToRequestModel(from contextRequest, out *model.HTTPRequest) {
 	if from.Method.IsSet() {
 		out.Method = from.Method.Val
 	}
@@ -482,17 +414,11 @@ func mapToRequestModel(from contextRequest, out *model.Req) {
 		out.Env = from.Env.Clone()
 	}
 	if from.Headers.IsSet() {
-		out.Headers = from.Headers.Val.Clone()
+		out.Headers = modeldecoderutil.HTTPHeadersToMap(from.Headers.Val.Clone())
 	}
 }
 
 func mapToServiceModel(from contextService, out *model.Service) {
-	if from.Agent.Name.IsSet() {
-		out.Agent.Name = from.Agent.Name.Val
-	}
-	if from.Agent.Version.IsSet() {
-		out.Agent.Version = from.Agent.Version.Val
-	}
 	if from.Environment.IsSet() {
 		out.Environment = from.Environment.Val
 	}
@@ -522,14 +448,20 @@ func mapToServiceModel(from contextService, out *model.Service) {
 	}
 }
 
-func mapToSpanModel(from *span, metadata *model.Metadata, reqTime time.Time, out *model.Span) {
-	// set metadata information for span
-	if metadata != nil {
-		out.Metadata = *metadata
+func mapToAgentModel(from contextServiceAgent, out *model.Agent) {
+	if from.Name.IsSet() {
+		out.Name = from.Name.Val
 	}
-	if from == nil {
-		return
+	if from.Version.IsSet() {
+		out.Version = from.Version.Val
 	}
+}
+
+func mapToSpanModel(from *span, event *model.APMEvent) {
+	out := &model.Span{}
+	event.Span = out
+	event.Processor = model.SpanProcessor
+
 	// map span specific data
 	if !from.Action.IsSet() && !from.Subtype.IsSet() {
 		sep := "."
@@ -553,14 +485,12 @@ func mapToSpanModel(from *span, metadata *model.Metadata, reqTime time.Time, out
 		}
 	}
 	if from.Context.Destination.Address.IsSet() || from.Context.Destination.Port.IsSet() {
-		destination := model.Destination{}
 		if from.Context.Destination.Address.IsSet() {
-			destination.Address = from.Context.Destination.Address.Val
+			event.Destination.Address = from.Context.Destination.Address.Val
 		}
 		if from.Context.Destination.Port.IsSet() {
-			destination.Port = from.Context.Destination.Port.Val
+			event.Destination.Port = from.Context.Destination.Port.Val
 		}
-		out.Destination = &destination
 	}
 	if from.Context.Destination.Service.IsSet() {
 		service := model.DestinationService{}
@@ -576,49 +506,48 @@ func mapToSpanModel(from *span, metadata *model.Metadata, reqTime time.Time, out
 		out.DestinationService = &service
 	}
 	if from.Context.HTTP.IsSet() {
-		http := model.HTTP{}
+		var response model.HTTPResponse
 		if from.Context.HTTP.Method.IsSet() {
-			http.Method = from.Context.HTTP.Method.Val
+			event.HTTP.Request = &model.HTTPRequest{}
+			event.HTTP.Request.Method = from.Context.HTTP.Method.Val
 		}
 		if from.Context.HTTP.StatusCode.IsSet() {
-			http.StatusCode = from.Context.HTTP.StatusCode.Val
+			event.HTTP.Response = &response
+			event.HTTP.Response.StatusCode = from.Context.HTTP.StatusCode.Val
 		}
 		if from.Context.HTTP.URL.IsSet() {
-			http.URL = from.Context.HTTP.URL.Val
+			event.URL.Original = from.Context.HTTP.URL.Val
 		}
 		if from.Context.HTTP.Response.IsSet() {
-			http.Response = &model.MinimalResp{}
+			event.HTTP.Response = &response
 			if from.Context.HTTP.Response.DecodedBodySize.IsSet() {
 				val := from.Context.HTTP.Response.DecodedBodySize.Val
-				http.Response.DecodedBodySize = &val
+				event.HTTP.Response.DecodedBodySize = &val
 			}
 			if from.Context.HTTP.Response.EncodedBodySize.IsSet() {
 				val := from.Context.HTTP.Response.EncodedBodySize.Val
-				http.Response.EncodedBodySize = &val
+				event.HTTP.Response.EncodedBodySize = &val
 			}
 			if from.Context.HTTP.Response.TransferSize.IsSet() {
 				val := from.Context.HTTP.Response.TransferSize.Val
-				http.Response.TransferSize = &val
+				event.HTTP.Response.TransferSize = &val
 			}
 		}
-		out.HTTP = &http
 	}
 	if from.Context.Service.IsSet() {
-		if from.Context.Service.Agent.Name.IsSet() {
-			out.Metadata.Service.Agent.Name = from.Context.Service.Agent.Name.Val
-		}
-		if from.Context.Service.Agent.Version.IsSet() {
-			out.Metadata.Service.Agent.Version = from.Context.Service.Agent.Version.Val
-		}
 		if from.Context.Service.Name.IsSet() {
-			out.Metadata.Service.Name = from.Context.Service.Name.Val
+			event.Service.Name = from.Context.Service.Name.Val
 		}
 	}
 	if len(from.Context.Tags) > 0 {
-		out.Labels = from.Context.Tags.Clone()
+		event.Labels = modeldecoderutil.MergeLabels(
+			event.Labels,
+			modeldecoderutil.NormalizeLabelValues(from.Context.Tags),
+		)
 	}
 	if from.Duration.IsSet() {
-		out.Duration = from.Duration.Val
+		duration := time.Duration(from.Duration.Val * float64(time.Millisecond))
+		event.Event.Duration = duration
 	}
 	if from.ID.IsSet() {
 		out.ID = from.ID.Val
@@ -627,17 +556,17 @@ func mapToSpanModel(from *span, metadata *model.Metadata, reqTime time.Time, out
 		out.Name = from.Name.Val
 	}
 	if from.Outcome.IsSet() {
-		out.Outcome = from.Outcome.Val
+		event.Event.Outcome = from.Outcome.Val
 	} else {
 		if from.Context.HTTP.StatusCode.IsSet() {
 			statusCode := from.Context.HTTP.StatusCode.Val
 			if statusCode >= http.StatusBadRequest {
-				out.Outcome = "failure"
+				event.Event.Outcome = "failure"
 			} else {
-				out.Outcome = "success"
+				event.Event.Outcome = "success"
 			}
 		} else {
-			out.Outcome = "unknown"
+			event.Event.Outcome = "unknown"
 		}
 	}
 	if from.SampleRate.IsSet() && from.SampleRate.Val > 0 {
@@ -656,10 +585,13 @@ func mapToSpanModel(from *span, metadata *model.Metadata, reqTime time.Time, out
 		out.Sync = &val
 	}
 	if from.Start.IsSet() {
-		// adjust timestamp to be reqTime + start
-		reqTime = reqTime.Add(time.Duration(float64(time.Millisecond) * from.Start.Val))
+		// event.Timestamp is initialized to the time the payload was
+		// received by apm-server; offset that by "start" milliseconds
+		// for RUM.
+		event.Timestamp = event.Timestamp.Add(
+			time.Duration(float64(time.Millisecond) * from.Start.Val),
+		)
 	}
-	out.Timestamp = reqTime
 }
 
 func mapToStracktraceModel(from []stacktraceFrame, out model.Stacktrace) {
@@ -703,60 +635,54 @@ func mapToStracktraceModel(from []stacktraceFrame, out model.Stacktrace) {
 	}
 }
 
-func mapToTransactionModel(from *transaction, metadata *model.Metadata, reqTime time.Time, out *model.Transaction) {
-	// set metadata information
-	if metadata != nil {
-		out.Metadata = *metadata
-	}
-	if from == nil {
-		return
-	}
+func mapToTransactionModel(from *transaction, event *model.APMEvent) {
+	out := &model.Transaction{}
+	event.Transaction = out
+	event.Processor = model.TransactionProcessor
+
 	// overwrite metadata with event specific information
-	mapToServiceModel(from.Context.Service, &out.Metadata.Service)
-	overwriteUserInMetadataModel(from.Context.User, &out.Metadata)
-	mapToUserAgentModel(from.Context.Request.Headers, &out.Metadata)
+	mapToServiceModel(from.Context.Service, &event.Service)
+	mapToAgentModel(from.Context.Service.Agent, &event.Agent)
+	overwriteUserInMetadataModel(from.Context.User, event)
+	mapToUserAgentModel(from.Context.Request.Headers, &event.UserAgent)
 
 	// map transaction specific data
-
 	if from.Context.IsSet() {
 		if len(from.Context.Custom) > 0 {
-			out.Custom = from.Context.Custom.Clone()
+			out.Custom = modeldecoderutil.NormalizeLabelValues(from.Context.Custom.Clone())
 		}
-		// metadata labels and context labels are merged when transforming the output model
 		if len(from.Context.Tags) > 0 {
-			out.Labels = from.Context.Tags.Clone()
+			event.Labels = modeldecoderutil.MergeLabels(
+				event.Labels,
+				modeldecoderutil.NormalizeLabelValues(from.Context.Tags),
+			)
 		}
 		if from.Context.Request.IsSet() {
-			out.HTTP = &model.Http{Request: &model.Req{}}
-			mapToRequestModel(from.Context.Request, out.HTTP.Request)
+			event.HTTP.Request = &model.HTTPRequest{}
+			mapToRequestModel(from.Context.Request, event.HTTP.Request)
 			if from.Context.Request.HTTPVersion.IsSet() {
-				out.HTTP.Version = from.Context.Request.HTTPVersion.Val
+				event.HTTP.Version = from.Context.Request.HTTPVersion.Val
 			}
 		}
 		if from.Context.Response.IsSet() {
-			if out.HTTP == nil {
-				out.HTTP = &model.Http{}
-			}
-			out.HTTP.Response = &model.Resp{}
-			mapToResponseModel(from.Context.Response, out.HTTP.Response)
+			event.HTTP.Response = &model.HTTPResponse{}
+			mapToResponseModel(from.Context.Response, event.HTTP.Response)
 		}
 		if from.Context.Page.IsSet() {
-			out.Page = &model.Page{}
-			mapToPageModel(from.Context.Page, out.Page)
-			out.URL = out.Page.URL
-			if out.Page.Referer != "" {
-				if out.HTTP == nil {
-					out.HTTP = &model.Http{}
+			if from.Context.Page.URL.IsSet() {
+				event.URL = model.ParseURL(from.Context.Page.URL.Val, "", "")
+			}
+			if from.Context.Page.Referer.IsSet() {
+				if event.HTTP.Request == nil {
+					event.HTTP.Request = &model.HTTPRequest{}
 				}
-				if out.HTTP.Request == nil {
-					out.HTTP.Request = &model.Req{}
-				}
-				out.HTTP.Request.Referer = out.Page.Referer
+				event.HTTP.Request.Referrer = from.Context.Page.Referer.Val
 			}
 		}
 	}
 	if from.Duration.IsSet() {
-		out.Duration = from.Duration.Val
+		duration := time.Duration(from.Duration.Val * float64(time.Millisecond))
+		event.Event.Duration = duration
 	}
 	if from.ID.IsSet() {
 		out.ID = from.ID.Val
@@ -773,21 +699,21 @@ func mapToTransactionModel(from *transaction, metadata *model.Metadata, reqTime 
 		out.Name = from.Name.Val
 	}
 	if from.Outcome.IsSet() {
-		out.Outcome = from.Outcome.Val
+		event.Event.Outcome = from.Outcome.Val
 	} else {
 		if from.Context.Response.StatusCode.IsSet() {
 			statusCode := from.Context.Response.StatusCode.Val
 			if statusCode >= http.StatusInternalServerError {
-				out.Outcome = "failure"
+				event.Event.Outcome = "failure"
 			} else {
-				out.Outcome = "success"
+				event.Event.Outcome = "success"
 			}
 		} else {
-			out.Outcome = "unknown"
+			event.Event.Outcome = "unknown"
 		}
 	}
 	if from.ParentID.IsSet() {
-		out.ParentID = from.ParentID.Val
+		event.Parent.ID = from.ParentID.Val
 	}
 	if from.Result.IsSet() {
 		out.Result = from.Result.Val
@@ -797,7 +723,7 @@ func mapToTransactionModel(from *transaction, metadata *model.Metadata, reqTime 
 	if from.Sampled.IsSet() {
 		sampled = from.Sampled.Val
 	}
-	out.Sampled = &sampled
+	out.Sampled = sampled
 	if from.SampleRate.IsSet() {
 		if from.SampleRate.Val > 0 {
 			out.RepresentativeCount = 1 / from.SampleRate.Val
@@ -806,8 +732,8 @@ func mapToTransactionModel(from *transaction, metadata *model.Metadata, reqTime 
 		out.RepresentativeCount = 1
 	}
 	if from.Session.ID.IsSet() {
-		out.Session.ID = from.Session.ID.Val
-		out.Session.Sequence = from.Session.Sequence.Val
+		event.Session.ID = from.Session.ID.Val
+		event.Session.Sequence = from.Session.Sequence.Val
 	}
 	if from.SpanCount.Dropped.IsSet() {
 		dropped := from.SpanCount.Dropped.Val
@@ -817,9 +743,8 @@ func mapToTransactionModel(from *transaction, metadata *model.Metadata, reqTime 
 		started := from.SpanCount.Started.Val
 		out.SpanCount.Started = &started
 	}
-	out.Timestamp = reqTime
 	if from.TraceID.IsSet() {
-		out.TraceID = from.TraceID.Val
+		event.Trace.ID = from.TraceID.Val
 	}
 	if from.Type.IsSet() {
 		out.Type = from.Type.Val
@@ -850,16 +775,16 @@ func mapToTransactionModel(from *transaction, metadata *model.Metadata, reqTime 
 	}
 }
 
-func mapToUserAgentModel(from nullable.HTTPHeader, out *model.Metadata) {
+func mapToUserAgentModel(from nullable.HTTPHeader, out *model.UserAgent) {
 	// overwrite userAgent information if available
 	if from.IsSet() {
 		if h := from.Val.Values(textproto.CanonicalMIMEHeaderKey("User-Agent")); len(h) > 0 {
-			out.UserAgent.Original = strings.Join(h, ", ")
+			out.Original = strings.Join(h, ", ")
 		}
 	}
 }
 
-func overwriteUserInMetadataModel(from user, out *model.Metadata) {
+func overwriteUserInMetadataModel(from user, out *model.APMEvent) {
 	// overwrite User specific values if set
 	// either populate all User fields or none to avoid mixing
 	// different user data
