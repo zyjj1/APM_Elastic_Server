@@ -1,13 +1,12 @@
 // Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
-// or more contributor license agreements. Licensed under the Elastic License;
-// you may not use this file except in compliance with the Elastic License.
+// or more contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
 
 package sampling
 
 import (
 	"context"
 	"encoding/json"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -18,12 +17,12 @@ import (
 	"github.com/pkg/errors"
 	"golang.org/x/sync/errgroup"
 
-	logs "github.com/elastic/apm-server/log"
-	"github.com/elastic/apm-server/model"
+	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-server/internal/logs"
 	"github.com/elastic/apm-server/x-pack/apm-server/sampling/eventstorage"
 	"github.com/elastic/apm-server/x-pack/apm-server/sampling/pubsub"
-	"github.com/elastic/beats/v7/libbeat/logp"
-	"github.com/elastic/beats/v7/libbeat/monitoring"
+	"github.com/elastic/elastic-agent-libs/logp"
+	"github.com/elastic/elastic-agent-libs/monitoring"
 )
 
 const (
@@ -31,34 +30,39 @@ const (
 	// the subscriber position across server restarts.
 	subscriberPositionFile = "subscriber_position.json"
 
-	// tooManyGroupsLoggerRateLimit is the maximum frequency at which
-	// "too many groups" log messages are logged.
-	tooManyGroupsLoggerRateLimit = time.Minute
-)
+	// loggerRateLimit is the maximum frequency at which "too many groups" and
+	// "write failure" log messages are logged.
+	loggerRateLimit = time.Minute
 
-// ErrStopped is returned when calling ProcessBatch on a stopped Processor.
-var ErrStopped = errors.New("processor is stopped")
+	// shutdownGracePeriod is the time that the processor has to gracefully
+	// terminate after the stop method is called.
+	shutdownGracePeriod = 5 * time.Second
+)
 
 // Processor is a tail-sampling event processor.
 type Processor struct {
-	config              Config
-	logger              *logp.Logger
-	tooManyGroupsLogger *logp.Logger
-	groups              *traceGroups
+	config            Config
+	logger            *logp.Logger
+	rateLimitedLogger *logp.Logger
+	groups            *traceGroups
 
-	storageMu    sync.RWMutex
-	storage      *eventstorage.ShardedReadWriter
+	eventStore   *wrappedRW
 	eventMetrics *eventMetrics // heap-allocated for 64-bit alignment
 
 	stopMu   sync.Mutex
 	stopping chan struct{}
 	stopped  chan struct{}
+
+	indexOnWriteFailure bool
 }
 
 type eventMetrics struct {
-	processed int64
-	dropped   int64
-	stored    int64
+	processed     int64
+	dropped       int64
+	stored        int64
+	sampled       int64
+	headUnsampled int64
+	failedWrites  int64
 }
 
 // NewProcessor returns a new Processor, for tail-sampling trace events.
@@ -68,19 +72,20 @@ func NewProcessor(config Config) (*Processor, error) {
 	}
 
 	logger := logp.NewLogger(logs.Sampling)
-	eventCodec := eventstorage.JSONCodec{}
-	storage := eventstorage.New(config.DB, eventCodec, config.TTL)
-	readWriter := storage.NewShardedReadWriter()
-
 	p := &Processor{
-		config:              config,
-		logger:              logger,
-		tooManyGroupsLogger: logger.WithOptions(logs.WithRateLimit(tooManyGroupsLoggerRateLimit)),
-		groups:              newTraceGroups(config.Policies, config.MaxDynamicServices, config.IngestRateDecayFactor),
-		storage:             readWriter,
-		eventMetrics:        &eventMetrics{},
-		stopping:            make(chan struct{}),
-		stopped:             make(chan struct{}),
+		config:            config,
+		logger:            logger,
+		rateLimitedLogger: logger.WithOptions(logs.WithRateLimit(loggerRateLimit)),
+		groups:            newTraceGroups(config.Policies, config.MaxDynamicServices, config.IngestRateDecayFactor),
+		eventStore:        newWrappedRW(config.Storage, config.TTL, int64(config.StorageLimit)),
+		eventMetrics:      &eventMetrics{},
+		stopping:          make(chan struct{}),
+		stopped:           make(chan struct{}),
+		// NOTE(marclop) This behavior should be configurable so users who
+		// rely on tail sampling for cost cutting, can discard events once
+		// the disk is full.
+		// Index all traces when the storage limit is reached.
+		indexOnWriteFailure: true,
 	}
 	return p, nil
 }
@@ -107,8 +112,6 @@ func (p *Processor) CollectMonitoring(_ monitoring.Mode, V monitoring.Visitor) {
 	monitoring.ReportInt(V, "dynamic_service_groups", int64(numDynamicGroups))
 
 	monitoring.ReportNamespace(V, "storage", func() {
-		p.storageMu.RLock()
-		defer p.storageMu.RUnlock()
 		lsmSize, valueLogSize := p.config.DB.Size()
 		monitoring.ReportInt(V, "lsm_size", int64(lsmSize))
 		monitoring.ReportInt(V, "value_log_size", int64(valueLogSize))
@@ -117,6 +120,9 @@ func (p *Processor) CollectMonitoring(_ monitoring.Mode, V monitoring.Visitor) {
 		monitoring.ReportInt(V, "processed", atomic.LoadInt64(&p.eventMetrics.processed))
 		monitoring.ReportInt(V, "dropped", atomic.LoadInt64(&p.eventMetrics.dropped))
 		monitoring.ReportInt(V, "stored", atomic.LoadInt64(&p.eventMetrics.stored))
+		monitoring.ReportInt(V, "sampled", atomic.LoadInt64(&p.eventMetrics.sampled))
+		monitoring.ReportInt(V, "head_unsampled", atomic.LoadInt64(&p.eventMetrics.headUnsampled))
+		monitoring.ReportInt(V, "failed_writes", atomic.LoadInt64(&p.eventMetrics.failedWrites))
 	})
 }
 
@@ -132,31 +138,36 @@ func (p *Processor) CollectMonitoring(_ monitoring.Mode, V monitoring.Visitor) {
 // All other trace events will either be dropped (e.g. known to not
 // be tail-sampled), or stored for possible later publication.
 func (p *Processor) ProcessBatch(ctx context.Context, batch *model.Batch) error {
-	p.storageMu.RLock()
-	defer p.storageMu.RUnlock()
-	if p.storage == nil {
-		return ErrStopped
-	}
 	events := *batch
 	for i := 0; i < len(events); i++ {
 		event := &events[i]
-		var report, stored bool
+		var report, stored, failed bool
+		var err error
 		switch event.Processor {
 		case model.TransactionProcessor:
-			var err error
 			atomic.AddInt64(&p.eventMetrics.processed, 1)
 			report, stored, err = p.processTransaction(event)
-			if err != nil {
-				return err
-			}
 		case model.SpanProcessor:
-			var err error
 			atomic.AddInt64(&p.eventMetrics.processed, 1)
 			report, stored, err = p.processSpan(event)
-			if err != nil {
-				return err
+		default:
+			continue
+		}
+
+		// If processing the transaction or span returns with an error we
+		// either discard or sample the trace by default.
+		if err != nil {
+			failed = true
+			stored = false
+			if p.indexOnWriteFailure {
+				report = true
+				p.rateLimitedLogger.Info("processing trace failed, indexing by default")
+			} else {
+				report = false
+				p.rateLimitedLogger.Info("processing trace failed, discarding by default")
 			}
 		}
+
 		if !report {
 			// We shouldn't report this event, so remove it from the slice.
 			n := len(events)
@@ -164,13 +175,17 @@ func (p *Processor) ProcessBatch(ctx context.Context, batch *model.Batch) error 
 			events = events[:n-1]
 			i--
 		}
-		p.updateProcessorMetrics(report, stored)
+
+		p.updateProcessorMetrics(report, stored, failed)
 	}
 	*batch = events
 	return nil
 }
 
-func (p *Processor) updateProcessorMetrics(report, stored bool) {
+func (p *Processor) updateProcessorMetrics(report, stored, failedWrite bool) {
+	if failedWrite {
+		atomic.AddInt64(&p.eventMetrics.failedWrites, 1)
+	}
 	if stored {
 		atomic.AddInt64(&p.eventMetrics.stored, 1)
 	} else if !report {
@@ -191,15 +206,19 @@ func (p *Processor) processTransaction(event *model.APMEvent) (report, stored bo
 	if !event.Transaction.Sampled {
 		// (Head-based) unsampled transactions are passed through
 		// by the tail sampler.
+		atomic.AddInt64(&p.eventMetrics.headUnsampled, 1)
 		return true, false, nil
 	}
 
-	traceSampled, err := p.storage.IsTraceSampled(event.Trace.ID)
+	traceSampled, err := p.eventStore.IsTraceSampled(event.Trace.ID)
 	switch err {
 	case nil:
 		// Tail-sampling decision has been made: report the transaction
 		// if it was sampled.
 		report := traceSampled
+		if report {
+			atomic.AddInt64(&p.eventMetrics.sampled, 1)
+		}
 		return report, false, nil
 	case eventstorage.ErrNotFound:
 		// Tail-sampling decision has not yet been made.
@@ -211,16 +230,20 @@ func (p *Processor) processTransaction(event *model.APMEvent) (report, stored bo
 	if event.Parent.ID != "" {
 		// Non-root transaction: write to local storage while we wait
 		// for a sampling decision.
-		return false, true, p.storage.WriteTraceEvent(
+		return false, true, p.eventStore.WriteTraceEvent(
 			event.Trace.ID, event.Transaction.ID, event,
 		)
 	}
 
 	// Root transaction: apply reservoir sampling.
+	//
+	// TODO(axw) we should skip reservoir sampling when the matching
+	// policy's sampling rate is 100%, immediately index the event
+	// and record the trace sampling decision.
 	reservoirSampled, err := p.groups.sampleTrace(event)
 	if err == errTooManyTraceGroups {
 		// Too many trace groups, drop the transaction.
-		p.tooManyGroupsLogger.Warn(`
+		p.rateLimitedLogger.Warn(`
 Tail-sampling service group limit reached, discarding trace events.
 This is caused by having many unique service names while relying on
 sampling policies without service name specified.
@@ -237,47 +260,39 @@ sampling policies without service name specified.
 		// This is a local optimisation only. To avoid creating network
 		// traffic and load on Elasticsearch for uninteresting root
 		// transactions, we do not propagate this to other APM Servers.
-		return false, false, p.storage.WriteTraceSampled(event.Trace.ID, false)
+		return false, false, p.eventStore.WriteTraceSampled(event.Trace.ID, false)
 	}
 
 	// The root transaction was admitted to the sampling reservoir, so we
 	// can proceed to write the transaction to storage; we may index it later,
 	// after finalising the sampling decision.
-	return false, true, p.storage.WriteTraceEvent(
-		event.Trace.ID, event.Transaction.ID, event,
-	)
+	return false, true, p.eventStore.WriteTraceEvent(event.Trace.ID, event.Transaction.ID, event)
 }
 
 func (p *Processor) processSpan(event *model.APMEvent) (report, stored bool, _ error) {
-	traceSampled, err := p.storage.IsTraceSampled(event.Trace.ID)
+	traceSampled, err := p.eventStore.IsTraceSampled(event.Trace.ID)
 	if err != nil {
 		if err == eventstorage.ErrNotFound {
 			// Tail-sampling decision has not yet been made, write event to local storage.
-			return false, true, p.storage.WriteTraceEvent(
-				event.Trace.ID, event.Span.ID, event,
-			)
+			return false, true, p.eventStore.WriteTraceEvent(event.Trace.ID, event.Span.ID, event)
 		}
 		return false, false, err
 	}
 	// Tail-sampling decision has been made, report or drop the event.
-	if !traceSampled {
-		return false, false, nil
+	if traceSampled {
+		atomic.AddInt64(&p.eventMetrics.sampled, 1)
 	}
-	return true, false, nil
+	return traceSampled, false, nil
 }
 
 // Stop stops the processor, flushing event storage. Note that the underlying
 // badger.DB must be closed independently to ensure writes are synced to disk.
 func (p *Processor) Stop(ctx context.Context) error {
 	p.stopMu.Lock()
-	if p.storage == nil {
-		// Already fully stopped.
-		p.stopMu.Unlock()
-		return nil
-	}
 	select {
+	case <-p.stopped:
 	case <-p.stopping:
-		// already stopping
+		// already stopped or stopping
 	default:
 		close(p.stopping)
 	}
@@ -290,30 +305,19 @@ func (p *Processor) Stop(ctx context.Context) error {
 	case <-p.stopped:
 	}
 
-	// Lock storage before stopping, to prevent closing storage while
-	// ProcessBatch is using it.
-	p.storageMu.Lock()
-	defer p.storageMu.Unlock()
-
-	if err := p.storage.Flush(); err != nil {
-		return err
-	}
-	p.storage.Close()
-	p.storage = nil
-	return nil
+	// Flush event store and the underlying read writers
+	return p.eventStore.Flush()
 }
 
 // Run runs the tail-sampling processor. This method is responsible for:
 //
-//  - periodically making, and then publishing, local sampling decisions
-//  - subscribing to remote sampling decisions
-//  - reacting to both local and remote sampling decisions by reading
-//    related events from local storage, and then reporting them
+//   - periodically making, and then publishing, local sampling decisions
+//   - subscribing to remote sampling decisions
+//   - reacting to both local and remote sampling decisions by reading
+//     related events from local storage, and then reporting them
 //
 // Run returns when a fatal error occurs or the Stop method is invoked.
 func (p *Processor) Run() error {
-	p.storageMu.RLock()
-	defer p.storageMu.RUnlock()
 	defer func() {
 		p.stopMu.Lock()
 		defer p.stopMu.Unlock()
@@ -333,13 +337,13 @@ func (p *Processor) Run() error {
 		bulkIndexerFlushInterval = p.config.FlushInterval
 	}
 
-	initialSubscriberPosition, err := readSubscriberPosition(p.config.StorageDir)
+	initialSubscriberPosition, err := readSubscriberPosition(p.logger, p.config.StorageDir)
 	if err != nil {
 		return err
 	}
 	subscriberPositions := make(chan pubsub.SubscriberPosition)
 	pubsub, err := pubsub.New(pubsub.Config{
-		BeatID:     p.config.BeatID,
+		ServerID:   p.config.UUID,
 		Client:     p.config.Elasticsearch,
 		DataStream: pubsub.DataStreamConfig(p.config.SampledTracesDataStream),
 		Logger:     p.logger,
@@ -357,13 +361,27 @@ func (p *Processor) Run() error {
 	remoteSampledTraceIDs := make(chan string)
 	localSampledTraceIDs := make(chan string)
 	publishSampledTraceIDs := make(chan string)
-	g, ctx := errgroup.WithContext(context.Background())
+	gracefulContext, cancelGracefulContext := context.WithCancel(context.Background())
+	defer cancelGracefulContext()
+	var g errgroup.Group
 	g.Go(func() error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-p.stopping:
-			return context.Canceled
+		// Write subscriber position to a file on disk, to support resuming
+		// on apm-server restart without reprocessing all indices. We trigger
+		// the graceful shutdown from this goroutine to ensure we do not
+		// write any subscriber positions after Stop is called, and risk
+		// having a new subscriber miss events.
+		for {
+			select {
+			case <-p.stopping:
+				time.AfterFunc(shutdownGracePeriod, cancelGracefulContext)
+				return context.Canceled
+			case pos := <-subscriberPositions:
+				if err := writeSubscriberPosition(p.config.StorageDir, pos); err != nil {
+					p.rateLimitedLogger.With(logp.Error(err)).With(logp.Reflect("position", pos)).Warn(
+						"failed to write subscriber position: %s", err,
+					)
+				}
+			}
 		}
 	})
 	g.Go(func() error {
@@ -374,44 +392,82 @@ func (p *Processor) Run() error {
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
-				return ctx.Err()
+			case <-p.stopping:
+				return nil
 			case <-ticker.C:
 				const discardRatio = 0.5
-				if err := p.config.DB.RunValueLogGC(discardRatio); err != nil && err != badger.ErrNoRewrite {
+				var err error
+				for err == nil {
+					// Keep garbage collecting until there are no more rewrites,
+					// or garbage collection fails.
+					err = p.config.DB.RunValueLogGC(discardRatio)
+				}
+				if err != nil && err != badger.ErrNoRewrite {
 					return err
 				}
 			}
 		}
 	})
 	g.Go(func() error {
+		// Subscribe to remotely sampled trace IDs. This is cancelled immediately when
+		// Stop is called. The next subscriber will pick up from the previous position.
+		defer close(remoteSampledTraceIDs)
 		defer close(subscriberPositions)
-		return pubsub.SubscribeSampledTraceIDs(ctx, initialSubscriberPosition, remoteSampledTraceIDs, subscriberPositions)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			defer cancel()
+			select {
+			case <-p.stopping:
+			case <-p.stopped:
+			}
+
+		}()
+		return pubsub.SubscribeSampledTraceIDs(
+			ctx, initialSubscriberPosition, remoteSampledTraceIDs, subscriberPositions,
+		)
 	})
 	g.Go(func() error {
-		return pubsub.PublishSampledTraceIDs(ctx, publishSampledTraceIDs)
+		// Publish locally sampled trace IDs to Elasticsearch. This is cancelled when
+		// publishSampledTraceIDs is closed, after the final reservoir flush.
+		return pubsub.PublishSampledTraceIDs(gracefulContext, publishSampledTraceIDs)
 	})
 	g.Go(func() error {
 		ticker := time.NewTicker(p.config.FlushInterval)
 		defer ticker.Stop()
 		var traceIDs []string
+
+		// Close publishSampledTraceIDs and localSampledTraceIDs after returning,
+		// which implies that either all decisions have been published or the grace
+		// period has elapsed. This will unblock the PublishSampledTraceIDs call above,
+		// and the event indexing goroutine below.
+		defer close(publishSampledTraceIDs)
+		defer close(localSampledTraceIDs)
+
+		publishDecisions := func() error {
+			p.logger.Debug("finalizing local sampling reservoirs")
+			traceIDs = p.groups.finalizeSampledTraces(traceIDs)
+			if len(traceIDs) == 0 {
+				return nil
+			}
+			var g errgroup.Group
+			g.Go(func() error { return sendTraceIDs(gracefulContext, publishSampledTraceIDs, traceIDs) })
+			g.Go(func() error { return sendTraceIDs(gracefulContext, localSampledTraceIDs, traceIDs) })
+			if err := g.Wait(); err != nil {
+				return err
+			}
+			traceIDs = traceIDs[:0]
+			return nil
+		}
+
 		for {
 			select {
-			case <-ctx.Done():
-				return ctx.Err()
+			case <-p.stopping:
+				return publishDecisions()
 			case <-ticker.C:
-				p.logger.Debug("finalizing local sampling reservoirs")
-				traceIDs = p.groups.finalizeSampledTraces(traceIDs)
-				if len(traceIDs) == 0 {
-					continue
-				}
-				var g errgroup.Group
-				g.Go(func() error { return sendTraceIDs(ctx, publishSampledTraceIDs, traceIDs) })
-				g.Go(func() error { return sendTraceIDs(ctx, localSampledTraceIDs, traceIDs) })
-				if err := g.Wait(); err != nil {
+				if err := publishDecisions(); err != nil {
 					return err
 				}
-				traceIDs = traceIDs[:0]
 			}
 		}
 	})
@@ -420,23 +476,45 @@ func (p *Processor) Run() error {
 		// Alternatively we can rely on backpressure from the reporter,
 		// removing the artificial one second timeout from publisher code
 		// and just waiting as long as it takes here.
+		remoteSampledTraceIDs := remoteSampledTraceIDs
+		localSampledTraceIDs := localSampledTraceIDs
 		for {
+			if remoteSampledTraceIDs == nil && localSampledTraceIDs == nil {
+				// The pubsub subscriber and reservoir finalizer have
+				// both stopped, so there's nothing else to do.
+				return nil
+			}
 			var remoteDecision bool
 			var traceID string
+			var ok bool
 			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case traceID = <-remoteSampledTraceIDs:
+			case <-gracefulContext.Done():
+				return gracefulContext.Err()
+			case traceID, ok = <-remoteSampledTraceIDs:
+				if !ok {
+					remoteSampledTraceIDs = nil
+					continue
+				}
 				p.logger.Debug("received remotely sampled trace ID")
 				remoteDecision = true
-			case traceID = <-localSampledTraceIDs:
+			case traceID, ok = <-localSampledTraceIDs:
+				if !ok {
+					localSampledTraceIDs = nil
+					continue
+				}
 			}
-			if err := p.storage.WriteTraceSampled(traceID, true); err != nil {
-				return err
+
+			if err := p.eventStore.WriteTraceSampled(traceID, true); err != nil {
+				p.rateLimitedLogger.Warnf(
+					"received error writing sampled trace: %s", err,
+				)
 			}
 			var events model.Batch
-			if err := p.storage.ReadTraceEvents(traceID, &events); err != nil {
-				return err
+			if err := p.eventStore.ReadTraceEvents(traceID, &events); err != nil {
+				p.rateLimitedLogger.Warnf(
+					"received error reading trace events: %s", err,
+				)
+				continue
 			}
 			if n := len(events); n > 0 {
 				p.logger.Debugf("reporting %d events", n)
@@ -450,32 +528,19 @@ func (p *Processor) Run() error {
 					for _, event := range events {
 						switch event.Processor {
 						case model.TransactionProcessor:
-							if err := p.storage.DeleteTraceEvent(event.Trace.ID, event.Transaction.ID); err != nil {
+							if err := p.eventStore.DeleteTraceEvent(event.Trace.ID, event.Transaction.ID); err != nil {
 								return errors.Wrap(err, "failed to delete transaction from local storage")
 							}
 						case model.SpanProcessor:
-							if err := p.storage.DeleteTraceEvent(event.Trace.ID, event.Span.ID); err != nil {
+							if err := p.eventStore.DeleteTraceEvent(event.Trace.ID, event.Span.ID); err != nil {
 								return errors.Wrap(err, "failed to delete span from local storage")
 							}
 						}
 					}
 				}
-				if err := p.config.BatchProcessor.ProcessBatch(ctx, &events); err != nil {
+				atomic.AddInt64(&p.eventMetrics.sampled, int64(len(events)))
+				if err := p.config.BatchProcessor.ProcessBatch(gracefulContext, &events); err != nil {
 					p.logger.With(logp.Error(err)).Warn("failed to report events")
-				}
-			}
-		}
-	})
-	g.Go(func() error {
-		// Write subscriber position to a file on disk, to support resuming
-		// on apm-server restart without reprocessing all indices.
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case pos := <-subscriberPositions:
-				if err := writeSubscriberPosition(p.config.StorageDir, pos); err != nil {
-					return err
 				}
 			}
 		}
@@ -486,15 +551,19 @@ func (p *Processor) Run() error {
 	return nil
 }
 
-func readSubscriberPosition(storageDir string) (pubsub.SubscriberPosition, error) {
+func readSubscriberPosition(logger *logp.Logger, storageDir string) (pubsub.SubscriberPosition, error) {
 	var pos pubsub.SubscriberPosition
-	data, err := ioutil.ReadFile(filepath.Join(storageDir, subscriberPositionFile))
+	data, err := os.ReadFile(filepath.Join(storageDir, subscriberPositionFile))
 	if errors.Is(err, os.ErrNotExist) {
 		return pos, nil
 	} else if err != nil {
 		return pos, err
 	}
-	return pos, json.Unmarshal(data, &pos)
+	err = json.Unmarshal(data, &pos)
+	if err != nil {
+		logger.With(logp.Error(err)).With(logp.ByteString("file", data)).Debug("failed to read subscriber position")
+	}
+	return pos, err
 }
 
 func writeSubscriberPosition(storageDir string, pos pubsub.SubscriberPosition) error {
@@ -502,7 +571,7 @@ func writeSubscriberPosition(storageDir string, pos pubsub.SubscriberPosition) e
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(filepath.Join(storageDir, subscriberPositionFile), data, 0644)
+	return os.WriteFile(filepath.Join(storageDir, subscriberPositionFile), data, 0644)
 }
 
 func sendTraceIDs(ctx context.Context, out chan<- string, traceIDs []string) error {
@@ -514,4 +583,62 @@ func sendTraceIDs(ctx context.Context, out chan<- string, traceIDs []string) err
 		}
 	}
 	return nil
+}
+
+const (
+	storageLimitThreshold = 0.90 // Allow 90% of the quota to be used.
+)
+
+// wrappedRW wraps configurable write options for global ShardedReadWriter
+type wrappedRW struct {
+	rw         *eventstorage.ShardedReadWriter
+	writerOpts eventstorage.WriterOpts
+}
+
+// Stored entries expire after ttl.
+// The amount of storage that can be consumed can be limited by passing in a
+// limit value greater than zero. The hard limit on storage is set to 90% of
+// the limit to account for delay in the size reporting by badger.
+// https://github.com/dgraph-io/badger/blob/82b00f27e3827022082225221ae05c03f0d37620/db.go#L1302-L1319.
+func newWrappedRW(rw *eventstorage.ShardedReadWriter, ttl time.Duration, limit int64) *wrappedRW {
+	if limit > 1 {
+		limit = int64(float64(limit) * storageLimitThreshold)
+	}
+	return &wrappedRW{
+		rw: rw,
+		writerOpts: eventstorage.WriterOpts{
+			TTL:                 ttl,
+			StorageLimitInBytes: limit,
+		},
+	}
+}
+
+// ReadTraceEvents calls ShardedReadWriter.ReadTraceEvents
+func (s *wrappedRW) ReadTraceEvents(traceID string, out *model.Batch) error {
+	return s.rw.ReadTraceEvents(traceID, out)
+}
+
+// WriteTraceEvents calls ShardedReadWriter.WriteTraceEvents using the configured WriterOpts
+func (s *wrappedRW) WriteTraceEvent(traceID, id string, event *model.APMEvent) error {
+	return s.rw.WriteTraceEvent(traceID, id, event, s.writerOpts)
+}
+
+// WriteTraceSampled calls ShardedReadWriter.WriteTraceSampled using the configured WriterOpts
+func (s *wrappedRW) WriteTraceSampled(traceID string, sampled bool) error {
+	return s.rw.WriteTraceSampled(traceID, sampled, s.writerOpts)
+}
+
+// IsTraceSampled calls ShardedReadWriter.IsTraceSampled
+func (s *wrappedRW) IsTraceSampled(traceID string) (bool, error) {
+	return s.rw.IsTraceSampled(traceID)
+}
+
+// DeleteTraceEvent calls ShardedReadWriter.DeleteTraceEvent
+func (s *wrappedRW) DeleteTraceEvent(traceID, id string) error {
+	return s.rw.DeleteTraceEvent(traceID, id)
+}
+
+// Flush calls ShardedReadWriter.Flush
+func (s *wrappedRW) Flush() error {
+	return s.rw.Flush(s.writerOpts.StorageLimitInBytes)
 }

@@ -18,38 +18,75 @@
 package systemtest
 
 import (
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/elastic/apm-server/systemtest/apmservertest"
 )
 
-func SendRUMEventsPayload(t *testing.T, srv *apmservertest.Server, payloadFile string) {
-	sendEventsPayload(t, srv, "/intake/v2/rum/events", payloadFile)
+func SendRUMEventsPayload(t *testing.T, serverURL string, payloadFile string) {
+	f := openFile(t, payloadFile)
+	sendEventsPayload(t, serverURL, "/intake/v2/rum/events", f)
 }
 
-func SendBackendEventsPayload(t *testing.T, srv *apmservertest.Server, payloadFile string) {
-	sendEventsPayload(t, srv, "/intake/v2/events", payloadFile)
+func SendRUMEventsLiteral(t *testing.T, serverURL string, raw string) {
+	sendEventsPayload(t, serverURL, "/intake/v2/rum/events", strings.NewReader(raw))
 }
 
-func sendEventsPayload(t *testing.T, srv *apmservertest.Server, urlPath, payloadFile string) {
-	t.Helper()
+func SendBackendEventsPayload(t *testing.T, serverURL string, payloadFile string) {
+	f := openFile(t, payloadFile)
+	sendEventsPayload(t, serverURL, "/intake/v2/events", f)
+}
 
-	f, err := os.Open(payloadFile)
+func SendBackendEventsAsyncPayload(t *testing.T, serverURL string, payloadFile string) {
+	f := openFile(t, payloadFile)
+	sendEventsPayload(t, serverURL, "/intake/v2/events?async=true", f)
+}
+
+func SendBackendEventsAsyncPayloadError(t *testing.T, serverURL string, payloadFile string) {
+	f := openFile(t, payloadFile)
+
+	resp := doRequest(t, serverURL, "/intake/v2/events?async=true", f)
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	defer f.Close()
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, string(respBody))
+}
 
-	req, _ := http.NewRequest("POST", srv.URL+urlPath, f)
+func SendBackendEventsLiteral(t *testing.T, serverURL string, raw string) {
+	sendEventsPayload(t, serverURL, "/intake/v2/events", strings.NewReader(raw))
+}
+
+func sendEventsPayload(t *testing.T, serverURL, urlPath string, f io.Reader) {
+	t.Helper()
+	resp := doRequest(t, serverURL, urlPath, f)
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusAccepted, resp.StatusCode, string(respBody))
+}
+
+func doRequest(t *testing.T, serverURL string, urlPath string, f io.Reader) *http.Response {
+	req, _ := http.NewRequest("POST", serverURL+urlPath, f)
 	req.Header.Add("Content-Type", "application/x-ndjson")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	return resp
+}
 
-	respBody, err := ioutil.ReadAll(resp.Body)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusAccepted, resp.StatusCode, string(respBody))
+func openFile(t *testing.T, p string) *os.File {
+	f, err := os.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	} else {
+		t.Cleanup(func() {
+			f.Close()
+		})
+	}
+	return f
 }

@@ -1,32 +1,42 @@
 {
     "events": [
         {
-            "@timestamp": "dynamic",
+            "@timestamp": "2006-01-02T15:00:00.000Z",
+            "_doc_count": 5,
             "agent": {
                 "name": "go"
+            },
+            "data_stream": {
+                "dataset": "apm.service_destination.10m",
+                "namespace": "default",
+                "type": "metrics"
             },
             "ecs": {
                 "version": "dynamic"
             },
             "event": {
+                "agent_id_status": "missing",
                 "ingested": "dynamic",
-                "outcome": "unknown"
+                "outcome": "success"
             },
-            "metricset.name": "service_destination",
+            "metricset": {
+                "interval": "10m",
+                "name": "service_destination"
+            },
             "observer": {
-                "ephemeral_id": "dynamic",
                 "hostname": "dynamic",
-                "id": "dynamic",
                 "type": "apm-server",
-                "version": "dynamic",
-                "version_major": "dynamic"
+                "version": "dynamic"
             },
             "processor": {
                 "event": "metric",
                 "name": "metric"
             },
             "service": {
-                "name": "systemtest"
+                "name": "systemtest",
+                "target": {
+                    "type": "resource"
+                }
             },
             "span": {
                 "destination": {
@@ -34,10 +44,119 @@
                         "resource": "resource",
                         "response_time": {
                             "count": 5,
-                            "sum.us": 5000000
+                            "sum": {
+                                "us": 5000000
+                            }
                         }
                     }
+                },
+                "name": "name"
+            }
+        },
+        {
+            "@timestamp": "2006-01-02T15:04:00.000Z",
+            "_doc_count": 5,
+            "agent": {
+                "name": "go"
+            },
+            "data_stream": {
+                "dataset": "apm.service_destination.1m",
+                "namespace": "default",
+                "type": "metrics"
+            },
+            "ecs": {
+                "version": "dynamic"
+            },
+            "event": {
+                "agent_id_status": "missing",
+                "ingested": "dynamic",
+                "outcome": "success"
+            },
+            "metricset": {
+                "interval": "1m",
+                "name": "service_destination"
+            },
+            "observer": {
+                "hostname": "dynamic",
+                "type": "apm-server",
+                "version": "dynamic"
+            },
+            "processor": {
+                "event": "metric",
+                "name": "metric"
+            },
+            "service": {
+                "name": "systemtest",
+                "target": {
+                    "type": "resource"
                 }
+            },
+            "span": {
+                "destination": {
+                    "service": {
+                        "resource": "resource",
+                        "response_time": {
+                            "count": 5,
+                            "sum": {
+                                "us": 5000000
+                            }
+                        }
+                    }
+                },
+                "name": "name"
+            }
+        },
+        {
+            "@timestamp": "2006-01-02T15:00:00.000Z",
+            "_doc_count": 5,
+            "agent": {
+                "name": "go"
+            },
+            "data_stream": {
+                "dataset": "apm.service_destination.60m",
+                "namespace": "default",
+                "type": "metrics"
+            },
+            "ecs": {
+                "version": "dynamic"
+            },
+            "event": {
+                "agent_id_status": "missing",
+                "ingested": "dynamic",
+                "outcome": "success"
+            },
+            "metricset": {
+                "interval": "60m",
+                "name": "service_destination"
+            },
+            "observer": {
+                "hostname": "dynamic",
+                "type": "apm-server",
+                "version": "dynamic"
+            },
+            "processor": {
+                "event": "metric",
+                "name": "metric"
+            },
+            "service": {
+                "name": "systemtest",
+                "target": {
+                    "type": "resource"
+                }
+            },
+            "span": {
+                "destination": {
+                    "service": {
+                        "resource": "resource",
+                        "response_time": {
+                            "count": 5,
+                            "sum": {
+                                "us": 5000000
+                            }
+                        }
+                    }
+                },
+                "name": "name"
             }
         }
     ]

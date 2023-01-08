@@ -25,7 +25,7 @@
         },
         "host": {
             "architecture": "x64",
-            "ip": "127.0.0.1",
+            "ip": ["127.0.0.1"],
             "os": {
                 "platform": "darwin"
             }
@@ -43,20 +43,19 @@
         },
         "message": "Cannot read property 'baz' of undefined",
         "observer": {
-            "ephemeral_id": "f1838cde-80dd-4af5-b7ac-ffc2d3fccc9d",
             "hostname": "ix.lan",
-            "id": "5d4dc8fe-cb14-47ee-b720-d6bf49f87ef0",
             "type": "apm-server",
-            "version": "8.0.0",
-            "version_major": 8
+            "version": "8.0.0"
         },
         "process": {
             "args": [
                 "node",
                 "server.js"
             ],
+            "parent": {
+                "pid": 7788
+            },
             "pid": 1234,
-            "ppid": 7788,
             "title": "node"
         },
         "processor": {
@@ -341,8 +340,7 @@
             "hostname": "ix.lan",
             "id": "5d4dc8fe-cb14-47ee-b720-d6bf49f87ef0",
             "type": "apm-server",
-            "version": "8.0.0",
-            "version_major": 8
+            "version": "8.0.0"
         },
         "process": {
             "args": [
@@ -350,7 +348,9 @@
                 "server.js"
             ],
             "pid": 1234,
-            "ppid": 7788,
+            "parent": {
+                "pid": 7788
+            },
             "title": "node"
         },
         "processor": {
@@ -454,8 +454,7 @@
             "hostname": "ix.lan",
             "id": "5d4dc8fe-cb14-47ee-b720-d6bf49f87ef0",
             "type": "apm-server",
-            "version": "8.0.0",
-            "version_major": 8
+            "version": "8.0.0"
         },
         "process": {
             "args": [
@@ -463,7 +462,9 @@
                 "server.js"
             ],
             "pid": 1234,
-            "ppid": 7788,
+            "parent": {
+                "pid": 7788
+            },
             "title": "node"
         },
         "processor": {
@@ -544,8 +545,7 @@
             "hostname": "ix.lan",
             "id": "5d4dc8fe-cb14-47ee-b720-d6bf49f87ef0",
             "type": "apm-server",
-            "version": "8.0.0",
-            "version_major": 8
+            "version": "8.0.0"
         },
         "process": {
             "args": [
@@ -553,7 +553,9 @@
                 "server.js"
             ],
             "pid": 1234,
-            "ppid": 7788,
+            "parent": {
+                "pid": 7788
+            },
             "title": "node"
         },
         "processor": {

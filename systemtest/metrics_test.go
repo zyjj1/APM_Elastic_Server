@@ -21,32 +21,26 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io/ioutil"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
-	"go.elastic.co/apm"
+	"go.elastic.co/apm/v2"
 
 	"github.com/elastic/apm-server/systemtest"
 	"github.com/elastic/apm-server/systemtest/apmservertest"
 	"github.com/elastic/apm-server/systemtest/estest"
-	"github.com/elastic/go-elasticsearch/v7/esapi"
+	"github.com/elastic/go-elasticsearch/v8/esapi"
 )
 
 func TestApprovedMetrics(t *testing.T) {
-	withDataStreams(t, testApprovedMetrics)
-}
-
-func testApprovedMetrics(t *testing.T, srv *apmservertest.Server) {
-	err := srv.Start()
-	require.NoError(t, err)
-
-	eventsPayload, err := ioutil.ReadFile("../testdata/intake-v2/metricsets.ndjson")
+	systemtest.CleanupElasticsearch(t)
+	srv := apmservertest.NewServerTB(t)
+	eventsPayload, err := os.ReadFile("../testdata/intake-v2/metricsets.ndjson")
 	require.NoError(t, err)
 
 	req, _ := http.NewRequest("POST", srv.URL+"/intake/v2/events?verbose=true", bytes.NewReader(eventsPayload))
@@ -62,10 +56,15 @@ func testApprovedMetrics(t *testing.T, srv *apmservertest.Server) {
 	assert.NoError(t, err)
 
 	// Check the metrics documents are exactly as we expect.
-	indices := []string{"apm-*", "metrics-apm.*"}
-	result := systemtest.Elasticsearch.ExpectMinDocs(t, ingestResult.Accepted, strings.Join(indices, ","), estest.TermQuery{
-		Field: "processor.event",
-		Value: "metric",
+	indices := []string{"metrics-apm*"}
+	result := systemtest.Elasticsearch.ExpectMinDocs(t, ingestResult.Accepted, strings.Join(indices, ","), estest.BoolQuery{
+		Filter: []interface{}{
+			estest.TermQuery{Field: "processor.event", Value: "metric"},
+		},
+		MustNot: []interface{}{
+			// Ignore server-produced transaction metrics; we're only interested in the metrics sent by the agent.
+			estest.TermQuery{Field: "metricset.name", Value: "transaction"},
+		},
 	})
 	systemtest.ApproveEvents(t, t.Name(), result.Hits.Hits)
 
@@ -85,7 +84,7 @@ func testApprovedMetrics(t *testing.T, srv *apmservertest.Server) {
 
 func TestBreakdownMetrics(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
-	srv := apmservertest.NewServer(t)
+	srv := apmservertest.NewServerTB(t)
 
 	tracer := srv.Tracer()
 	tx := tracer.StartTransaction("tx_name", "tx_type")
@@ -97,7 +96,7 @@ func TestBreakdownMetrics(t *testing.T) {
 	tracer.SendMetrics(nil)
 	tracer.Flush(nil)
 
-	result := systemtest.Elasticsearch.ExpectMinDocs(t, 3, "apm-*", estest.BoolQuery{
+	result := systemtest.Elasticsearch.ExpectMinDocs(t, 2, "metrics-apm.internal-*", estest.BoolQuery{
 		Filter: []interface{}{
 			estest.TermQuery{
 				Field: "processor.event",
@@ -113,9 +112,6 @@ func TestBreakdownMetrics(t *testing.T) {
 	docs := unmarshalMetricsetDocs(t, result.Hits.Hits)
 	assert.ElementsMatch(t, []metricsetDoc{{
 		Trasaction:    metricsetTransaction{Type: "tx_type"},
-		MetricsetName: "transaction_breakdown",
-	}, {
-		Trasaction:    metricsetTransaction{Type: "tx_type"},
 		Span:          metricsetSpan{Type: "span_type"},
 		MetricsetName: "span_breakdown",
 	}, {
@@ -127,7 +123,7 @@ func TestBreakdownMetrics(t *testing.T) {
 
 func TestApplicationMetrics(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
-	srv := apmservertest.NewServer(t)
+	srv := apmservertest.NewServerTB(t)
 
 	tracer := srv.Tracer()
 	tracer.RegisterMetricsGatherer(apm.GatherMetricsFunc(func(ctx context.Context, metrics *apm.Metrics) error {
@@ -138,7 +134,7 @@ func TestApplicationMetrics(t *testing.T) {
 	tracer.SendMetrics(nil)
 	tracer.Flush(nil)
 
-	result := systemtest.Elasticsearch.ExpectDocs(t, "apm-*", estest.TermQuery{
+	result := systemtest.Elasticsearch.ExpectDocs(t, "metrics-apm.app.*", estest.TermQuery{
 		Field: "metricset.name",
 		Value: "app",
 	})
@@ -154,10 +150,7 @@ func TestApplicationMetrics(t *testing.T) {
 	for _, fieldName := range expectedFields {
 		var found bool
 		for _, hit := range result.Hits.Hits {
-			// Metrics are written with dotted field names rather than
-			// as hierarchical objects, so escape dots in the gjson path.
-			path := strings.Replace(fieldName, ".", "\\.", -1)
-			if gjson.GetBytes(hit.RawSource, path).Exists() {
+			if _, ok := hit.Fields[fieldName]; ok {
 				found = true
 				break
 			}
@@ -167,13 +160,14 @@ func TestApplicationMetrics(t *testing.T) {
 
 	// Check that the index mapping has been updated for the custom
 	// metrics, with the expected dynamically mapped field types.
-	mappings := getFieldMappings(t, []string{"apm-*"}, []string{"a.b.c", "x.y.z"})
+	mappings := getFieldMappings(t, []string{"metrics-apm.app.*"}, []string{"a.b.c", "x.y.z"})
 	assert.Equal(t, map[string]interface{}{
 		"a.b.c": map[string]interface{}{
 			"full_name": "a.b.c",
 			"mapping": map[string]interface{}{
 				"c": map[string]interface{}{
-					"type": "long",
+					"type":  "double",
+					"index": false,
 				},
 			},
 		},
@@ -181,7 +175,8 @@ func TestApplicationMetrics(t *testing.T) {
 			"full_name": "x.y.z",
 			"mapping": map[string]interface{}{
 				"z": map[string]interface{}{
-					"type": "float",
+					"type":  "double",
+					"index": false,
 				},
 			},
 		},
@@ -221,9 +216,11 @@ type metricsetSample struct {
 }
 
 type metricsetDoc struct {
-	Trasaction    metricsetTransaction `json:"transaction"`
-	Span          metricsetSpan        `json:"span"`
-	MetricsetName string               `json:"metricset.name"`
+	Trasaction        metricsetTransaction `json:"transaction"`
+	Span              metricsetSpan        `json:"span"`
+	MetricsetName     string               `json:"metricset.name"`
+	MetricsetInterval string               `json:"metricset.interval"`
+	Labels            map[string]string    `json:"labels"`
 }
 
 func unmarshalMetricsetDocs(t testing.TB, hits []estest.SearchHit) []metricsetDoc {
@@ -238,6 +235,10 @@ func unmarshalMetricsetDoc(t testing.TB, hit *estest.SearchHit) metricsetDoc {
 	var doc metricsetDoc
 	if err := hit.UnmarshalSource(&doc); err != nil {
 		t.Fatal(err)
+	}
+	doc.MetricsetName = hit.Fields["metricset.name"][0].(string)
+	if interval := hit.Fields["metricset.interval"]; len(interval) > 0 {
+		doc.MetricsetInterval = interval[0].(string)
 	}
 	return doc
 }

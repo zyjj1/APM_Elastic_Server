@@ -8,11 +8,14 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 19711000,
                 "outcome": "unknown"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "param_location": "728,326"
@@ -31,12 +34,10 @@
                 "name": "redis"
             },
             "span": {
-                "duration": {
-                    "us": 19711
-                },
                 "id": "6e09e8bcefd6b828",
                 "name": "FindDriverIDs",
-                "type": "app"
+                "representative_count": 1,
+                "type": "unknown"
             },
             "timestamp": {
                 "us": 1576827704954062
@@ -52,15 +53,16 @@
                 "name": "Jaeger/Go",
                 "version": "2.20.1"
             },
-            "data_stream.type": "logs",
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
-                "event": "Found drivers",
                 "level": "info"
             },
+            "message": "Found drivers",
             "parent": {
                 "id": "7be2fd98d0973be3"
             },
@@ -86,11 +88,14 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 33732000,
                 "outcome": "failure"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "param_driverID": "T762465C"
@@ -109,12 +114,10 @@
                 "name": "redis"
             },
             "span": {
-                "duration": {
-                    "us": 33732
-                },
                 "id": "333295bfb438ea03",
                 "name": "GetDriver",
-                "type": "app"
+                "representative_count": 1,
+                "type": "unknown"
             },
             "timestamp": {
                 "us": 1576827704973809
@@ -142,7 +145,9 @@
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "driver_id": "T762465C"
@@ -175,11 +180,14 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 9240000,
                 "outcome": "unknown"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "param_driverID": "T762465C"
@@ -198,12 +206,10 @@
                 "name": "redis"
             },
             "span": {
-                "duration": {
-                    "us": 9240
-                },
                 "id": "627c37a97e475c2f",
                 "name": "GetDriver",
-                "type": "app"
+                "representative_count": 1,
+                "type": "unknown"
             },
             "timestamp": {
                 "us": 1576827705007578
@@ -220,11 +226,14 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 12561000,
                 "outcome": "unknown"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "param_driverID": "T712515C"
@@ -243,12 +252,10 @@
                 "name": "redis"
             },
             "span": {
-                "duration": {
-                    "us": 12561
-                },
                 "id": "7bd7663d39c5a847",
                 "name": "GetDriver",
-                "type": "app"
+                "representative_count": 1,
+                "type": "unknown"
             },
             "timestamp": {
                 "us": 1576827705016845
@@ -265,11 +272,14 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 10630000,
                 "outcome": "unknown"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "param_driverID": "T752110C"
@@ -288,12 +298,10 @@
                 "name": "redis"
             },
             "span": {
-                "duration": {
-                    "us": 10630
-                },
                 "id": "6b4051dd2a5e2366",
                 "name": "GetDriver",
-                "type": "app"
+                "representative_count": 1,
+                "type": "unknown"
             },
             "timestamp": {
                 "us": 1576827705029415
@@ -310,11 +318,14 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 13946000,
                 "outcome": "unknown"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "param_driverID": "T757670C"
@@ -333,12 +344,10 @@
                 "name": "redis"
             },
             "span": {
-                "duration": {
-                    "us": 13946
-                },
                 "id": "6df97a86b9b3451b",
                 "name": "GetDriver",
-                "type": "app"
+                "representative_count": 1,
+                "type": "unknown"
             },
             "timestamp": {
                 "us": 1576827705040082
@@ -355,11 +364,14 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 35375000,
                 "outcome": "failure"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "param_driverID": "T781861C"
@@ -378,12 +390,10 @@
                 "name": "redis"
             },
             "span": {
-                "duration": {
-                    "us": 35375
-                },
                 "id": "614811d6c498bfb0",
                 "name": "GetDriver",
-                "type": "app"
+                "representative_count": 1,
+                "type": "unknown"
             },
             "timestamp": {
                 "us": 1576827705054046
@@ -411,7 +421,9 @@
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "driver_id": "T781861C"
@@ -444,11 +456,14 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 11802000,
                 "outcome": "unknown"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "param_driverID": "T781861C"
@@ -467,12 +482,10 @@
                 "name": "redis"
             },
             "span": {
-                "duration": {
-                    "us": 11802
-                },
                 "id": "231604559da84d61",
                 "name": "GetDriver",
-                "type": "app"
+                "representative_count": 1,
+                "type": "unknown"
             },
             "timestamp": {
                 "us": 1576827705089459
@@ -489,11 +502,14 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 12236000,
                 "outcome": "unknown"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "param_driverID": "T705860C"
@@ -512,12 +528,10 @@
                 "name": "redis"
             },
             "span": {
-                "duration": {
-                    "us": 12236
-                },
                 "id": "61f7ecf24d13c36a",
                 "name": "GetDriver",
-                "type": "app"
+                "representative_count": 1,
+                "type": "unknown"
             },
             "timestamp": {
                 "us": 1576827705101278
@@ -534,11 +548,14 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 11986000,
                 "outcome": "unknown"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "param_driverID": "T708771C"
@@ -557,12 +574,10 @@
                 "name": "redis"
             },
             "span": {
-                "duration": {
-                    "us": 11986
-                },
                 "id": "2ef335bad24accc2",
                 "name": "GetDriver",
-                "type": "app"
+                "representative_count": 1,
+                "type": "unknown"
             },
             "timestamp": {
                 "us": 1576827705113531
@@ -579,11 +594,14 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 7311000,
                 "outcome": "unknown"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "param_driverID": "T710624C"
@@ -602,12 +620,10 @@
                 "name": "redis"
             },
             "span": {
-                "duration": {
-                    "us": 7311
-                },
                 "id": "38ec645e7201224d",
                 "name": "GetDriver",
-                "type": "app"
+                "representative_count": 1,
+                "type": "unknown"
             },
             "timestamp": {
                 "us": 1576827705125567
@@ -624,11 +640,14 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 39602000,
                 "outcome": "failure"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "param_driverID": "T752547C"
@@ -647,12 +666,10 @@
                 "name": "redis"
             },
             "span": {
-                "duration": {
-                    "us": 39602
-                },
                 "id": "0242ee3774d9eab1",
                 "name": "GetDriver",
-                "type": "app"
+                "representative_count": 1,
+                "type": "unknown"
             },
             "timestamp": {
                 "us": 1576827705132896
@@ -680,7 +697,9 @@
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "driver_id": "T752547C"
@@ -713,11 +732,14 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 14029000,
                 "outcome": "unknown"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "param_driverID": "T752547C"
@@ -736,12 +758,10 @@
                 "name": "redis"
             },
             "span": {
-                "duration": {
-                    "us": 14029
-                },
                 "id": "6a63d1e81cfc7d95",
                 "name": "GetDriver",
-                "type": "app"
+                "representative_count": 1,
+                "type": "unknown"
             },
             "timestamp": {
                 "us": 1576827705172618
@@ -758,11 +778,14 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 10431000,
                 "outcome": "unknown"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "param_driverID": "T757338C"
@@ -781,12 +804,10 @@
                 "name": "redis"
             },
             "span": {
-                "duration": {
-                    "us": 10431
-                },
                 "id": "2b4c28f02b272f17",
                 "name": "GetDriver",
-                "type": "app"
+                "representative_count": 1,
+                "type": "unknown"
             },
             "timestamp": {
                 "us": 1576827705186670

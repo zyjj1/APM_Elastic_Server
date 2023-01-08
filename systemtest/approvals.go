@@ -24,7 +24,7 @@ import (
 
 	"github.com/tidwall/gjson"
 
-	"github.com/elastic/apm-server/approvaltest"
+	"github.com/elastic/apm-server/internal/approvaltest"
 	"github.com/elastic/apm-server/systemtest/estest"
 )
 
@@ -51,7 +51,6 @@ func ApproveEvents(t testing.TB, name string, hits []estest.SearchHit, dynamic .
 		"observer.hostname",
 		"observer.id",
 		"observer.version",
-		"observer.version_major",
 	}, dynamic...)
 
 	// Sort events for repeatable diffs.
@@ -70,9 +69,13 @@ var apmEventSortFields = []string{
 	"transaction.id",
 	"span.id",
 	"error.id",
-	"timeseries.instance",
+	"transaction.name",
 	"span.destination.service.resource",
-	"@timestamp", // last resort, order is generally guaranteed
+	"transaction.type",
+	"span.type",
+	"service.name",
+	"metricset.interval", // useful to sort different interval metric sets.
+	"@timestamp",         // last resort before _id; order is generally guaranteed
 }
 
 type apmEventSearchHits []estest.SearchHit
@@ -92,6 +95,10 @@ func (hits apmEventSearchHits) Less(i, j int) bool {
 		if ri.Less(rj, true) {
 			return true
 		}
+		if rj.Less(ri, true) {
+			return false
+		}
 	}
-	return false
+	// All _source fields are equivalent, so compare doc _ids.
+	return hits[i].ID < hits[j].ID
 }

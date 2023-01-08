@@ -20,35 +20,33 @@ package benchtest
 import (
 	"context"
 	"crypto/tls"
-	"os"
+	"net/url"
 	"testing"
 
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
-	"go.elastic.co/apm"
-	"go.elastic.co/apm/transport"
+	"github.com/elastic/apm-server/systemtest/loadgen"
+	loadgencfg "github.com/elastic/apm-server/systemtest/loadgen/config"
+	"github.com/elastic/apm-server/systemtest/loadgen/eventhandler"
+
+	"go.elastic.co/apm/v2"
+	"go.elastic.co/apm/v2/transport"
 )
-
-func init() {
-	// Close default tracer, we'll create new ones.
-	apm.DefaultTracer.Close()
-
-	// Disable TLS certificate verification; not important for benchmarking.
-	os.Setenv("ELASTIC_APM_VERIFY_SERVER_CERT", "true")
-}
 
 // NewTracer returns a new Elastic APM tracer, configured
 // to send to the target APM Server.
 func NewTracer(tb testing.TB) *apm.Tracer {
-	httpTransport, err := transport.NewHTTPTransport()
+	httpTransport, err := transport.NewHTTPTransport(transport.HTTPTransportOptions{
+		ServerURLs:  []*url.URL{loadgencfg.Config.ServerURL},
+		SecretToken: loadgencfg.Config.SecretToken,
+	})
 	if err != nil {
 		tb.Fatal(err)
 	}
-	httpTransport.SetServerURL(serverURL)
-	httpTransport.SetSecretToken(*secretToken)
 	tracer, err := apm.NewTracerOptions(apm.TracerOptions{
 		Transport: httpTransport,
 	})
@@ -62,6 +60,8 @@ func NewTracer(tb testing.TB) *apm.Tracer {
 // NewOTLPExporter returns a new OpenTelemetry Go exporter, configured
 // to export to the target APM Server.
 func NewOTLPExporter(tb testing.TB) *otlptrace.Exporter {
+	serverURL := loadgencfg.Config.ServerURL
+	secretToken := loadgencfg.Config.SecretToken
 	endpoint := serverURL.Host
 	if serverURL.Port() == "" {
 		switch serverURL.Scheme {
@@ -75,9 +75,9 @@ func NewOTLPExporter(tb testing.TB) *otlptrace.Exporter {
 		otlptracegrpc.WithEndpoint(endpoint),
 		otlptracegrpc.WithDialOption(grpc.WithBlock()),
 	}
-	if *secretToken != "" {
+	if secretToken != "" {
 		opts = append(opts, otlptracegrpc.WithHeaders(map[string]string{
-			"Authorization": "Bearer " + *secretToken,
+			"Authorization": "Bearer " + secretToken,
 		}))
 	}
 	if serverURL.Scheme == "http" {
@@ -94,4 +94,19 @@ func NewOTLPExporter(tb testing.TB) *otlptrace.Exporter {
 	}
 	tb.Cleanup(func() { exporter.Shutdown(context.Background()) })
 	return exporter
+}
+
+// NewEventHandler creates a eventhandler which loads the files matching the
+// passed regex.
+func NewEventHandler(tb testing.TB, p string, l *rate.Limiter) *eventhandler.Handler {
+	serverCfg := loadgencfg.Config
+	h, err := newEventHandler(p, serverCfg.ServerURL.String(), serverCfg.SecretToken, l)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return h
+}
+
+func newEventHandler(p, url, token string, l *rate.Limiter) (*eventhandler.Handler, error) {
+	return loadgen.NewEventHandler(p, url, token, l)
 }

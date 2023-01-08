@@ -30,11 +30,15 @@ Development instructions are available in the project [readme](README.md#apm-ser
 
 ### Submitting your changes
 
+When submitting changes, add an entry to the [changelog](changelogs/head.asciidoc),
+describing the enhancement or fix that your PR is adding.
+If you also make code changes to the [apmpackage](apmpackage), you also need to update the apmpackage specific changelog.
+
 Please read our [pull request template](.github/pull_request_template.md), which includes the information we care about the most when submitting new changes.
 
 ### Workflow
 
-All feature development and most bug fixes hit the master branch first.
+All feature development and most bug fixes hit the main branch first.
 Pull requests should be reviewed by someone with commit access.
 Once approved,
 the author of the pull request,
@@ -43,26 +47,24 @@ should "Squash and merge".
 
 ### Backports
 
-Before or during review,
-a committer will tag the pull request with the target version(s).
-Once a version is released,
-new features are frozen for that minor version and will not be backported.
-For example,
-if 7.10 was just released,
-the soonest a new feature will be released is 7.11,
-not 7.10.1.
+Before or during review, a committer will label the pull request with `backport-<branch>` for the
+prior release branches to which the changes should be backported. For example, say the next minor
+release is 8.2, and a bug fix is implemented which should be backported to 8.1.next. The pull request
+should be developed against main, with the `backport-8.1` label applied. Once the pull request is merged,
+it will be automatically backported to the 8.1 branch.
+
+Once a version is released, new features are frozen for that minor version and will not be backported.
+For example, if 7.10 was just released, the soonest a new feature will be released is 7.11, not 7.10.1.
+
 Breaking changes may need to wait until the next major version.
 See [semver](https://semver.org/) for general information about major/minor versions.
-Bug fixes may be backported on a case by case basis.
-The committer of the original pull request,
-typically the author,
-is responsible for backporting the changes to the target versions.
-Each backport is performed through its own pull request,
-tagged with the target version and "backport",
-and merged with "Create a merge commit".
+
+Bug fixes may be backported on a case by case basis. The committer of the original pull request,
+typically the author, is responsible for backporting the changes to the target versions.
 Straightforward backports may be merged without review.
 
-[Backport](https://github.com/sqren/backport) is recommended for automating the backport process.
+As an alternative to backport automation through `backport-<branch>` labels (e.g. when automation fails),
+we sometimes use [Backport](https://github.com/sqren/backport).
 
 ### Examples
 

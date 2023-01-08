@@ -19,13 +19,13 @@ package apmservertest
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -33,11 +33,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"go.elastic.co/apm"
-	"go.elastic.co/apm/transport"
+	"go.elastic.co/apm/v2"
+	"go.elastic.co/apm/v2/transport"
 	"go.uber.org/zap/zapcore"
 )
 
@@ -59,6 +60,15 @@ type Server struct {
 	// The temporary directory will be removed when the server is closed.
 	Dir string
 
+	// Log holds an optional io.Writer to which the process's Stderr will
+	// be written, in addition to being available through the Server.Logs
+	// field.
+	//
+	// Log is set by NewServerTB and NewUnstartedServerTB, and will be nil
+	// for calls to NewUnstartedServer. Callers of NewUnstartedServer may
+	// set Log prior to calling Start.
+	Log io.Writer
+
 	// BeatUUID will be populated with the server's Beat UUID after Start
 	// returns successfully. This can be used to search for documents
 	// corresponding to this test server instance.
@@ -78,12 +88,6 @@ type Server struct {
 	// http[s]://ipaddr:port with no trailing slash.
 	URL string
 
-	// JaegerGRPCAddr holds the address for the Jaeger gRPC server, if enabled.
-	JaegerGRPCAddr string
-
-	// JaegerHTTPURL holds the base URL for Jaeger HTTP, if enabled.
-	JaegerHTTPURL string
-
 	// TLS is optional TLS client configuration, populated with a new config
 	// after TLS is started.
 	TLS *tls.Config
@@ -97,28 +101,61 @@ type Server struct {
 	// test environments.
 	EventMetadataFilter EventMetadataFilter
 
-	tb   testing.TB
 	args []string
 	cmd  *ServerCmd
+
+	mu      sync.Mutex
+	tracers []*apm.Tracer
 }
 
-// NewServer returns a started Server, passings args to the apm-server command.
-// The server's Close method will be called when the test ends.
-func NewServer(tb testing.TB, args ...string) *Server {
-	s := NewUnstartedServer(tb, args...)
+// NewServerTB returns a started Server, passings args to the apm-server command.
+// The server's Close method will be called when the test ends, and logs will be
+// written under apm-server/systemtest/logs/<test-name>/.
+func NewServerTB(tb testing.TB, args ...string) *Server {
+	s := NewUnstartedServerTB(tb, args...)
 	if err := s.Start(); err != nil {
 		tb.Fatal(err)
 	}
 	return s
 }
 
-// NewUnstartedServer returns an unstarted Server, passing args to the
-// apm-server command.
-func NewUnstartedServer(tb testing.TB, args ...string) *Server {
+// NewUnstartedServerTB returns an unstarted Server, passing args to the apm-server
+// command. The server's Close method will be called when the test ends, and logs
+// will be written under apm-server/systemtest/logs/<test-name>/.
+func NewUnstartedServerTB(tb testing.TB, args ...string) *Server {
+	s := NewUnstartedServer(args...)
+	logfile := createLogfile(tb, "apm-server")
+	s.Log = logfile
+	tb.Cleanup(func() {
+		defer logfile.Close()
+		if tb.Failed() {
+			tb.Logf("log file: %s", logfile.Name())
+		}
+
+		// Call the server's Close method in a background goroutine,
+		// and wait for up to 10 seconds for it to complete.
+		errc := make(chan error)
+		go func() { errc <- s.Close() }()
+		select {
+		case <-errc:
+			close(errc)
+		case <-time.After(10 * time.Second):
+			// Channel receive on errc never happened. Start up a
+			// goroutine to receive on errc and then clean up the
+			// associated resources.
+			go func() { <-errc; close(errc) }()
+		}
+	})
+	return s
+}
+
+// NewUnstartedServer returns an unstarted Server, passing args to the apm-server
+// command. The server's Close method must be called to clean up any resources
+// created by Start.
+func NewUnstartedServer(args ...string) *Server {
 	return &Server{
 		Config:              DefaultConfig(),
 		EventMetadataFilter: DefaultMetadataFilter{},
-		tb:                  tb,
 		args:                args,
 	}
 }
@@ -144,8 +181,6 @@ func (s *Server) start(tls bool) error {
 	extra := map[string]interface{}{
 		// These are config attributes that we always specify,
 		// as the testing framework relies on them being set.
-		"logging.ecs":               true,
-		"logging.json":              true,
 		"logging.level":             "debug",
 		"logging.to_stderr":         true,
 		"apm-server.expvar.enabled": true,
@@ -169,7 +204,7 @@ func (s *Server) start(tls bool) error {
 	args := append(cfgargs, s.args...)
 	args = append(args, "--path.home", ".") // working directory, s.Dir
 
-	s.cmd = ServerCommand("run", args...)
+	s.cmd = ServerCommand(context.Background(), "run", args...)
 	s.cmd.Dir = s.Dir
 
 	// This speeds up tests by forcing the self-instrumentation
@@ -190,29 +225,15 @@ func (s *Server) start(tls bool) error {
 		return err
 	}
 	s.Dir = s.cmd.Dir
-	s.tb.Cleanup(func() { s.Close() })
 
-	logfile := createLogfile(s.tb, "apm-server")
-	closeLogfile := true
-	s.tb.Cleanup(func() {
-		if s.tb.Failed() {
-			s.tb.Logf("log file: %s", logfile.Name())
-		}
-	})
-	defer func() {
-		if closeLogfile {
-			// Server failed to start, close the log file.
-			logfile.Close()
-		}
-	}()
-
-	// Write the apm-server command line to the top of the log file.
-	s.printCmdline(logfile, args)
-	closeLogfile = false
-	go func() {
-		defer logfile.Close()
-		s.consumeStderr(io.TeeReader(stderr, logfile))
-	}()
+	// Consume the process's stderr.
+	var stderrReader io.Reader = stderr
+	if s.Log != nil {
+		// Write the apm-server command line to the top of the log.
+		s.printCmdline(s.Log, args)
+		stderrReader = io.TeeReader(stderrReader, s.Log)
+	}
+	go s.consumeStderr(stderrReader)
 
 	logs := s.Logs.Iterator()
 	defer logs.Close()
@@ -231,7 +252,7 @@ func (s *Server) initTLS() (serverCertPath, serverKeyPath, caCertPath string, _ 
 	// Load a self-signed server certificate for testing TLS encryption.
 	serverCertPath = filepath.Join(repoRoot, "systemtest", "apmservertest", "cert.pem")
 	serverKeyPath = filepath.Join(repoRoot, "systemtest", "apmservertest", "key.pem")
-	serverCertBytes, err := ioutil.ReadFile(serverCertPath)
+	serverCertBytes, err := os.ReadFile(serverCertPath)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -243,11 +264,11 @@ func (s *Server) initTLS() (serverCertPath, serverKeyPath, caCertPath string, _ 
 	// Load a self-signed client certificate for testing TLS client certificate auth.
 	clientCertPath := filepath.Join(repoRoot, "systemtest", "apmservertest", "client_cert.pem")
 	clientKeyPath := filepath.Join(repoRoot, "systemtest", "apmservertest", "client_key.pem")
-	clientCertBytes, err := ioutil.ReadFile(clientCertPath)
+	clientCertBytes, err := os.ReadFile(clientCertPath)
 	if err != nil {
 		return "", "", "", err
 	}
-	clientKeyBytes, err := ioutil.ReadFile(clientKeyPath)
+	clientKeyBytes, err := os.ReadFile(clientKeyPath)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -259,6 +280,7 @@ func (s *Server) initTLS() (serverCertPath, serverKeyPath, caCertPath string, _ 
 	s.TLS = &tls.Config{
 		Certificates: []tls.Certificate{clientCert},
 		RootCAs:      certpool,
+		MinVersion:   tls.VersionTLS12,
 	}
 	return serverCertPath, serverKeyPath, clientCertPath, nil
 }
@@ -276,27 +298,11 @@ func (s *Server) printCmdline(w io.Writer, args []string) {
 		}
 	}
 	if _, err := buf.WriteTo(w); err != nil {
-		s.tb.Fatal(err)
+		panic(err)
 	}
 }
 
 func (s *Server) waitUntilListening(tls bool, logs *LogEntryIterator) error {
-	var (
-		elasticHTTPListeningAddr string
-		jaegerGRPCListeningAddr  string
-		jaegerHTTPListeningAddr  string
-	)
-
-	prefixes := map[string]*string{"Listening on": &elasticHTTPListeningAddr}
-	if s.Config.Jaeger != nil {
-		if s.Config.Jaeger.GRPCEnabled {
-			prefixes["Listening for Jaeger gRPC requests on"] = &jaegerGRPCListeningAddr
-		}
-		if s.Config.Jaeger.HTTPEnabled {
-			prefixes["Listening for Jaeger HTTP requests on"] = &jaegerHTTPListeningAddr
-		}
-	}
-
 	// First wait for the Beat UUID and server version to be logged.
 	for entry := range logs.C() {
 		if entry.Level != zapcore.InfoLevel || (entry.Message != "Beat info" && entry.Message != "Build info") {
@@ -321,6 +327,7 @@ func (s *Server) waitUntilListening(tls bool, logs *LogEntryIterator) error {
 		}
 	}
 
+	var elasticHTTPListeningAddr string
 	for entry := range logs.C() {
 		if entry.Level != zapcore.InfoLevel {
 			continue
@@ -330,39 +337,29 @@ func (s *Server) waitUntilListening(tls bool, logs *LogEntryIterator) error {
 			continue
 		}
 		prefix, addr := entry.Message[:sep], strings.TrimSpace(entry.Message[sep+1:])
-		paddr, ok := prefixes[prefix]
-		if !ok {
+		if prefix != "Listening on" {
 			continue
 		}
 		if _, _, err := net.SplitHostPort(addr); err != nil {
 			return fmt.Errorf("invalid listening address %q: %w", addr, err)
 		}
-		*paddr = addr
-		delete(prefixes, prefix)
-		if len(prefixes) == 0 {
-			break
-		}
+		elasticHTTPListeningAddr = addr
+		break
 	}
 
-	if len(prefixes) == 0 {
+	if elasticHTTPListeningAddr != "" {
 		urlScheme := "http"
 		if tls {
 			urlScheme = "https"
 		}
-		s.URL = makeURLString(urlScheme, elasticHTTPListeningAddr)
-		if s.Config.Jaeger != nil {
-			s.JaegerGRPCAddr = jaegerGRPCListeningAddr
-			if s.Config.Jaeger.HTTPEnabled {
-				s.JaegerHTTPURL = makeURLString(urlScheme, jaegerHTTPListeningAddr)
-			}
-		}
+		s.URL = (&url.URL{Scheme: urlScheme, Host: elasticHTTPListeningAddr}).String()
 		return nil
 	}
 
 	// Didn't find message, server probably exited...
 	if err := s.Close(); err != nil {
 		if err, ok := err.(*exec.ExitError); ok && err != nil {
-			stderr, _ := ioutil.ReadAll(s.Stderr)
+			stderr, _ := io.ReadAll(s.Stderr)
 			err.Stderr = stderr
 		}
 		return err
@@ -428,14 +425,25 @@ func (s *Server) consumeStderr(procStderr io.Reader) {
 // Close shuts down the server gracefully if possible, and forcefully otherwise.
 //
 // Close must be called in order to clean up any resources created for running
-// the server.
+// the server. Calling Close on an unstarted server is a no-op.
 func (s *Server) Close() error {
-	if s.cmd != nil {
-		if err := interruptProcess(s.cmd.Process); err != nil {
-			s.cmd.Process.Kill()
-		}
+	if s.cmd == nil {
+		return nil
+	}
+	s.closeTracers()
+	if err := interruptProcess(s.cmd.Process); err != nil {
+		s.cmd.Process.Kill()
 	}
 	return s.Wait()
+}
+
+func (s *Server) closeTracers() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, tracer := range s.tracers {
+		tracer.Close()
+	}
+	s.tracers = nil
 }
 
 // Kill forcefully shuts down the server.
@@ -473,29 +481,33 @@ func (s *Server) Wait() error {
 // Tracer returns a new apm.Tracer, configured with the server's URL and secret
 // token if any. This must only be called after the server has been started.
 //
-// The Tracer will be closed when the test ends.
+// The Tracer will be closed when the server is closed.
 func (s *Server) Tracer() *apm.Tracer {
 	serverURL, err := url.Parse(s.URL)
 	if err != nil {
-		s.tb.Fatal(err)
+		panic(err)
 	}
-	httpTransport, err := transport.NewHTTPTransport()
+	httpTransport, err := transport.NewHTTPTransport(transport.HTTPTransportOptions{
+		ServerURLs:      []*url.URL{serverURL},
+		SecretToken:     s.Config.AgentAuth.SecretToken,
+		TLSClientConfig: s.TLS,
+	})
 	if err != nil {
-		s.tb.Fatal(err)
+		panic(err)
 	}
-	httpTransport.SetServerURL(serverURL)
-	httpTransport.SetSecretToken(s.Config.AgentAuth.SecretToken)
-	httpTransport.Client.Transport.(*http.Transport).TLSClientConfig = s.TLS
 
-	var transport transport.Transport = httpTransport
+	opts := apm.TracerOptions{Transport: httpTransport}
 	if s.EventMetadataFilter != nil {
-		transport = NewFilteringTransport(httpTransport, s.EventMetadataFilter)
+		opts.Transport = NewFilteringTransport(httpTransport, s.EventMetadataFilter)
 	}
-	tracer, err := apm.NewTracerOptions(apm.TracerOptions{Transport: transport})
+	tracer, err := apm.NewTracerOptions(opts)
 	if err != nil {
-		s.tb.Fatal(err)
+		panic(err)
 	}
-	s.tb.Cleanup(tracer.Close)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tracers = append(s.tracers, tracer)
 	return tracer
 }
 
@@ -504,17 +516,63 @@ func (s *Server) Tracer() *apm.Tracer {
 func (s *Server) GetExpvar() *Expvar {
 	resp, err := http.Get(s.URL + "/debug/vars")
 	if err != nil {
-		s.tb.Fatal(err)
+		panic(err)
 	}
 	defer resp.Body.Close()
 	expvar, err := decodeExpvar(resp.Body)
 	if err != nil {
-		s.tb.Fatal(err)
+		panic(err)
 	}
 	return expvar
 }
 
-func makeURLString(scheme, host string) string {
-	u := url.URL{Scheme: scheme, Host: host}
-	return u.String()
+// WaitForPublishReady polls the server's "GET /" endpoint, waiting for it to
+// indicate it is in the publish-ready state, or for the context to be canceled.
+func (s *Server) WaitForPublishReady(ctx context.Context) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			ready, err := s.isPublishReady()
+			if err != nil {
+				// Errors are not expected, as the server
+				// should be operational by the time Start
+				// returns.
+				return err
+			}
+			if ready {
+				return nil
+			}
+		}
+	}
+}
+
+func (s *Server) isPublishReady() (bool, error) {
+	req, err := http.NewRequest(http.MethodGet, s.URL+"/", nil)
+	if err != nil {
+		return false, err
+	}
+	if secretToken := s.Config.AgentAuth.SecretToken; secretToken != "" {
+		req.Header.Set("Authorization", "Bearer "+secretToken)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	var apmResp struct {
+		BuildDate    string `json:"build_date"`
+		BuildSHA     string `json:"build_sha"`
+		PublishReady bool   `json:"publish_ready"`
+		Version      string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apmResp); err != nil {
+		return false, err
+	}
+	return apmResp.PublishReady, nil
 }

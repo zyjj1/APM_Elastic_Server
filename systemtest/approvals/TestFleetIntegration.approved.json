@@ -9,30 +9,27 @@
             "data_stream.dataset": "apm",
             "data_stream.namespace": "default",
             "data_stream.type": "traces",
-            "ecs": {
-                "version": "dynamic"
-            },
             "event": {
                 "agent_id_status": "missing",
                 "ingested": "dynamic",
-                "outcome": "unknown"
+                "outcome": "success",
+                "success_count": 1
             },
             "host": {
                 "architecture": "i386",
                 "hostname": "beowulf",
-                "ip": "10.11.12.13",
+                "ip": [
+                    "10.11.12.13"
+                ],
                 "name": "beowulf",
                 "os": {
                     "platform": "minix"
                 }
             },
             "observer": {
-                "ephemeral_id": "dynamic",
                 "hostname": "dynamic",
-                "id": "dynamic",
                 "type": "apm-server",
-                "version": "dynamic",
-                "version_major": "dynamic"
+                "version": "dynamic"
             },
             "process": {
                 "pid": 1,
@@ -68,6 +65,7 @@
                 },
                 "id": "dynamic",
                 "name": "name",
+                "representative_count": 1,
                 "sampled": true,
                 "span_count": {
                     "dropped": 0,

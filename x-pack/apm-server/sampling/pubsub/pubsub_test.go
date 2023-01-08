@@ -1,6 +1,6 @@
 // Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
-// or more contributor license agreements. Licensed under the Elastic License;
-// you may not use this file except in compliance with the Elastic License.
+// or more contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
 
 package pubsub_test
 
@@ -22,12 +22,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/elastic/apm-server/elasticsearch"
 	"github.com/elastic/apm-server/x-pack/apm-server/sampling/pubsub"
+	"github.com/elastic/go-elasticsearch/v8"
 )
 
 const (
-	beatID = "beat_id"
+	serverID = "server_id"
 )
 
 var (
@@ -91,12 +91,14 @@ func TestPublishSampledTraceIDs(t *testing.T) {
 					break
 				}
 				assert.NoError(t, err)
-				assert.Equal(t, map[string]interface{}{"create": map[string]interface{}{}}, action)
+				assert.Equal(t, map[string]interface{}{"create": map[string]interface{}{
+					"_index": dataStream.String(),
+				}}, action)
 
 				doc := make(map[string]interface{})
 				assert.NoError(t, d.Decode(&doc))
 				assert.Contains(t, doc, "@timestamp")
-				assert.Equal(t, map[string]interface{}{"id": beatID}, doc["observer"])
+				assert.Equal(t, map[string]interface{}{"ephemeral_id": serverID}, doc["agent"])
 				assert.Equal(t, dataStream.Type, doc["data_stream.type"])
 				assert.Equal(t, dataStream.Dataset, doc["data_stream.dataset"])
 				assert.Equal(t, dataStream.Namespace, doc["data_stream.namespace"])
@@ -111,7 +113,7 @@ func TestPublishSampledTraceIDs(t *testing.T) {
 				delete(doc, "data_stream.type")
 				delete(doc, "data_stream.dataset")
 				delete(doc, "data_stream.namespace")
-				delete(doc, "observer")
+				delete(doc, "agent")
 				delete(doc, "trace")
 
 				assert.Empty(t, doc) // no other fields in doc
@@ -130,7 +132,7 @@ func TestSubscribeSampledTraceIDs(t *testing.T) {
 
 	assertSearchQueryFilterEqual := func(filter, body string) {
 		expect := fmt.Sprintf(
-			`{"query":{"bool":{"filter":%s,"must_not":{"term":{"observer.id":{"value":"beat_id"}}}}},"seq_no_primary_term":true,"size":1000,"sort":[{"_seq_no":"asc"}],"track_total_hits":false}`,
+			`{"query":{"bool":{"filter":%s,"must_not":{"term":{"agent.ephemeral_id":{"value":"server_id"}}}}},"seq_no_primary_term":true,"size":1000,"sort":[{"_seq_no":"asc"}],"track_total_hits":false}`,
 			filter,
 		)
 		assert.Equal(t, expect, body)
@@ -151,7 +153,7 @@ func TestSubscribeSampledTraceIDs(t *testing.T) {
 			// The previous _search responded non-empty, and the greatest
 			// _seq_no was not equal to the global checkpoint: _search again
 			// after _seq_no 2.
-			assertSearchQueryFilterEqual(`[{"range":{"_seq_no":{"lte":99}}}]`, body)
+			assertSearchQueryFilterEqual(`[{"range":{"_seq_no":{"lte":99}}},{"range":{"_seq_no":{"gt":2}}}]`, body)
 			ms.searchResults = []searchHit{
 				newSearchHit(3, "trace_3"),
 				newSearchHit(98, "trace_98"),
@@ -161,7 +163,7 @@ func TestSubscribeSampledTraceIDs(t *testing.T) {
 			// _seq_no was not equal to the global checkpoint: _search again
 			// after _seq_no 98. This time we respond with no hits, so the
 			// subscriber goes back to sleep.
-			assertSearchQueryFilterEqual(`[{"range":{"_seq_no":{"lte":99}}}]`, body)
+			assertSearchQueryFilterEqual(`[{"range":{"_seq_no":{"lte":99}}},{"range":{"_seq_no":{"gt":98}}}]`, body)
 			ms.searchResults = nil
 		case 4:
 			// The search now has an exclusive lower bound of the previously
@@ -173,10 +175,24 @@ func TestSubscribeSampledTraceIDs(t *testing.T) {
 			}
 		case 5:
 			// After advancing the global checkpoint, a new search will be made
-			// with increased lower and upper bounds.
-			assertSearchQueryFilterEqual(`[{"range":{"_seq_no":{"lte":100}}},{"range":{"_seq_no":{"gt":99}}}]`, body)
-			ms.searchResults = []searchHit{
-				newSearchHit(100, "trace_100"),
+			// with increased lower and upper bounds. Each search can return at
+			// most 1000 results.
+			assertSearchQueryFilterEqual(`[{"range":{"_seq_no":{"lte":1200}}},{"range":{"_seq_no":{"gt":99}}}]`, body)
+			ms.searchResults = []searchHit{}
+			for i := 100; i <= 1100; i++ {
+				ms.searchResults = append(ms.searchResults,
+					newSearchHit(int64(i), fmt.Sprintf("trace_%d", i)),
+				)
+			}
+		case 6:
+			// The previous search returned the maximum size, so another search
+			// is made for the remainder.
+			assertSearchQueryFilterEqual(`[{"range":{"_seq_no":{"lte":1200}}},{"range":{"_seq_no":{"gt":1100}}}]`, body)
+			ms.searchResults = []searchHit{}
+			for i := 1101; i <= 1200; i++ {
+				ms.searchResults = append(ms.searchResults,
+					newSearchHit(int64(i), fmt.Sprintf("trace_%d", i)),
+				)
 			}
 		}
 	}
@@ -209,9 +225,11 @@ func TestSubscribeSampledTraceIDs(t *testing.T) {
 
 	// Advance global checkpoint, expect a new search and new position to be reported.
 	ms.statsGlobalCheckpointMu.Lock()
-	ms.statsGlobalCheckpoint = 100
+	ms.statsGlobalCheckpoint = 1200
 	ms.statsGlobalCheckpointMu.Unlock()
-	assert.Equal(t, "trace_100", expectValue(t, ids))
+	for i := 100; i <= 1200; i++ {
+		assert.Equal(t, fmt.Sprintf("trace_%d", i), expectValue(t, ids))
+	}
 	select {
 	case pos2 := <-positions:
 		assert.NotEqual(t, pos, pos2)
@@ -273,15 +291,15 @@ func newSubscriberPosition(t testing.TB, srv *httptest.Server, pos pubsub.Subscr
 }
 
 func newPubsub(t testing.TB, srv *httptest.Server, flushInterval, searchInterval time.Duration) *pubsub.Pubsub {
-	client, err := elasticsearch.NewClient(&elasticsearch.Config{
-		Hosts: []string{srv.Listener.Addr().String()},
+	client, err := elasticsearch.NewClient(elasticsearch.Config{
+		Addresses: []string{srv.URL},
 	})
 	require.NoError(t, err)
 
 	sub, err := pubsub.New(pubsub.Config{
 		Client:         client,
 		DataStream:     dataStream,
-		BeatID:         beatID,
+		ServerID:       serverID,
 		FlushInterval:  flushInterval,
 		SearchInterval: searchInterval,
 	})
@@ -334,12 +352,16 @@ func newMockElasticsearchServer(t testing.TB) *mockElasticsearchServer {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		panic(fmt.Errorf("unexpected URL path: %s", r.URL.Path))
 	})
-	mux.HandleFunc("/"+dataStream.String()+"/_bulk", m.handleBulk)
+	mux.HandleFunc("/_bulk", m.handleBulk)
 	mux.HandleFunc("/"+dataStream.String()+"/_stats/get", m.handleStats)
 	mux.HandleFunc("/index_name/_refresh", m.handleRefresh)
 	mux.HandleFunc("/index_name/_search", m.handleSearch)
+	var withElasticProduct http.HandlerFunc = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		mux.ServeHTTP(w, r)
+	}
 
-	m.srv = httptest.NewServer(mux)
+	m.srv = httptest.NewServer(withElasticProduct)
 	t.Cleanup(m.srv.Close)
 	return m
 }
@@ -431,15 +453,15 @@ type searchHit struct {
 
 func newSearchHit(seqNo int64, traceID string) searchHit {
 	var source traceIDDocument
-	source.Observer.ID = "another_beat_id"
+	source.Agent.EphemeralID = "another_server_id"
 	source.Trace.ID = traceID
 	return searchHit{SeqNo: seqNo, Source: source, Sort: []int64{seqNo}}
 }
 
 type traceIDDocument struct {
-	Observer struct {
-		ID string `json:"id"`
-	} `json:"observer"`
+	Agent struct {
+		EphemeralID string `json:"ephemeral_id"`
+	} `json:"agent"`
 
 	Trace struct {
 		ID string `json:"id"`

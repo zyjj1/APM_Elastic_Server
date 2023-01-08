@@ -1,6 +1,6 @@
 // Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
-// or more contributor license agreements. Licensed under the Elastic License;
-// you may not use this file except in compliance with the Elastic License.
+// or more contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
 
 package pubsub
 
@@ -10,23 +10,28 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/elastic/beats/v7/libbeat/logp"
-
-	"github.com/elastic/apm-server/elasticsearch"
+	"github.com/elastic/elastic-agent-libs/logp"
+	"github.com/elastic/go-elasticsearch/v8"
 )
 
 // Config holds configuration for Pubsub.
 type Config struct {
 	// Client holds an Elasticsearch client, for indexing and searching for
 	// trace ID observations.
-	Client elasticsearch.Client
+	Client *elasticsearch.Client
+
+	// CompressionLevel holds the gzip compression level to use when bulk indexing,
+	// from 0 (gzip.NoCompression) to 9 (gzip.BestCompression). Higher values provide
+	// greater compression, at a greater cost of CPU. The special value -1
+	// (gzip.DefaultCompression) selects the default compression level.
+	CompressionLevel int
 
 	// DataStream holds the data stream.
 	DataStream DataStreamConfig
 
-	// BeatID holds the APM Server's unique ID, used for filtering out
-	// local observations in the subscriber.
-	BeatID string
+	// ServerID holds the APM Server's unique ID, used for filtering out
+	// local observations in the subscriber. ServerID may be ephemeral.
+	ServerID string
 
 	// SearchInterval holds the time between searches initiated by the subscriber.
 	//
@@ -69,8 +74,8 @@ func (config Config) Validate() error {
 	if err := config.DataStream.Validate(); err != nil {
 		return errors.Wrap(err, "DataStream unspecified or invalid")
 	}
-	if config.BeatID == "" {
-		return errors.New("BeatID unspecified")
+	if config.ServerID == "" {
+		return errors.New("ServerID unspecified")
 	}
 	if config.SearchInterval <= 0 {
 		return errors.New("SearchInterval unspecified or negative")

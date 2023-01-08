@@ -1,6 +1,6 @@
 // Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
-// or more contributor license agreements. Licensed under the Elastic License;
-// you may not use this file except in compliance with the Elastic License.
+// or more contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
 
 package pubsub
 
@@ -8,21 +8,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 
 	"github.com/pkg/errors"
 
-	"github.com/elastic/go-elasticsearch/v7/esapi"
-
-	"github.com/elastic/apm-server/elasticsearch"
+	"github.com/elastic/go-elasticsearch/v8"
+	"github.com/elastic/go-elasticsearch/v8/esapi"
 )
 
 // getGlobalCheckpoints returns the current global checkpoint for each index
 // underlying dataStream. Each index is required to have a single (primary) shard.
 func getGlobalCheckpoints(
 	ctx context.Context,
-	client elasticsearch.Client,
+	client *elasticsearch.Client,
 	dataStream string,
 ) (map[string]int64, error) {
 	indexGlobalCheckpoints := make(map[string]int64)
@@ -43,7 +42,7 @@ func getGlobalCheckpoints(
 			// Data stream does not yet exist.
 			return indexGlobalCheckpoints, nil
 		}
-		message, _ := ioutil.ReadAll(resp.Body)
+		message, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("index stats request failed: %s", message)
 	}
 

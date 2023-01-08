@@ -1,6 +1,6 @@
 // Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
-// or more contributor license agreements. Licensed under the Elastic License;
-// you may not use this file except in compliance with the Elastic License.
+// or more contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
 
 package pubsub_test
 
@@ -11,15 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/elastic/apm-server/elasticsearch"
 	"github.com/elastic/apm-server/x-pack/apm-server/sampling/pubsub"
+	"github.com/elastic/go-elasticsearch/v8"
 )
 
 func TestConfigInvalid(t *testing.T) {
-	var elasticsearchClient struct {
-		elasticsearch.Client
-	}
-
 	type test struct {
 		config pubsub.Config
 		err    string
@@ -30,12 +26,12 @@ func TestConfigInvalid(t *testing.T) {
 		err:    "Client unspecified",
 	}, {
 		config: pubsub.Config{
-			Client: elasticsearchClient,
+			Client: &elasticsearch.Client{},
 		},
 		err: "DataStream unspecified or invalid: Type unspecified",
 	}, {
 		config: pubsub.Config{
-			Client: elasticsearchClient,
+			Client: &elasticsearch.Client{},
 			DataStream: pubsub.DataStreamConfig{
 				Type: "type",
 			},
@@ -43,7 +39,7 @@ func TestConfigInvalid(t *testing.T) {
 		err: "DataStream unspecified or invalid: Dataset unspecified",
 	}, {
 		config: pubsub.Config{
-			Client: elasticsearchClient,
+			Client: &elasticsearch.Client{},
 			DataStream: pubsub.DataStreamConfig{
 				Type:    "type",
 				Dataset: "dataset",
@@ -52,34 +48,34 @@ func TestConfigInvalid(t *testing.T) {
 		err: "DataStream unspecified or invalid: Namespace unspecified",
 	}, {
 		config: pubsub.Config{
-			Client: elasticsearchClient,
+			Client: &elasticsearch.Client{},
 			DataStream: pubsub.DataStreamConfig{
 				Type:      "type",
 				Dataset:   "dataset",
 				Namespace: "namespace",
 			},
 		},
-		err: "BeatID unspecified",
+		err: "ServerID unspecified",
 	}, {
 		config: pubsub.Config{
-			Client: elasticsearchClient,
+			Client: &elasticsearch.Client{},
 			DataStream: pubsub.DataStreamConfig{
 				Type:      "type",
 				Dataset:   "dataset",
 				Namespace: "namespace",
 			},
-			BeatID: "beat_id",
+			ServerID: "server_id",
 		},
 		err: "SearchInterval unspecified or negative",
 	}, {
 		config: pubsub.Config{
-			Client: elasticsearchClient,
+			Client: &elasticsearch.Client{},
 			DataStream: pubsub.DataStreamConfig{
 				Type:      "type",
 				Dataset:   "dataset",
 				Namespace: "namespace",
 			},
-			BeatID:         "beat_id",
+			ServerID:       "server_id",
 			SearchInterval: time.Second,
 		},
 		err: "FlushInterval unspecified or negative",

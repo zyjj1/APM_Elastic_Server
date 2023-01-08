@@ -24,8 +24,8 @@ import (
 	"encoding/json"
 	"io"
 
-	"go.elastic.co/apm/model"
-	"go.elastic.co/apm/transport"
+	"go.elastic.co/apm/v2/model"
+	"go.elastic.co/apm/v2/transport"
 	"go.elastic.co/fastjson"
 )
 
@@ -126,4 +126,12 @@ func (DefaultMetadataFilter) FilterEventMetadata(m *EventMetadata) {
 	m.Service.Runtime.Version = "2.0"
 	m.Service.Node = nil
 	m.Service.Name = "systemtest"
+}
+
+// EventMetadataFilterFunc is a function type that implements EventMetadataFilter.
+type EventMetadataFilterFunc func(*EventMetadata)
+
+// FilterEventMetadata calls f(m).
+func (f EventMetadataFilterFunc) FilterEventMetadata(m *EventMetadata) {
+	f(m)
 }

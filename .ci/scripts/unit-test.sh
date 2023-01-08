@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-set -exuo pipefail
+set -exo pipefail
 
 source ./script/common.bash
 
 jenkins_setup
 
-export OUT_FILE="build/test-report.out"
-export COV_DIR="build/coverage"
+OUTPUT_DIR="$(pwd)/build"
+OUTPUT_TEST_JSON_FILE="$OUTPUT_DIR/TEST-go-unit.json"
+OUTPUT_TEST_JUNIT_FILE="$OUTPUT_DIR/TEST-go-unit.xml"
+OUTPUT_COV_RAW_FILE="$OUTPUT_DIR/TEST-go-unit.cov"
+OUTPUT_COV_HTML_FILE="$OUTPUT_DIR/TEST-go-unit.html"
+OUTPUT_COV_XML_FILE="$OUTPUT_DIR/TEST-go-unit.xml"
 
-mkdir -p ${COV_DIR}
+export GOTESTFLAGS="-v -json -covermode=atomic -coverprofile=$OUTPUT_COV_RAW_FILE"
 
-make update
-go install -modfile=tools/go.mod github.com/jstemmer/go-junit-report
-go install -modfile=tools/go.mod github.com/t-yuki/gocover-cobertura
+mkdir "$OUTPUT_DIR"
+go run -modfile=tools/go.mod gotest.tools/gotestsum \
+	--no-color -f standard-quiet --jsonfile "$OUTPUT_TEST_JSON_FILE" --junitfile "$OUTPUT_TEST_JUNIT_FILE" \
+	--raw-command -- make test
 
-(go test -race -covermode=atomic -coverprofile=${COV_DIR}/unit.cov -v ./... 2>&1 | tee ${OUT_FILE}) || echo -e "\033[31;49mTests FAILED\033[0m"
+go run -modfile=tools/go.mod github.com/t-yuki/gocover-cobertura < "${OUTPUT_COV_RAW_FILE}" > "${OUTPUT_COV_XML_FILE}"
 
-cat ${OUT_FILE} | go-junit-report > build/junit-apm-server-report.xml
-go tool cover -html="${COV_DIR}/unit.cov" -o "${COV_DIR}/coverage-unit-report.html"
-gocover-cobertura < "${COV_DIR}/unit.cov" > "${COV_DIR}/coverage-unit-report.xml"
+go tool cover -html "$OUTPUT_COV_RAW_FILE" -o "$OUTPUT_COV_HTML_FILE"

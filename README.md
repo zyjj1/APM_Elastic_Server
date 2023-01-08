@@ -1,5 +1,5 @@
-[![Build Status](https://apm-ci.elastic.co/buildStatus/icon?job=apm-server/apm-server-mbp/master)](https://apm-ci.elastic.co/job/apm-server/job/apm-server-mbp/view/change-requests/job/master/)
-[![codecov.io](https://codecov.io/github/elastic/apm-server/coverage.svg?branch=master)](https://codecov.io/github/elastic/apm-server?branch=master)
+[![Build Status](https://apm-ci.elastic.co/buildStatus/icon?job=apm-server/apm-server-mbp/main)](https://apm-ci.elastic.co/job/apm-server/job/apm-server-mbp/view/change-requests/job/main/)
+[![Smoke Tests on ESS](https://apm-ci.elastic.co/buildStatus/icon?job=apm-server/smoke-tests-ess-mbp/main&subject=smoke%20tests)](https://apm-ci.elastic.co/job/apm-server/job/smoke-tests-ess-mbp/job/main/)
 
 # APM Server
 
@@ -16,14 +16,15 @@ To get started with APM, see our [Quick start guide](https://www.elastic.co/guid
 
 ### Requirements
 
-* [Golang](https://golang.org/dl/) 1.16.x
+* [Go][golang-download] 1.19.x
+
+[golang-download]: https://golang.org/dl/
 
 ### Install
 
 * Fork the repo with the GitHub interface and clone it:
 
 ```
-cd ${GOPATH}/src/github.com/elastic/
 git clone git@github.com:[USER]/apm-server.git
 ```
 
@@ -44,13 +45,11 @@ in the same directory with the name apm-server.
 make
 ```
 
-You also need to create all files needed by the APM Server by running the additional command below.
+If you make code changes, you may also need to update the project by running the additional command below:
 
 ```
 make update
 ```
-
-Note that this requires to have `python >= 3.7` and `venv` installed.
 
 ### Run
 
@@ -60,50 +59,21 @@ To run APM Server with debugging output enabled, run:
 ./apm-server -c apm-server.yml -e -d "*"
 ```
 
+APM Server expects index templates, ILM policies, and ingest pipelines to be set up externally.
+This should be done by [installing the APM integration](https://www.elastic.co/guide/en/fleet/current/fleet-quick-start-traces.html#add-apm-integration).
+When running APM Server directly, it is only necessary to install the integration and not to run an Elastic Agent.
+
 ### Testing
 
-For Testing check out the [testing guide](TESTING.md)
-
-### Update
-
-Each beat has a template for the mapping in elasticsearch and a documentation for the fields
-which is automatically generated based on `fields.yml`.
-To generate required configuration files and templates run:
-
-```
-make update
-```
-
-### Generate package
-
-APM-Server includes a script to generate an integration package to run with Fleet.
-To Generate a package run:
-
-```
-make fields gen-package
-```
-
-That command takes the existing `fields.yml` files and split them into `ecs.yml` and `fields.yml` files for each data stream type.
-It also generates a `README.md` with a field reference that will be shown in the integration package.
-
-After generating a package, `apmpackage/apm` should be manually copied to `elastic/integrations`.
-Then follow instructions in https://github.com/elastic/integrations/blob/master/CONTRIBUTING.md.
+For Testing check out the [testing guide](dev_docs/TESTING.md)
 
 ### Cleanup
-
-To clean APM Server source code, run the following commands:
-
-```
-make fmt
-```
 
 To clean up the build directory and generated artifacts, run:
 
 ```
 make clean
 ```
-
-For further development, check out the [beat developer guide](https://www.elastic.co/guide/en/beats/libbeat/current/new-beat.html).
 
 ### Contributing
 
@@ -112,7 +82,7 @@ or contributing to APM Server.
 
 ### Releases
 
-See [releases](RELEASES.md) for an APM Server release checklist.
+See [releases](dev_docs/RELEASES.md) for an APM Server release checklist.
 
 ## Updating dependencies
 
@@ -125,7 +95,7 @@ below.
 ### Updating libbeat
 
 By running `make update-beats` the `github.com/elastic/beats/vN` module will be updated to the most recent
-commit from the master branch, and a minimal set of files will be copied into the apm-server tree.
+commit from the main branch, and a minimal set of files will be copied into the apm-server tree.
 
 You can specify an alternative branch or commit by specifying the `BEATS_VERSION` variable, such as:
 
@@ -144,16 +114,13 @@ You can use `go get -u -m github.com/elastic/go-elasticsearch/v7@7.x` to update 
 
 ## Packaging
 
-The beats framework provides tools to cross-compile and package apm-server for different platforms.
-This requires [docker](https://www.docker.com/), [mage](magefile.org), and vendoring as described above.
 To build all apm-server packages from source, run:
 
 ```
-mage package
+make package
 ```
 
-This will fetch and create all images required for the build process.
-The whole process can take several minutes.
+This will fetch and create all images required for the build process. The whole process can take several minutes.
 When complete, packages can be found in `build/distributions/`.
 
 ### Building docker packages
@@ -163,13 +130,13 @@ To customize image configuration, see [the docs](https://www.elastic.co/guide/en
 To build docker images from source, run:
 
 ```
-PLATFORMS=linux/amd64 mage -v package
+make package-docker
 ```
 
-When complete, docker images can be found through the local docker daemon and at `build/distributions/apm-server-*-linux-amd64.docker.tar.gz`.
+When complete, Docker images can be found at `build/distributions/*.docker.tar.gz`,
+and the local Docker image IDs are written at `build/docker/*.txt`.
 
-When building images for testing pre-release versions, we recommend setting `SNAPSHOT=true` in the build environment, to
- clearly indicate the packages are not for a specific release.
+Building pre-release images can be done by running `make package-docker-snapshot` instead.
 
 ## Documentation
 

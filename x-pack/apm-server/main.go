@@ -1,33 +1,50 @@
 // Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
-// or more contributor license agreements. Licensed under the Elastic License;
-// you may not use this file except in compliance with the Elastic License.
+// or more contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
 
 package main
 
 import (
 	"context"
+	"encoding/json"
+	"math"
+	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/dgraph-io/badger/v2"
+	"github.com/gofrs/uuid"
+	"github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/elastic/beats/v7/libbeat/logp"
-	"github.com/elastic/beats/v7/libbeat/monitoring"
-	"github.com/elastic/beats/v7/libbeat/paths"
+	"github.com/elastic/beats/v7/libbeat/common/reload"
+	"github.com/elastic/beats/v7/x-pack/libbeat/management"
+	"github.com/elastic/elastic-agent-client/v7/pkg/client"
+	"github.com/elastic/elastic-agent-client/v7/pkg/proto"
+	"github.com/elastic/elastic-agent-libs/config"
+	"github.com/elastic/elastic-agent-libs/logp"
+	"github.com/elastic/elastic-agent-libs/monitoring"
+	"github.com/elastic/elastic-agent-libs/paths"
+	"github.com/elastic/go-elasticsearch/v8"
+	"github.com/elastic/go-elasticsearch/v8/esutil"
 
-	"github.com/elastic/apm-server/beater"
-	"github.com/elastic/apm-server/model"
+	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-server/internal/beatcmd"
+	"github.com/elastic/apm-server/internal/beater"
+	"github.com/elastic/apm-server/internal/model/modelprocessor"
+	"github.com/elastic/apm-server/x-pack/apm-server/aggregation/servicemetrics"
 	"github.com/elastic/apm-server/x-pack/apm-server/aggregation/spanmetrics"
 	"github.com/elastic/apm-server/x-pack/apm-server/aggregation/txmetrics"
-	"github.com/elastic/apm-server/x-pack/apm-server/cmd"
+	"github.com/elastic/apm-server/x-pack/apm-server/profiling"
 	"github.com/elastic/apm-server/x-pack/apm-server/sampling"
 	"github.com/elastic/apm-server/x-pack/apm-server/sampling/eventstorage"
 )
 
 const (
 	tailSamplingStorageDir = "tail_sampling"
+	metricsInterval        = time.Minute
 )
 
 var (
@@ -40,11 +57,42 @@ var (
 	// badgerDB holds the badger database to use when tail-based sampling is configured.
 	badgerMu sync.Mutex
 	badgerDB *badger.DB
+
+	storageMu sync.Mutex
+	storage   *eventstorage.ShardedReadWriter
+
+	// samplerUUID is a UUID used to identify sampled trace ID documents
+	// published by this process.
+	samplerUUID = uuid.Must(uuid.NewV4())
+
+	rollUpMetricsIntervals = []time.Duration{10 * time.Minute, time.Hour}
 )
 
+func init() {
+	management.ConfigTransform.SetTransform(
+		func(unit *proto.UnitExpectedConfig, agentInfo *client.AgentInfo) ([]*reload.ConfigWithMeta, error) {
+			// NOTE(axw) we intentionally do not log the entire config here,
+			// as it may contain secrets (Elasticsearch API Key, secret token).
+			logger := logp.NewLogger("")
+			logger.With(
+				logp.String("agent.id", agentInfo.ID),
+				logp.String("agent.version", agentInfo.Version),
+				logp.String("unit.id", unit.Id),
+				logp.Uint64("unit.revision", unit.Revision),
+			).Info("received input from elastic-agent")
+
+			cfg, err := config.NewConfigFrom(unit.GetSource().AsMap())
+			if err != nil {
+				return nil, err
+			}
+			return []*reload.ConfigWithMeta{{Config: cfg}}, nil
+		},
+	)
+}
+
 type namedProcessor struct {
-	name string
 	processor
+	name string
 }
 
 type processor interface {
@@ -56,36 +104,54 @@ type processor interface {
 // newProcessors returns a list of processors which will process
 // events in sequential order, prior to the events being published.
 func newProcessors(args beater.ServerParams) ([]namedProcessor, error) {
-	var processors []namedProcessor
-	if args.Config.Aggregation.Transactions.Enabled {
-		const name = "transaction metrics aggregation"
-		args.Logger.Infof("creating %s with config: %+v", name, args.Config.Aggregation.Transactions)
-		agg, err := txmetrics.NewAggregator(txmetrics.AggregatorConfig{
+	processors := make([]namedProcessor, 0, 3)
+	const txName = "transaction metrics aggregation"
+	args.Logger.Infof("creating %s with config: %+v", txName, args.Config.Aggregation.Transactions)
+	agg, err := txmetrics.NewAggregator(txmetrics.AggregatorConfig{
+		BatchProcessor:                 args.BatchProcessor,
+		MaxTransactionGroups:           args.Config.Aggregation.Transactions.MaxTransactionGroups,
+		MetricsInterval:                metricsInterval,
+		RollUpIntervals:                rollUpMetricsIntervals,
+		MaxTransactionGroupsPerService: int(math.Ceil(0.1 * float64(args.Config.Aggregation.Transactions.MaxTransactionGroups))),
+		MaxServices:                    args.Config.Aggregation.Transactions.MaxTransactionGroups, // same as max txn grps
+		HDRHistogramSignificantFigures: args.Config.Aggregation.Transactions.HDRHistogramSignificantFigures,
+	})
+	if err != nil {
+		return nil, errors.Wrapf(err, "error creating %s", txName)
+	}
+	processors = append(processors, namedProcessor{name: txName, processor: agg})
+	aggregationMonitoringRegistry.Remove("txmetrics")
+	monitoring.NewFunc(aggregationMonitoringRegistry, "txmetrics", agg.CollectMonitoring, monitoring.Report)
+
+	const spanName = "service destinations aggregation"
+	args.Logger.Infof("creating %s with config: %+v", spanName, args.Config.Aggregation.ServiceDestinations)
+	spanAggregator, err := spanmetrics.NewAggregator(spanmetrics.AggregatorConfig{
+		BatchProcessor:  args.BatchProcessor,
+		Interval:        metricsInterval,
+		RollUpIntervals: rollUpMetricsIntervals,
+		MaxGroups:       args.Config.Aggregation.ServiceDestinations.MaxGroups,
+	})
+	if err != nil {
+		return nil, errors.Wrapf(err, "error creating %s", spanName)
+	}
+	processors = append(processors, namedProcessor{name: spanName, processor: spanAggregator})
+
+	if args.Config.Aggregation.Service.Enabled {
+		const serviceName = "service metrics aggregation"
+		args.Logger.Infof("creating %s with config: %+v", serviceName, args.Config.Aggregation.Service)
+		serviceAggregator, err := servicemetrics.NewAggregator(servicemetrics.AggregatorConfig{
 			BatchProcessor:                 args.BatchProcessor,
-			MaxTransactionGroups:           args.Config.Aggregation.Transactions.MaxTransactionGroups,
-			MetricsInterval:                args.Config.Aggregation.Transactions.Interval,
-			HDRHistogramSignificantFigures: args.Config.Aggregation.Transactions.HDRHistogramSignificantFigures,
+			Interval:                       metricsInterval,
+			RollUpIntervals:                rollUpMetricsIntervals,
+			MaxGroups:                      args.Config.Aggregation.Service.MaxGroups,
+			HDRHistogramSignificantFigures: args.Config.Aggregation.Service.HDRHistogramSignificantFigures,
 		})
 		if err != nil {
-			return nil, errors.Wrapf(err, "error creating %s", name)
+			return nil, errors.Wrapf(err, "error creating %s", spanName)
 		}
-		processors = append(processors, namedProcessor{name: name, processor: agg})
-		aggregationMonitoringRegistry.Remove("txmetrics")
-		monitoring.NewFunc(aggregationMonitoringRegistry, "txmetrics", agg.CollectMonitoring, monitoring.Report)
+		processors = append(processors, namedProcessor{name: spanName, processor: serviceAggregator})
 	}
-	if args.Config.Aggregation.ServiceDestinations.Enabled {
-		const name = "service destinations aggregation"
-		args.Logger.Infof("creating %s with config: %+v", name, args.Config.Aggregation.ServiceDestinations)
-		spanAggregator, err := spanmetrics.NewAggregator(spanmetrics.AggregatorConfig{
-			BatchProcessor: args.BatchProcessor,
-			Interval:       args.Config.Aggregation.ServiceDestinations.Interval,
-			MaxGroups:      args.Config.Aggregation.ServiceDestinations.MaxGroups,
-		})
-		if err != nil {
-			return nil, errors.Wrapf(err, "error creating %s", name)
-		}
-		processors = append(processors, namedProcessor{name: name, processor: spanAggregator})
-	}
+
 	if args.Config.Sampling.Tail.Enabled {
 		const name = "tail sampler"
 		sampler, err := newTailSamplingProcessor(args)
@@ -100,10 +166,6 @@ func newProcessors(args beater.ServerParams) ([]namedProcessor, error) {
 }
 
 func newTailSamplingProcessor(args beater.ServerParams) (*sampling.Processor, error) {
-	if !args.Config.DataStreams.Enabled {
-		return nil, errors.New("tail-based sampling requires data streams")
-	}
-
 	tailSamplingConfig := args.Config.Sampling.Tail
 	es, err := args.NewElasticsearchClient(tailSamplingConfig.ESConfig)
 	if err != nil {
@@ -111,10 +173,11 @@ func newTailSamplingProcessor(args beater.ServerParams) (*sampling.Processor, er
 	}
 
 	storageDir := paths.Resolve(paths.Data, tailSamplingStorageDir)
-	badgerDB, err := getBadgerDB(storageDir)
+	badgerDB, err = getBadgerDB(storageDir)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get Badger database")
 	}
+	readWriters := getStorage(badgerDB)
 
 	policies := make([]sampling.Policy, len(tailSamplingConfig.Policies))
 	for i, in := range tailSamplingConfig.Policies {
@@ -128,8 +191,8 @@ func newTailSamplingProcessor(args beater.ServerParams) (*sampling.Processor, er
 			SampleRate: in.SampleRate,
 		}
 	}
+
 	return sampling.NewProcessor(sampling.Config{
-		BeatID:         args.Info.ID.String(),
 		BatchProcessor: args.BatchProcessor,
 		LocalSamplingConfig: sampling.LocalSamplingConfig{
 			FlushInterval:         tailSamplingConfig.Interval,
@@ -138,17 +201,21 @@ func newTailSamplingProcessor(args beater.ServerParams) (*sampling.Processor, er
 			IngestRateDecayFactor: tailSamplingConfig.IngestRateDecayFactor,
 		},
 		RemoteSamplingConfig: sampling.RemoteSamplingConfig{
-			Elasticsearch: es,
+			CompressionLevel: tailSamplingConfig.ESConfig.CompressionLevel,
+			Elasticsearch:    es,
 			SampledTracesDataStream: sampling.DataStreamConfig{
 				Type:      "traces",
 				Dataset:   "apm.sampled",
 				Namespace: args.Namespace,
 			},
+			UUID: samplerUUID.String(),
 		},
 		StorageConfig: sampling.StorageConfig{
 			DB:                badgerDB,
+			Storage:           readWriters,
 			StorageDir:        storageDir,
 			StorageGCInterval: tailSamplingConfig.StorageGCInterval,
+			StorageLimit:      tailSamplingConfig.StorageLimitParsed,
 			TTL:               tailSamplingConfig.TTL,
 		},
 	})
@@ -167,6 +234,16 @@ func getBadgerDB(storageDir string) (*badger.DB, error) {
 	return badgerDB, nil
 }
 
+func getStorage(db *badger.DB) *eventstorage.ShardedReadWriter {
+	storageMu.Lock()
+	defer storageMu.Unlock()
+	if storage == nil {
+		eventCodec := eventstorage.JSONCodec{}
+		storage = eventstorage.New(db, eventCodec).NewShardedReadWriter()
+	}
+	return storage
+}
+
 // runServerWithProcessors runs the APM Server and the given list of processors.
 //
 // newProcessors returns a list of processors which will process events in
@@ -176,25 +253,20 @@ func runServerWithProcessors(ctx context.Context, runServer beater.RunServerFunc
 		return runServer(ctx, args)
 	}
 
-	batchProcessors := make([]model.BatchProcessor, len(processors))
-	for i, p := range processors {
-		batchProcessors[i] = p
-	}
-	runServer = beater.WrapRunServerWithProcessors(runServer, batchProcessors...)
-
 	g, ctx := errgroup.WithContext(ctx)
+	serverStopped := make(chan struct{})
 	for _, p := range processors {
 		p := p // copy for closure
 		g.Go(func() error {
 			if err := p.Run(); err != nil {
-				args.Logger.Errorf("%s aborted", p.name, logp.Error(err))
+				args.Logger.With(logp.Error(err)).Errorf("%s aborted", p.name)
 				return err
 			}
 			args.Logger.Infof("%s stopped", p.name)
 			return nil
 		})
 		g.Go(func() error {
-			<-ctx.Done()
+			<-serverStopped
 			stopctx := context.Background()
 			if args.Config.ShutdownTimeout > 0 {
 				// On shutdown wait for the aggregator to stop
@@ -207,19 +279,139 @@ func runServerWithProcessors(ctx context.Context, runServer beater.RunServerFunc
 		})
 	}
 	g.Go(func() error {
+		defer close(serverStopped)
 		return runServer(ctx, args)
 	})
 	return g.Wait()
 }
 
-func wrapRunServer(runServer beater.RunServerFunc) beater.RunServerFunc {
-	return func(ctx context.Context, args beater.ServerParams) error {
-		processors, err := newProcessors(args)
-		if err != nil {
-			return err
+func newProfilingCollector(args beater.ServerParams) (*profiling.ElasticCollector, func(context.Context) error, error) {
+	logger := args.Logger.Named("profiling")
+
+	client, err := args.NewElasticsearchClient(args.Config.Profiling.ESConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+	clusterName, err := queryElasticsearchClusterName(client, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Elasticsearch should default to 100 MB for the http.max_content_length configuration,
+	// so we flush the buffer (per-worker, number of workers is equal to the number of cores)
+	// when at 4 MiB or every 4 seconds. This should reduce the lock contention between
+	// multiple workers trying to write or flush the bulk indexer buffer but also keep
+	// memory spikes to acceptable levels (go-elasticsearch can exhibit pathological behavior
+	// if thousands of items are added to its bulk indexer at once, since they are kept in memory
+	// for the entire duration of an ES request-response cycle).
+	const (
+		flushBytes    = 1 << 22
+		flushInterval = 4 * time.Second
+	)
+	indexer, err := esutil.NewBulkIndexer(esutil.BulkIndexerConfig{
+		Client:        client,
+		FlushBytes:    flushBytes,
+		FlushInterval: flushInterval,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	metricsClient, err := args.NewElasticsearchClient(args.Config.Profiling.MetricsESConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+	metricsIndexer, err := esutil.NewBulkIndexer(esutil.BulkIndexerConfig{
+		Client:        metricsClient,
+		FlushBytes:    flushBytes,
+		FlushInterval: flushInterval,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	profilingCollector := profiling.NewCollector(
+		indexer,
+		metricsIndexer,
+		clusterName,
+		logger,
+	)
+
+	ctx, stopILM := context.WithCancel(context.Background())
+	profiling.ScheduleILMExecution(ctx, logger.Named("ilm"), args.Config.Profiling)
+
+	cleanup := func(ctx context.Context) error {
+		stopILM()
+		var errors error
+		if indexer.Close(ctx); err != nil {
+			errors = multierror.Append(errors, err)
+		}
+		if metricsIndexer.Close(ctx); err != nil {
+			errors = multierror.Append(errors, err)
+		}
+		return errors
+	}
+	return profilingCollector, cleanup, nil
+}
+
+// Fetch the Cluster name from Elasticsearch: Profiling adds it as a field in
+// the host-agent metrics documents for debugging purposes.
+// In Cloud deployments, the Cluster name is set equal to the Cluster ID.
+func queryElasticsearchClusterName(client *elasticsearch.Client, logger *logp.Logger) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "/", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Perform(req)
+	if err != nil {
+		logger.Warnf("failed to fetch cluster name from Elasticsearch: %v", err)
+		return "", nil
+	}
+	var r struct {
+		ClusterName string `json:"cluster_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		logger.Warnf("failed to parse Elasticsearch JSON response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	return r.ClusterName, nil
+}
+
+func wrapServer(args beater.ServerParams, runServer beater.RunServerFunc) (beater.ServerParams, beater.RunServerFunc, error) {
+	processors, err := newProcessors(args)
+	if err != nil {
+		return beater.ServerParams{}, nil, err
+	}
+
+	// Add the processors to the chain.
+	processorChain := make(modelprocessor.Chained, len(processors)+1)
+	for i, p := range processors {
+		processorChain[i] = p
+	}
+	processorChain[len(processors)] = args.BatchProcessor
+	args.BatchProcessor = processorChain
+
+	wrappedRunServer := func(ctx context.Context, args beater.ServerParams) error {
+		if args.Config.Profiling.Enabled {
+			profilingCollector, cleanup, err := newProfilingCollector(args)
+			if err != nil {
+				// Profiling support is in technical preview,
+				// so we'll treat errors as non-fatal for now.
+				args.Logger.With(logp.Error(err)).Error(
+					"failed to create profiling collector, continuing without profiling support",
+				)
+			} else {
+				defer cleanup(ctx)
+				profiling.RegisterCollectionAgentServer(args.GRPCServer, profilingCollector)
+				args.Logger.Info("registered profiling collection (technical preview)")
+			}
 		}
 		return runServerWithProcessors(ctx, runServer, args, processors...)
 	}
+	return args, wrappedRunServer, nil
 }
 
 // closeBadger is called at process exit time to close the badger.DB opened
@@ -233,19 +425,37 @@ func closeBadger() error {
 	return nil
 }
 
-var rootCmd = cmd.NewXPackRootCommand(beater.NewCreator(beater.CreatorParams{
-	WrapRunServer: wrapRunServer,
-}))
+func closeStorage() {
+	if storage != nil {
+		storage.Close()
+	}
+}
+
+func cleanup() (result error) {
+	// Close the underlying storage, the storage will be flushed on processor stop.
+	closeStorage()
+
+	if err := closeBadger(); err != nil {
+		result = multierror.Append(result, err)
+	}
+	return result
+}
 
 func Main() error {
-	if err := rootCmd.Execute(); err != nil {
-		closeBadger()
-		return err
+	rootCmd := newXPackRootCommand(
+		func(args beatcmd.RunnerParams) (beatcmd.Runner, error) {
+			return beater.NewRunner(beater.RunnerParams{
+				Config:     args.Config,
+				Logger:     args.Logger,
+				WrapServer: wrapServer,
+			})
+		},
+	)
+	result := rootCmd.Execute()
+	if err := cleanup(); err != nil {
+		result = multierror.Append(result, err)
 	}
-	if err := closeBadger(); err != nil {
-		return err
-	}
-	return nil
+	return result
 }
 
 func main() {

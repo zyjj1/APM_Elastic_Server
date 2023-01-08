@@ -23,7 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/tidwall/gjson"
-	"go.elastic.co/apm"
+	"go.elastic.co/apm/v2"
 
 	"github.com/elastic/apm-server/systemtest"
 	"github.com/elastic/apm-server/systemtest/apmservertest"
@@ -32,7 +32,7 @@ import (
 
 func TestErrorGroupingName(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
-	srv := apmservertest.NewServer(t)
+	srv := apmservertest.NewServerTB(t)
 
 	tracer := srv.Tracer()
 	tracer.NewError(errors.New("only_exception_message")).Send()
@@ -40,7 +40,7 @@ func TestErrorGroupingName(t *testing.T) {
 	tracer.NewErrorLog(apm.ErrorLogRecord{Message: "log_message_overrides", Error: errors.New("exception_message_overridden")}).Send()
 	tracer.Flush(nil)
 
-	result := systemtest.Elasticsearch.ExpectMinDocs(t, 3, "apm-*", estest.TermQuery{
+	result := systemtest.Elasticsearch.ExpectMinDocs(t, 3, "logs-apm.error-*", estest.TermQuery{
 		Field: "processor.event",
 		Value: "error",
 	})

@@ -1,38 +1,7 @@
-version: '2.3'
+version: '3.9'
 services:
-  beat:
-    build:
-      context: .
-      dockerfile: tests/Dockerfile
-    depends_on:
-      - proxy_dep
-    volumes:
-      - .:/src/apm-server/
-    working_dir: /src/apm-server
-    command: make
-    environment:
-      BEAT_STRICT_PERMS: "${BEAT_STRICT_PERMS:-false}"
-      ES_HOST: elasticsearch
-      ES_PORT: "9200"
-      ES_USER: "${ES_USER:-apm_server_user}"
-      ES_SUPERUSER_USER: "${ES_SUPERUSER_USER:-admin}"
-      ES_SUPERUSER_PASS: "${ES_SUPERUSER_PASS:-changeme}"
-      KIBANA_HOST: kibana
-      KIBANA_PORT: "5601"
-      KIBANA_USER: "${BEAT_KIBANA_USER:-apm_user_ro}"
-      KIBANA_PASS: "${BEAT_KIBANA_PASS:-changeme}"
-      SYSTEM_TEST_TARGET: "${SYSTEM_TEST_TARGET:-}"
-
-  # This is a proxy used to block beats until all services are healthy.
-  # See: https://github.com/docker/compose/issues/4369
-  proxy_dep:
-    image: busybox
-    depends_on:
-      elasticsearch: { condition: service_healthy }
-      kibana: { condition: service_healthy }
-
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.0.0-2f7ca428-SNAPSHOT
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.7.0-2320c424-SNAPSHOT
     ports:
       - 9200:9200
     healthcheck:
@@ -41,7 +10,7 @@ services:
       interval: 1s
     environment:
       - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
-      - "network.host="
+      - "network.host=0.0.0.0"
       - "transport.host=127.0.0.1"
       - "http.host=0.0.0.0"
       - "cluster.routing.allocation.disk.threshold_enabled=false"
@@ -59,9 +28,10 @@ services:
       - "./testing/docker/elasticsearch/roles.yml:/usr/share/elasticsearch/config/roles.yml"
       - "./testing/docker/elasticsearch/users:/usr/share/elasticsearch/config/users"
       - "./testing/docker/elasticsearch/users_roles:/usr/share/elasticsearch/config/users_roles"
+      - "./testing/docker/elasticsearch/ingest-geoip:/usr/share/elasticsearch/config/ingest-geoip"
 
   kibana:
-    image: docker.elastic.co/kibana/kibana:8.0.0-2f7ca428-SNAPSHOT
+    image: docker.elastic.co/kibana/kibana:8.7.0-2320c424-SNAPSHOT
     ports:
       - 5601:5601
     healthcheck:
@@ -69,23 +39,18 @@ services:
       retries: 300
       interval: 1s
     environment:
-      SERVER_HOST: 0.0.0.0
-      STATUS_ALLOWANONYMOUS: "true"
-      ELASTICSEARCH_URL: elasticsearch:9200
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
       ELASTICSEARCH_USERNAME: "${KIBANA_ES_USER:-kibana_system_user}"
       ELASTICSEARCH_PASSWORD: "${KIBANA_ES_PASS:-changeme}"
-      XPACK_XPACK_MAIN_TELEMETRY_ENABLED: "false"
-      XPACK_SECURITY_ENCRYPTIONKEY: "fhjskloppd678ehkdfdlliverpoolfcr"
-      XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY: "fhjskloppd678ehkdfdlliverpoolfcr"
-      XPACK_FLEET_AGENTS_ELASTICSEARCH_HOST: "http://elasticsearch:9200"
-      XPACK_FLEET_AGENTS_TLSCHECKDISABLED: "true"
-      XPACK_FLEET_REGISTRYURL: "http://package-registry:8080"
+      XPACK_FLEET_AGENTS_FLEET_SERVER_HOSTS: '["https://fleet-server:8220"]'
+      XPACK_FLEET_AGENTS_ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
     depends_on:
       elasticsearch: { condition: service_healthy }
-      package-registry: { condition: service_healthy }
+    volumes:
+      - "./testing/docker/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml"
 
   fleet-server:
-    image: docker.elastic.co/beats/elastic-agent:8.0.0-2f7ca428-SNAPSHOT
+    image: docker.elastic.co/beats/elastic-agent:8.7.0-2320c424-SNAPSHOT
     ports:
       - 8220:8220
     healthcheck:
@@ -94,6 +59,7 @@ services:
       interval: 1s
     environment:
       FLEET_SERVER_ENABLE: "1"
+      FLEET_SERVER_POLICY_ID: "fleet-server-apm"
       FLEET_SERVER_ELASTICSEARCH_HOST: http://elasticsearch:9200
       FLEET_SERVER_ELASTICSEARCH_USERNAME: "${ES_SUPERUSER_USER:-admin}"
       FLEET_SERVER_ELASTICSEARCH_PASSWORD: "${ES_SUPERUSER_PASS:-changeme}"
@@ -101,9 +67,9 @@ services:
       FLEET_SERVER_CERT_KEY: /etc/pki/tls/private/fleet-server-key.pem
       FLEET_URL: https://fleet-server:8220
       KIBANA_FLEET_SETUP: "true"
-      KIBANA_HOST: "http://kibana:5601"
-      KIBANA_USERNAME: "${ES_SUPERUSER_USER:-admin}"
-      KIBANA_PASSWORD: "${ES_SUPERUSER_PASS:-changeme}"
+      KIBANA_FLEET_HOST: "http://kibana:5601"
+      KIBANA_FLEET_USERNAME: "${ES_SUPERUSER_USER:-admin}"
+      KIBANA_FLEET_PASSWORD: "${ES_SUPERUSER_PASS:-changeme}"
     depends_on:
       elasticsearch: { condition: service_healthy }
       kibana: { condition: service_healthy }
@@ -111,16 +77,17 @@ services:
       - "./testing/docker/fleet-server/certificate.pem:/etc/pki/tls/certs/fleet-server.pem"
       - "./testing/docker/fleet-server/key.pem:/etc/pki/tls/private/fleet-server-key.pem"
 
-  package-registry:
-    image: docker.elastic.co/package-registry/distribution:snapshot
-    ports:
-      - 8080
-    entrypoint: /entrypoint.sh
-    healthcheck:
-      test: ["CMD-SHELL", "curl --fail localhost:8080/health"]
-      retries: 100
-      interval: 5s
+  metricbeat:
+    image: docker.elastic.co/beats/metricbeat:8.7.0-2320c424-SNAPSHOT
+    environment:
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+      ELASTICSEARCH_USERNAME: "${KIBANA_ES_USER:-admin}"
+      ELASTICSEARCH_PASSWORD: "${KIBANA_ES_PASS:-changeme}"
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+      fleet-server: { condition: service_healthy }
     volumes:
-      - "./testing/docker/package-registry/entrypoint.sh:/entrypoint.sh"
-      - "./testing/docker/package-registry/config.yml:/package-registry/config.yml"
-      - "./apmpackage:/apmpackage" # copied to /packages/local/apm/<version> by entrypoint.sh
+      - "./testing/docker/metricbeat/elasticsearch-xpack.yml://usr/share/metricbeat/modules.d/elasticsearch-xpack.yml"
+      - "./testing/docker/metricbeat/apm-server.yml://usr/share/metricbeat/modules.d/apm-server.yml"
+    profiles:
+      - monitoring

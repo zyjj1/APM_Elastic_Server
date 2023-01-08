@@ -39,22 +39,9 @@ import (
 	"github.com/elastic/apm-server/systemtest/estest"
 )
 
-func TestJaegerGRPC(t *testing.T) {
-	systemtest.CleanupElasticsearch(t)
-	srv := apmservertest.NewUnstartedServer(t)
-	srv.Config.Jaeger = &apmservertest.JaegerConfig{
-		GRPCEnabled: true,
-		GRPCHost:    "localhost:0",
-	}
-	srv.Config.Monitoring = newFastMonitoringConfig()
-	err := srv.Start()
-	require.NoError(t, err)
-	testJaegerGRPC(t, srv, srv.JaegerGRPCAddr, grpc.WithInsecure())
-}
-
 func TestJaegerGRPCMuxed(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
-	srv := apmservertest.NewUnstartedServer(t)
+	srv := apmservertest.NewUnstartedServerTB(t)
 	srv.Config.Monitoring = newFastMonitoringConfig()
 	require.NoError(t, srv.Start())
 	testJaegerGRPC(t, srv, serverAddr(srv), grpc.WithInsecure())
@@ -62,7 +49,7 @@ func TestJaegerGRPCMuxed(t *testing.T) {
 
 func TestJaegerGRPCMuxedTLS(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
-	srv := apmservertest.NewUnstartedServer(t)
+	srv := apmservertest.NewUnstartedServerTB(t)
 	srv.Config.Monitoring = newFastMonitoringConfig()
 	srv.Config.TLS = &apmservertest.TLSConfig{ClientAuthentication: "required"}
 	require.NoError(t, srv.StartTLS())
@@ -80,19 +67,18 @@ func testJaegerGRPC(t *testing.T, srv *apmservertest.Server, addr string, dialOp
 	_, err = client.PostSpans(context.Background(), request)
 	require.NoError(t, err)
 
-	doc := getBeatsMonitoringStats(t, srv, nil)
-	assert.Equal(t, int64(1), gjson.GetBytes(doc.RawSource, "beats_stats.metrics.apm-server.jaeger.grpc.collect.request.count").Int())
-
-	systemtest.Elasticsearch.ExpectDocs(t, "apm-*", estest.BoolQuery{Filter: []interface{}{
+	systemtest.Elasticsearch.ExpectDocs(t, "traces-apm*", estest.BoolQuery{Filter: []interface{}{
 		estest.TermQuery{Field: "processor.event", Value: "transaction"},
 	}})
-
 	// TODO(axw) check document contents. We currently do this in beater/jaeger.
+
+	doc := getBeatsMonitoringStats(t, srv, nil)
+	assert.Equal(t, int64(1), gjson.GetBytes(doc.RawSource, "beats_stats.metrics.apm-server.jaeger.grpc.collect.request.count").Int())
 }
 
 func TestJaegerGRPCSampling(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
-	srv := apmservertest.NewUnstartedServer(t)
+	srv := apmservertest.NewUnstartedServerTB(t)
 	err := srv.Start()
 	require.NoError(t, err)
 
@@ -110,7 +96,7 @@ func TestJaegerGRPCSampling(t *testing.T) {
 
 func TestJaegerGRPCAuth(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
-	srv := apmservertest.NewUnstartedServer(t)
+	srv := apmservertest.NewUnstartedServerTB(t)
 	srv.Config.AgentAuth.SecretToken = "secret"
 	require.NoError(t, srv.Start())
 
@@ -137,7 +123,7 @@ func TestJaegerGRPCAuth(t *testing.T) {
 	_, err = client.PostSpans(context.Background(), request)
 	require.NoError(t, err)
 
-	systemtest.Elasticsearch.ExpectDocs(t, "apm-*", estest.BoolQuery{Filter: []interface{}{
+	systemtest.Elasticsearch.ExpectDocs(t, "traces-apm*", estest.BoolQuery{Filter: []interface{}{
 		estest.TermQuery{Field: "processor.event", Value: "transaction"},
 	}})
 }

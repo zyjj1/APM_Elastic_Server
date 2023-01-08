@@ -1,16 +1,17 @@
 // Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
-// or more contributor license agreements. Licensed under the Elastic License;
-// you may not use this file except in compliance with the Elastic License.
+// or more contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
 
 package eventstorage
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/dgraph-io/badger/v2"
 
-	"github.com/elastic/apm-server/model"
+	"github.com/elastic/apm-data/model"
 )
 
 const (
@@ -21,16 +22,21 @@ const (
 	entryMetaTraceEvent     = 'e'
 )
 
-// ErrNotFound is returned by by the Storage.IsTraceSampled method,
-// for non-existing trace IDs.
-var ErrNotFound = errors.New("key not found")
+var (
+	// ErrNotFound is returned by by the Storage.IsTraceSampled method,
+	// for non-existing trace IDs.
+	ErrNotFound = errors.New("key not found")
+
+	// ErrLimitReached is returned by the ReadWriter.Flush method when
+	// the configured StorageLimiter.Limit is true.
+	ErrLimitReached = errors.New("configured storage limit reached")
+)
 
 // Storage provides storage for sampled transactions and spans,
 // and for recording trace sampling decisions.
 type Storage struct {
 	db    *badger.DB
 	codec Codec
-	ttl   time.Duration
 }
 
 // Codec provides methods for encoding and decoding events.
@@ -40,10 +46,8 @@ type Codec interface {
 }
 
 // New returns a new Storage using db and codec.
-//
-// Storage entries expire after ttl.
-func New(db *badger.DB, codec Codec, ttl time.Duration) *Storage {
-	return &Storage{db: db, codec: codec, ttl: ttl}
+func New(db *badger.DB, codec Codec) *Storage {
+	return &Storage{db: db, codec: codec}
 }
 
 // NewShardedReadWriter returns a new ShardedReadWriter, for sharded
@@ -66,6 +70,25 @@ func (s *Storage) NewReadWriter() *ReadWriter {
 	}
 }
 
+func (s *Storage) limitReached(limit int64) (int64, bool) {
+	if limit == 0 {
+		return 0, false
+	}
+	// The badger database has an async size reconciliation, with a 1 minute
+	// ticker that keeps the lsm and vlog sizes updated in an in-memory map.
+	// It's OK to call call s.db.Size() on the hot path, since the memory
+	// lookup is cheap.
+	lsm, vlog := s.db.Size()
+	current := lsm + vlog
+	return current, current >= limit
+}
+
+// WriterOpts provides configuration options for writes to storage
+type WriterOpts struct {
+	TTL                 time.Duration
+	StorageLimitInBytes int64
+}
+
 // ReadWriter provides a means of reading events from storage, and batched
 // writing of events to storage.
 //
@@ -74,14 +97,14 @@ func (s *Storage) NewReadWriter() *ReadWriter {
 // avoid conflicts, e.g. by using consistent hashing to distribute to one of
 // a set of ReadWriters, such as implemented by ShardedReadWriter.
 type ReadWriter struct {
-	s             *Storage
-	txn           *badger.Txn
-	pendingWrites int
+	s   *Storage
+	txn *badger.Txn
 
 	// readKeyBuf is a reusable buffer for keys used in read operations.
 	// This must not be used in write operations, as keys are expected to
 	// be unmodified until the end of a transaction.
-	readKeyBuf []byte
+	readKeyBuf    []byte
+	pendingWrites int
 }
 
 // Close closes the writer. Any writes that have not been flushed may be lost.
@@ -97,22 +120,39 @@ func (rw *ReadWriter) Close() {
 // Flush must be called to ensure writes are committed to storage.
 // If Flush is not called before the writer is closed, then writes
 // may be lost.
-func (rw *ReadWriter) Flush() error {
+//
+// Flush returns ErrLimitReached, or an error that wraps it, when
+// the StorageLimiter reports that the combined size of LSM and Vlog
+// files exceeds the configured threshold.
+func (rw *ReadWriter) Flush(limit int64) error {
+	const flushErrFmt = "failed to flush pending writes: %w"
+	if current, limitReached := rw.s.limitReached(limit); limitReached {
+		// Discard the txn and re-create it if the soft limit has been reached.
+		rw.txn.Discard()
+		rw.txn = rw.s.db.NewTransaction(true)
+		rw.pendingWrites = 0
+		return fmt.Errorf(
+			flushErrFmt+" (current: %d, limit: %d)",
+			ErrLimitReached, current, limit,
+		)
+	}
 	err := rw.txn.Commit()
 	rw.txn = rw.s.db.NewTransaction(true)
 	rw.pendingWrites = 0
-	return err
+	if err != nil {
+		return fmt.Errorf(flushErrFmt, err)
+	}
+	return nil
 }
 
 // WriteTraceSampled records the tail-sampling decision for the given trace ID.
-func (rw *ReadWriter) WriteTraceSampled(traceID string, sampled bool) error {
+func (rw *ReadWriter) WriteTraceSampled(traceID string, sampled bool, opts WriterOpts) error {
 	key := []byte(traceID)
 	var meta uint8 = entryMetaTraceUnsampled
 	if sampled {
 		meta = entryMetaTraceSampled
 	}
-	entry := badger.NewEntry(key[:], nil).WithMeta(meta)
-	return rw.writeEntry(entry.WithTTL(rw.s.ttl))
+	return rw.writeEntry(badger.NewEntry(key[:], nil).WithMeta(meta), opts)
 }
 
 // IsTraceSampled reports whether traceID belongs to a trace that is sampled
@@ -134,22 +174,36 @@ func (rw *ReadWriter) IsTraceSampled(traceID string) (bool, error) {
 //
 // WriteTraceEvent may return before the write is committed to storage.
 // Call Flush to ensure the write is committed.
-func (rw *ReadWriter) WriteTraceEvent(traceID string, id string, event *model.APMEvent) error {
+func (rw *ReadWriter) WriteTraceEvent(traceID string, id string, event *model.APMEvent, opts WriterOpts) error {
 	key := append(append([]byte(traceID), ':'), id...)
 	data, err := rw.s.codec.EncodeEvent(event)
 	if err != nil {
 		return err
 	}
-	return rw.writeEntry(badger.NewEntry(key[:], data).WithMeta(entryMetaTraceEvent).WithTTL(rw.s.ttl))
+	return rw.writeEntry(badger.NewEntry(key[:], data).WithMeta(entryMetaTraceEvent), opts)
 }
 
-func (rw *ReadWriter) writeEntry(e *badger.Entry) error {
+func (rw *ReadWriter) writeEntry(e *badger.Entry, opts WriterOpts) error {
 	rw.pendingWrites++
-	err := rw.txn.SetEntry(e)
+	err := rw.txn.SetEntry(e.WithTTL(opts.TTL))
+	// Attempt to flush if there are 200 or more uncommitted writes.
+	// This ensures calls to ReadTraceEvents are not slowed down;
+	// ReadTraceEvents uses an iterator, which must sort all keys
+	// of uncommitted writes.
+	// The 200 value yielded a good balance between read and write speed:
+	// https://github.com/elastic/apm-server/pull/8407#issuecomment-1162994643
+	if rw.pendingWrites >= 200 {
+		if err := rw.Flush(opts.StorageLimitInBytes); err != nil {
+			return err
+		}
+	}
+	// If the transaction is already too big to accommodate the new entry, flush
+	// the existing transaction and set the entry on a new one, otherwise,
+	// returns early.
 	if err != badger.ErrTxnTooBig {
 		return err
 	}
-	if err := rw.Flush(); err != nil {
+	if err := rw.Flush(opts.StorageLimitInBytes); err != nil {
 		return err
 	}
 	return rw.txn.SetEntry(e)
@@ -162,23 +216,10 @@ func (rw *ReadWriter) DeleteTraceEvent(traceID, id string) error {
 }
 
 // ReadTraceEvents reads trace events with the given trace ID from storage into out.
-//
-// ReadTraceEvents may implicitly commit the current transaction when the number of
-// pending writes exceeds a threshold. This is due to how Badger internally iterates
-// over uncommitted writes, where it will sort keys for each new iterator.
 func (rw *ReadWriter) ReadTraceEvents(traceID string, out *model.Batch) error {
 	opts := badger.DefaultIteratorOptions
 	rw.readKeyBuf = append(append(rw.readKeyBuf[:0], traceID...), ':')
 	opts.Prefix = rw.readKeyBuf
-
-	// NewIterator slows down with uncommitted writes, as it must sort
-	// all keys lexicographically. If there are a significant number of
-	// writes pending, flush first.
-	if rw.pendingWrites > 100 {
-		if err := rw.Flush(); err != nil {
-			return err
-		}
-	}
 
 	iter := rw.txn.NewIterator(opts)
 	defer iter.Close()

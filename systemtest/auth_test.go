@@ -19,10 +19,11 @@ package systemtest_test
 
 import (
 	"bytes"
-	"io/ioutil"
+	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -42,7 +43,7 @@ func TestAuth(t *testing.T) {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	secretToken := strconv.Itoa(rng.Int())
 
-	srv := apmservertest.NewUnstartedServer(t)
+	srv := apmservertest.NewUnstartedServerTB(t)
 	srv.Config.AgentAuth.SecretToken = secretToken
 	srv.Config.AgentAuth.APIKey = &apmservertest.APIKeyAuthConfig{Enabled: true}
 	srv.Config.AgentAuth.Anonymous = &apmservertest.AnonymousAuthConfig{
@@ -80,7 +81,7 @@ func TestAuth(t *testing.T) {
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		if len(headers) == 0 {
 			assert.Empty(t, body)
@@ -89,7 +90,7 @@ func TestAuth(t *testing.T) {
 		}
 	})
 
-	backendEventsPayload, err := ioutil.ReadFile("../testdata/intake-v2/transactions.ndjson")
+	backendEventsPayload, err := os.ReadFile("../testdata/intake-v2/transactions.ndjson")
 	require.NoError(t, err)
 	runWithMethods(t, "ingest", func(t *testing.T, apiKey string, headers http.Header) {
 		req, _ := http.NewRequest("POST", srv.URL+"/intake/v2/events", bytes.NewReader(backendEventsPayload))
@@ -98,32 +99,13 @@ func TestAuth(t *testing.T) {
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		defer resp.Body.Close()
-		body, _ := ioutil.ReadAll(resp.Body)
+		body, _ := io.ReadAll(resp.Body)
 		if len(headers) == 0 {
 			assert.Equal(t, http.StatusForbidden, resp.StatusCode, string(body))
 		} else if apiKey == "sourcemap" || apiKey == "agentconfig" {
 			assert.Equal(t, http.StatusForbidden, resp.StatusCode, string(body))
 		} else {
 			assert.Equal(t, http.StatusAccepted, resp.StatusCode, string(body))
-		}
-	})
-
-	runWithMethods(t, "sourcemap", func(t *testing.T, apiKey string, headers http.Header) {
-		req := newUploadSourcemapRequest(t, srv, "../testdata/sourcemap/bundle.js.map",
-			"http://localhost:8000/test/e2e/../e2e/general-usecase/bundle.js.map", // bundle filepath
-			"apm-agent-js", // service name
-			"1.0.1",        // service version
-		)
-		copyHeaders(req.Header, headers)
-		resp, err := http.DefaultClient.Do(req)
-		require.NoError(t, err)
-		defer resp.Body.Close()
-		if len(headers) == 0 {
-			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-		} else if apiKey == "ingest" || apiKey == "agentconfig" {
-			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-		} else {
-			assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 		}
 	})
 
@@ -144,7 +126,7 @@ func TestAuth(t *testing.T) {
 			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 		} else {
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			body, _ := ioutil.ReadAll(resp.Body)
+			body, _ := io.ReadAll(resp.Body)
 			if len(headers) == 0 {
 				// Anonymous auth succeeds because RUM is enabled, which
 				// auto enables anonymous auth. However, only a subset of
@@ -169,7 +151,7 @@ func TestAuth(t *testing.T) {
 			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 		} else {
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			body, _ := ioutil.ReadAll(resp.Body)
+			body, _ := io.ReadAll(resp.Body)
 			if len(headers) == 0 {
 				// Anonymous auth succeeds because RUM is enabled, which
 				// auto enables anonymous auth. However, only a subset of
@@ -180,7 +162,7 @@ func TestAuth(t *testing.T) {
 			}
 		}
 	})
-	rumEventsPayload, err := ioutil.ReadFile("../testdata/intake-v2/transactions_spans_rum.ndjson")
+	rumEventsPayload, err := os.ReadFile("../testdata/intake-v2/transactions_spans_rum.ndjson")
 	require.NoError(t, err)
 	runWithMethods(t, "rum_ingest", func(t *testing.T, apiKey string, headers http.Header) {
 		req, _ := http.NewRequest("POST", srv.URL+"/intake/v2/rum/events", bytes.NewReader(rumEventsPayload))
@@ -189,7 +171,7 @@ func TestAuth(t *testing.T) {
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		defer resp.Body.Close()
-		body, _ := ioutil.ReadAll(resp.Body)
+		body, _ := io.ReadAll(resp.Body)
 		if len(headers) == 0 {
 			assert.Equal(t, http.StatusAccepted, resp.StatusCode, string(body))
 		} else if apiKey == "sourcemap" || apiKey == "agentconfig" {

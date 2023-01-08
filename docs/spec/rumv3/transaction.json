@@ -118,14 +118,14 @@
               "description": "DecodedBodySize holds the size of the decoded payload.",
               "type": [
                 "null",
-                "number"
+                "integer"
               ]
             },
             "ebs": {
               "description": "EncodedBodySize holds the size of the encoded payload.",
               "type": [
                 "null",
-                "number"
+                "integer"
               ]
             },
             "he": {
@@ -159,7 +159,7 @@
               "description": "TransferSize holds the total size of the payload.",
               "type": [
                 "null",
-                "number"
+                "integer"
               ]
             }
           }
@@ -446,22 +446,6 @@
             "description": "Samples hold application metrics collected from the agent.",
             "type": "object",
             "properties": {
-              "xbc": {
-                "description": "TransactionBreakdownCount The number of transactions for which breakdown metrics (span.self_time) have been created.",
-                "type": [
-                  "null",
-                  "object"
-                ],
-                "properties": {
-                  "v": {
-                    "description": "Value holds the value of a single metric sample.",
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "v"
-                ]
-              },
               "ysc": {
                 "description": "SpanSelfTimeCount holds the count of the related spans' self_time.",
                 "type": [
@@ -675,7 +659,7 @@
                         "maxLength": 1024
                       },
                       "rc": {
-                        "description": "Resource identifies the destination service resource being operated on e.g. 'http://elastic.co:80', 'elasticsearch', 'rabbitmq/queue_name'",
+                        "description": "Resource identifies the destination service resource being operated on e.g. 'http://elastic.co:80', 'elasticsearch', 'rabbitmq/queue_name' DEPRECATED: this field will be removed in a future release",
                         "type": "string",
                         "maxLength": 1024
                       },
@@ -736,21 +720,21 @@
                         "description": "DecodedBodySize holds the size of the decoded payload.",
                         "type": [
                           "null",
-                          "number"
+                          "integer"
                         ]
                       },
                       "ebs": {
                         "description": "EncodedBodySize holds the size of the encoded payload.",
                         "type": [
                           "null",
-                          "number"
+                          "integer"
                         ]
                       },
                       "ts": {
                         "description": "TransferSize holds the total size of the payload.",
                         "type": [
                           "null",
-                          "number"
+                          "integer"
                         ]
                       }
                     }
@@ -975,11 +959,11 @@
           }
         },
         "required": [
-          "d",
-          "id",
           "n",
+          "t",
+          "id",
           "s",
-          "t"
+          "d"
         ]
       },
       "minItems": 0
@@ -1006,10 +990,10 @@
     }
   },
   "required": [
-    "d",
+    "tid",
+    "t",
     "id",
     "yc",
-    "tid",
-    "t"
+    "d"
   ]
 }

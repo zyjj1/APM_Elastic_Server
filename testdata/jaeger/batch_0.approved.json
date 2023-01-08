@@ -8,19 +8,24 @@
                 "version": "2.20.1"
             },
             "event": {
+                "duration": 243417000,
                 "outcome": "unknown"
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
                 "as": "thrift",
-                "peer_ipv4": 2130706433,
-                "peer_port": 50535,
                 "peer_service": "driver-client",
-                "sampler_param": true,
+                "sampler_param": "true",
                 "sampler_type": "const"
+            },
+            "numeric_labels": {
+                "peer_ipv4": 2130706433,
+                "peer_port": 50535
             },
             "processor": {
                 "event": "transaction",
@@ -39,13 +44,10 @@
                 "id": "00000000000000007be2fd98d0973be3"
             },
             "transaction": {
-                "duration": {
-                    "us": 243417
-                },
                 "id": "7be2fd98d0973be3",
                 "name": "Driver::findNearest",
                 "sampled": true,
-                "type": "custom"
+                "type": "unknown"
             }
         },
         {
@@ -55,16 +57,17 @@
                 "name": "Jaeger/Go",
                 "version": "2.20.1"
             },
-            "data_stream.type": "logs",
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
-                "event": "baggage",
                 "key": "customer",
                 "value": "Japanese Desserts"
             },
+            "message": "baggage",
             "processor": {
                 "event": "log",
                 "name": "log"
@@ -86,16 +89,17 @@
                 "name": "Jaeger/Go",
                 "version": "2.20.1"
             },
-            "data_stream.type": "logs",
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
-                "event": "Searching for nearby drivers",
                 "level": "info",
                 "location": "728,326"
             },
+            "message": "Searching for nearby drivers",
             "processor": {
                 "event": "log",
                 "name": "log"
@@ -129,7 +133,9 @@
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "parent": {
                 "id": "7be2fd98d0973be3"
@@ -153,7 +159,7 @@
             "transaction": {
                 "id": "7be2fd98d0973be3",
                 "sampled": true,
-                "type": "custom"
+                "type": "unknown"
             }
         },
         {
@@ -175,7 +181,9 @@
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "parent": {
                 "id": "7be2fd98d0973be3"
@@ -199,7 +207,7 @@
             "transaction": {
                 "id": "7be2fd98d0973be3",
                 "sampled": true,
-                "type": "custom"
+                "type": "unknown"
             }
         },
         {
@@ -221,7 +229,9 @@
             },
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "parent": {
                 "id": "7be2fd98d0973be3"
@@ -245,7 +255,7 @@
             "transaction": {
                 "id": "7be2fd98d0973be3",
                 "sampled": true,
-                "type": "custom"
+                "type": "unknown"
             }
         },
         {
@@ -255,14 +265,17 @@
                 "name": "Jaeger/Go",
                 "version": "2.20.1"
             },
-            "data_stream.type": "logs",
             "host": {
                 "hostname": "host01",
-                "ip": "10.0.0.13"
+                "ip": [
+                    "10.0.0.13"
+                ]
             },
             "labels": {
-                "event": "Search successful",
-                "level": "info",
+                "level": "info"
+            },
+            "message": "Search successful",
+            "numeric_labels": {
                 "num_drivers": 10
             },
             "processor": {

@@ -20,105 +20,92 @@ package systemtest_test
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
-	"go.elastic.co/apm"
+	"go.elastic.co/apm/v2"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/elastic/apm-server/systemtest"
 	"github.com/elastic/apm-server/systemtest/apmservertest"
 	"github.com/elastic/apm-server/systemtest/estest"
-	"github.com/elastic/go-elasticsearch/v7/esapi"
+	"github.com/elastic/go-elasticsearch/v8/esapi"
 )
 
-func TestKeepUnsampled(t *testing.T) {
-	for _, keepUnsampled := range []bool{false, true} {
-		t.Run(fmt.Sprint(keepUnsampled), func(t *testing.T) {
-			systemtest.CleanupElasticsearch(t)
-			srv := apmservertest.NewUnstartedServer(t)
-			srv.Config.Sampling = &apmservertest.SamplingConfig{
-				KeepUnsampled: keepUnsampled,
-			}
-			err := srv.Start()
-			require.NoError(t, err)
-
-			// Send one unsampled transaction, and one sampled transaction.
-			transactionType := "TestKeepUnsampled"
-			tracer := srv.Tracer()
-			tracer.StartTransaction("sampled", transactionType).End()
-			tracer.SetSampler(apm.NewRatioSampler(0))
-			tracer.StartTransaction("unsampled", transactionType).End()
-			tracer.Flush(nil)
-
-			expectedTransactionDocs := 1
-			if keepUnsampled {
-				expectedTransactionDocs++
-			}
-
-			result := systemtest.Elasticsearch.ExpectMinDocs(t, expectedTransactionDocs, "apm-*", estest.TermQuery{
-				Field: "transaction.type",
-				Value: transactionType,
-			})
-			assert.Len(t, result.Hits.Hits, expectedTransactionDocs)
-		})
-	}
-}
-
-func TestKeepUnsampledWarning(t *testing.T) {
+func TestDropUnsampled(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
-	srv := apmservertest.NewUnstartedServer(t)
-	srv.Config.Sampling = &apmservertest.SamplingConfig{KeepUnsampled: false}
-	srv.Config.Aggregation = &apmservertest.AggregationConfig{
-		Transactions: &apmservertest.TransactionAggregationConfig{Enabled: false},
+	srv := apmservertest.NewUnstartedServerTB(t)
+	srv.Config.Monitoring = newFastMonitoringConfig()
+	srv.Config.RUM = &apmservertest.RUMConfig{
+		Enabled: true,
 	}
-	require.NoError(t, srv.Start())
-	require.NoError(t, srv.Close())
+	srv.Config.AgentAuth.Anonymous = &apmservertest.AnonymousAuthConfig{
+		Enabled: true,
+	}
+	err := srv.Start()
+	require.NoError(t, err)
 
-	var messages []string
-	for _, log := range srv.Logs.All() {
-		messages = append(messages, log.Message)
-	}
-	assert.Contains(t, messages, ""+
-		"apm-server.sampling.keep_unsampled and apm-server.aggregation.transactions.enabled are both false, "+
-		"which will lead to incorrect metrics being reported in the APM UI",
+	// Sampled transaction (should be stored)
+	tracer := srv.Tracer()
+	tx := tracer.StartTransactionOptions("sampled", "TestDropUnsampled", apm.TransactionOptions{
+		Start: time.Unix(0, 0), // set timestamp for sorting purposes
+	})
+	tx.Duration = time.Second
+	tx.End()
+	tracer.Flush(nil)
+
+	// Unsampled backend transaction (should be dropped)
+	systemtest.SendBackendEventsLiteral(t, srv.URL, `
+{"metadata":{"service":{"name":"allowed","version":"1.0.0","agent":{"name":"backend","version":"0.0.0"}}}}
+{"transaction":{"sampled":false,"trace_id":"xyz","id":"yz","type":"TestDropUnsampled","duration":0,"span_count":{"started":1},"context":{"service":{"name":"allowed"}}}}`[1:])
+
+	// Unsampled RUM transaction (should be stored)
+	systemtest.SendRUMEventsLiteral(t, srv.URL, `
+{"metadata":{"service":{"name":"allowed","version":"1.0.0","agent":{"name":"rum-js","version":"0.0.0"}}}}
+{"transaction":{"sampled":false,"trace_id":"x","id":"y","type":"TestDropUnsampled","duration":0,"span_count":{"started":1},"context":{"service":{"name":"allowed"}}}}`[1:])
+
+	result := systemtest.Elasticsearch.ExpectMinDocs(t, 2, "traces-apm*", estest.TermQuery{
+		Field: "transaction.type",
+		Value: "TestDropUnsampled",
+	})
+	assert.Len(t, result.Hits.Hits, 2)
+	systemtest.ApproveEvents(t, t.Name(), result.Hits.Hits,
+		// RUM timestamps are set by the server based on the time the payload is received.
+		"@timestamp", "timestamp.us",
+		// RUM events have the source port recorded, and in the tests it will be dynamic
+		"source.port",
+		// Ignore dynamically generated trace/transaction ID
+		"trace.id", "transaction.id",
 	)
+
+	doc := getBeatsMonitoringStats(t, srv, nil)
+	transactionsDropped := gjson.GetBytes(doc.RawSource, "beats_stats.metrics.apm-server.sampling.transactions_dropped")
+	assert.Equal(t, int64(1), transactionsDropped.Int())
 }
 
 func TestTailSampling(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
-	cleanupFleet(t, systemtest.Fleet)
-	integrationPackage := getAPMIntegrationPackage(t, systemtest.Fleet)
-	err := systemtest.Fleet.InstallPackage(integrationPackage.Name, integrationPackage.Version)
-	require.NoError(t, err)
 
-	srv1 := apmservertest.NewUnstartedServer(t)
-	srv1.Config.DataStreams = &apmservertest.DataStreamsConfig{Enabled: true}
-	srv1.Config.Sampling = &apmservertest.SamplingConfig{
-		Tail: &apmservertest.TailSamplingConfig{
-			Enabled:  true,
-			Interval: time.Second,
-			Policies: []apmservertest.TailSamplingPolicy{{SampleRate: 0.5}},
-		},
-	}
-	srv1.Config.Monitoring = newFastMonitoringConfig()
-	require.NoError(t, srv1.Start())
+	apmIntegration1 := newAPMIntegration(t, map[string]interface{}{
+		"tail_sampling_enabled":  true,
+		"tail_sampling_interval": "1s",
+		"tail_sampling_policies": []map[string]interface{}{{"sample_rate": 0.5}},
+	})
 
-	srv2 := apmservertest.NewUnstartedServer(t)
-	srv2.Config.DataStreams = &apmservertest.DataStreamsConfig{Enabled: true}
-	srv2.Config.Sampling = srv1.Config.Sampling
-	require.NoError(t, srv2.Start())
+	apmIntegration2 := newAPMIntegration(t, map[string]interface{}{
+		"tail_sampling_enabled":  true,
+		"tail_sampling_interval": "1s",
+		"tail_sampling_policies": []map[string]interface{}{{"sample_rate": 0.5}},
+	})
 
 	const total = 200
 	const expected = 100 // 50%
 
-	tracer1 := srv1.Tracer()
-	tracer2 := srv2.Tracer()
+	tracer1 := apmIntegration1.Tracer
+	tracer2 := apmIntegration2.Tracer
 	for i := 0; i < total; i++ {
 		parent := tracer1.StartTransaction("GET /", "parent")
 		parent.Duration = time.Second * time.Duration(i+1)
@@ -146,12 +133,12 @@ func TestTailSampling(t *testing.T) {
 			estest.WithCondition(result.Hits.MinHitsCondition(expected)),
 		)
 		require.NoError(t, err)
-		assert.Len(t, result.Hits.Hits, expected)
+		assert.Equal(t, expected, len(result.Hits.Hits), transactionType)
 	}
 
 	// Make sure apm-server.sampling.tail metrics are published. Metric values are unit tested.
-	doc := getBeatsMonitoringStats(t, srv1, nil)
-	assert.True(t, gjson.GetBytes(doc.RawSource, "beats_stats.metrics.apm-server.sampling.tail").Exists())
+	doc := apmIntegration1.getBeatsMonitoringStats(t, nil)
+	assert.True(t, gjson.GetBytes(doc.RawSource, "apm-server.sampling.tail").Exists())
 
 	// Check tail-sampling config is reported in telemetry.
 	var state struct {
@@ -164,70 +151,9 @@ func TestTailSampling(t *testing.T) {
 			}
 		} `mapstructure:"apm-server"`
 	}
-	getBeatsMonitoringState(t, srv1, &state)
+	apmIntegration1.getBeatsMonitoringState(t, &state)
 	assert.True(t, state.APMServer.Sampling.Tail.Enabled)
 	assert.Equal(t, 1, state.APMServer.Sampling.Tail.Policies)
-}
-
-func TestTailSamplingUnlicensed(t *testing.T) {
-	// Start an ephemeral Elasticsearch container with a Basic license to
-	// test that tail-based sampling requires a platinum or trial license.
-	es, err := systemtest.NewUnstartedElasticsearchContainer()
-	require.NoError(t, err)
-	es.Env["xpack.license.self_generated.type"] = "basic"
-	require.NoError(t, es.Start())
-	defer es.Close()
-
-	// Data streams are required for tail-based sampling, but since we're using
-	// an ephemeral Elasticsearch container it's not straightforward to install
-	// the integration package. We won't be indexing anything, so just don't wait
-	// for the integration package to be installed in this test.
-	waitForIntegration := false
-	srv := apmservertest.NewUnstartedServer(t)
-	srv.Config.Output.Elasticsearch.Hosts = []string{es.Addr}
-	srv.Config.DataStreams = &apmservertest.DataStreamsConfig{
-		Enabled:            true,
-		WaitForIntegration: &waitForIntegration,
-	}
-	srv.Config.Sampling = &apmservertest.SamplingConfig{
-		Tail: &apmservertest.TailSamplingConfig{
-			Enabled:  true,
-			Interval: time.Second,
-			Policies: []apmservertest.TailSamplingPolicy{{SampleRate: 0.5}},
-		},
-	}
-	require.NoError(t, srv.Start())
-
-	// Send some transactions to trigger an indexing attempt.
-	tracer := srv.Tracer()
-	for i := 0; i < 100; i++ {
-		tx := tracer.StartTransaction("GET /", "parent")
-		tx.Duration = time.Second * time.Duration(i+1)
-		tx.End()
-	}
-	tracer.Flush(nil)
-
-	timeout := time.After(time.Minute)
-	logs := srv.Logs.Iterator()
-	var done bool
-	for !done {
-		select {
-		case entry := <-logs.C():
-			done = strings.Contains(entry.Message, "invalid license")
-		case <-timeout:
-			t.Fatal("timed out waiting for log message")
-		}
-	}
-
-	// Due to the failing license check, APM Server will refuse to index anything.
-	var result estest.SearchResult
-	_, err = es.Client.Search("traces-apm*").Do(context.Background(), &result)
-	assert.NoError(t, err)
-	assert.Empty(t, result.Hits.Hits)
-
-	// The server will wait for the enqueued events to be published before
-	// shutting down gracefully, so shutdown forcefully.
-	srv.Kill()
 }
 
 func refreshPeriodically(t *testing.T, interval time.Duration, index ...string) {

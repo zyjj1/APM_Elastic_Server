@@ -24,10 +24,8 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
-	"sort"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,7 +37,7 @@ import (
 
 func TestAPMServerInstrumentation(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
-	srv := apmservertest.NewUnstartedServer(t)
+	srv := apmservertest.NewUnstartedServerTB(t)
 	srv.Config.Instrumentation = &apmservertest.InstrumentationConfig{Enabled: true}
 	err := srv.Start()
 	require.NoError(t, err)
@@ -50,7 +48,7 @@ func TestAPMServerInstrumentation(t *testing.T) {
 	tracer.StartTransaction("name", "type").End()
 	tracer.Flush(nil)
 
-	result := systemtest.Elasticsearch.ExpectDocs(t, "apm-*", estest.BoolQuery{
+	result := systemtest.Elasticsearch.ExpectDocs(t, "traces-apm*", estest.BoolQuery{
 		Filter: []interface{}{
 			estest.TermQuery{
 				Field: "processor.event",
@@ -63,6 +61,12 @@ func TestAPMServerInstrumentation(t *testing.T) {
 			estest.TermQuery{
 				Field: "transaction.type",
 				Value: "request",
+			},
+			// Only look for the request made by the agent for sending events.
+			// There may be other requests, such as for central config.
+			estest.TermQuery{
+				Field: "transaction.name",
+				Value: "POST /intake/v2/events",
 			},
 		},
 	})
@@ -95,7 +99,7 @@ func TestAPMServerInstrumentation(t *testing.T) {
 func TestAPMServerInstrumentationAuth(t *testing.T) {
 	test := func(t *testing.T, external, useSecretToken, useAPIKey bool) {
 		systemtest.CleanupElasticsearch(t)
-		srv := apmservertest.NewUnstartedServer(t)
+		srv := apmservertest.NewUnstartedServerTB(t)
 		srv.Config.AgentAuth.SecretToken = "hunter2"
 		srv.Config.AgentAuth.APIKey = &apmservertest.APIKeyAuthConfig{Enabled: true}
 		srv.Config.Instrumentation = &apmservertest.InstrumentationConfig{Enabled: true}
@@ -148,7 +152,7 @@ func TestAPMServerInstrumentationAuth(t *testing.T) {
 		tracer.StartTransaction("name", "type").End()
 		tracer.Flush(nil)
 
-		systemtest.Elasticsearch.ExpectDocs(t, "apm-*", estest.BoolQuery{
+		systemtest.Elasticsearch.ExpectDocs(t, "traces-apm*", estest.BoolQuery{
 			Filter: []interface{}{
 				estest.TermQuery{
 					Field: "processor.event",
@@ -177,79 +181,4 @@ func TestAPMServerInstrumentationAuth(t *testing.T) {
 		// sending data to external server, API Key specified
 		test(t, true, false, true)
 	})
-}
-
-func TestAPMServerProfiling(t *testing.T) {
-	// TODO(axw) the heap profiling test specifically is flaky. This is
-	// a highly experimental feature, so disable system tests for now.
-	t.Skip("flaky test: https://github.com/elastic/apm-server/issues/5322")
-
-	test := func(t *testing.T, profilingConfig *apmservertest.ProfilingConfig, expectedMetrics []string) {
-		systemtest.CleanupElasticsearch(t)
-		srv := apmservertest.NewUnstartedServer(t)
-		srv.Config.Instrumentation = &apmservertest.InstrumentationConfig{
-			Enabled:   true,
-			Profiling: profilingConfig,
-		}
-		err := srv.Start()
-		require.NoError(t, err)
-
-		// Generate some load to cause the server to consume resources.
-		tracer := srv.Tracer()
-		for i := 0; i < 1000; i++ {
-			tracer.StartTransaction("name", "type").End()
-		}
-		tracer.Flush(nil)
-
-		result := systemtest.Elasticsearch.ExpectDocs(t, "apm-*", estest.TermQuery{
-			Field: "processor.event",
-			Value: "profile",
-		})
-		assert.Equal(t, expectedMetrics, profileMetricNames(result))
-	}
-	t.Run("cpu", func(t *testing.T) {
-		test(t, &apmservertest.ProfilingConfig{
-			CPU: &apmservertest.CPUProfilingConfig{
-				Enabled:  true,
-				Interval: time.Second,
-				Duration: time.Second,
-			},
-		}, []string{"cpu.ns", "duration", "samples.count"})
-	})
-	t.Run("heap", func(t *testing.T) {
-		test(t, &apmservertest.ProfilingConfig{
-			Heap: &apmservertest.HeapProfilingConfig{
-				Enabled:  true,
-				Interval: time.Second,
-			},
-		}, []string{
-			"alloc_objects.count",
-			"alloc_space.bytes",
-			"inuse_objects.count",
-			"inuse_space.bytes",
-		})
-	})
-}
-
-func profileMetricNames(result estest.SearchResult) []string {
-	unique := make(map[string]struct{})
-	var metricNames []string
-	for _, hit := range result.Hits.Hits {
-		profileField, ok := hit.Source["profile"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		for k, v := range profileField {
-			if _, ok := v.(float64); !ok {
-				continue
-			}
-			if _, ok := unique[k]; ok {
-				continue
-			}
-			unique[k] = struct{}{}
-			metricNames = append(metricNames, k)
-		}
-	}
-	sort.Strings(metricNames)
-	return metricNames
 }

@@ -1,6 +1,6 @@
 // Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
-// or more contributor license agreements. Licensed under the Elastic License;
-// you may not use this file except in compliance with the Elastic License.
+// or more contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
 
 package sampling
 
@@ -10,16 +10,14 @@ import (
 	"github.com/dgraph-io/badger/v2"
 	"github.com/pkg/errors"
 
-	"github.com/elastic/apm-server/elasticsearch"
-	"github.com/elastic/apm-server/model"
+	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-server/x-pack/apm-server/sampling/eventstorage"
 	"github.com/elastic/apm-server/x-pack/apm-server/sampling/pubsub"
+	"github.com/elastic/go-elasticsearch/v8"
 )
 
 // Config holds configuration for Processor.
 type Config struct {
-	// BeatID holds the unique ID of this apm-server.
-	BeatID string
-
 	// BatchProcessor holds the model.BatchProcessor, for asynchronously processing
 	// tail-sampled trace events.
 	BatchProcessor model.BatchProcessor
@@ -62,13 +60,26 @@ type LocalSamplingConfig struct {
 // RemoteSamplingConfig holds Processor configuration related to publishing and
 // subscribing to remote sampling decisions.
 type RemoteSamplingConfig struct {
+	// CompressionLevel holds the gzip compression level to use when bulk
+	// indexing sampled trace IDs.
+	CompressionLevel int
+
 	// Elasticsearch holds the Elasticsearch client to use for publishing
 	// and subscribing to remote sampling decisions.
-	Elasticsearch elasticsearch.Client
+	Elasticsearch *elasticsearch.Client
 
 	// SampledTracesDataStream holds the identifiers for the Elasticsearch
 	// data stream for storing and searching sampled trace IDs.
 	SampledTracesDataStream DataStreamConfig
+
+	// UUID holds a unique ID to associate with sampled trace documents
+	// published by the processor.
+	//
+	// UUID will be stored as `agent.ephemeral_id`, and is used to avoid
+	// sampled trace documents being read by the same process that wrote
+	// them. This is purely an optimisation, as the processor must already
+	// cater for observing a sampled trace ID multiple times.
+	UUID string
 }
 
 // DataStreamConfig holds configuration to identify a data stream.
@@ -90,11 +101,20 @@ type StorageConfig struct {
 	// DB will not be closed when the processor is closed.
 	DB *badger.DB
 
+	// Storage holds the read writers which provide sharded, locked access to storage.
+	//
+	// Storage lives outside processor lifecycle and will not be closed when processor
+	// is closed
+	Storage *eventstorage.ShardedReadWriter
+
 	// StorageDir holds the directory in which event storage will be maintained.
 	StorageDir string
 
 	// StorageGCInterval holds the amount of time between storage garbage collections.
 	StorageGCInterval time.Duration
+
+	// StorageLimit for the badger database, in bytes.
+	StorageLimit uint64
 
 	// TTL holds the amount of time before events and sampling decisions
 	// are expired from local storage.
@@ -151,9 +171,6 @@ type PolicyCriteria struct {
 
 // Validate validates the configuration.
 func (config Config) Validate() error {
-	if config.BeatID == "" {
-		return errors.New("BeatID unspecified")
-	}
 	if config.BatchProcessor == nil {
 		return errors.New("BatchProcessor unspecified")
 	}
@@ -198,11 +215,17 @@ func (config LocalSamplingConfig) validate() error {
 }
 
 func (config RemoteSamplingConfig) validate() error {
+	if config.CompressionLevel < -1 || config.CompressionLevel > 9 {
+		return errors.New("CompressionLevel out of range [-1,9]")
+	}
 	if config.Elasticsearch == nil {
 		return errors.New("Elasticsearch unspecified")
 	}
 	if err := config.SampledTracesDataStream.validate(); err != nil {
 		return errors.New("SampledTracesDataStream unspecified or invalid")
+	}
+	if config.UUID == "" {
+		return errors.New("UUID unspecified")
 	}
 	return nil
 }
@@ -214,6 +237,9 @@ func (config DataStreamConfig) validate() error {
 func (config StorageConfig) validate() error {
 	if config.DB == nil {
 		return errors.New("DB unspecified")
+	}
+	if config.Storage == nil {
+		return errors.New("Storage unspecified")
 	}
 	if config.StorageDir == "" {
 		return errors.New("StorageDir unspecified")
@@ -228,11 +254,8 @@ func (config StorageConfig) validate() error {
 }
 
 func (p Policy) validate() error {
-	// TODO(axw) allow sampling rate of 1.0 (100%), which would
-	// cause the root transaction to be indexed, and a sampling
-	// decision to be written to local storage, immediately.
-	if p.SampleRate < 0 || p.SampleRate >= 1 {
-		return errors.New("SampleRate unspecified or out of range [0,1)")
+	if p.SampleRate < 0 || p.SampleRate > 1 {
+		return errors.New("SampleRate unspecified or out of range [0,1]")
 	}
 	return nil
 }

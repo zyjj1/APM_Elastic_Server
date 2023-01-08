@@ -21,7 +21,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"strings"
 	"testing"
@@ -29,7 +28,7 @@ import (
 	"github.com/jaegertracing/jaeger/proto-gen/api_v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.elastic.co/apm/apmtest"
+	"go.elastic.co/apm/v2/apmtest"
 	"go.elastic.co/fastjson"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.uber.org/zap/zapcore"
@@ -41,14 +40,10 @@ import (
 
 func TestAPMServerGRPCRequestLoggingValid(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
-	srv := apmservertest.NewUnstartedServer(t)
-	srv.Config.Jaeger = &apmservertest.JaegerConfig{
-		GRPCEnabled: true,
-		GRPCHost:    "localhost:0",
-	}
+	srv := apmservertest.NewUnstartedServerTB(t)
 	err := srv.Start()
 	require.NoError(t, err)
-	addr := srv.JaegerGRPCAddr
+	addr := serverAddr(srv)
 	conn, err := grpc.Dial(addr, grpc.WithInsecure())
 	require.NoError(t, err)
 	defer conn.Close()
@@ -70,14 +65,16 @@ func TestAPMServerGRPCRequestLoggingValid(t *testing.T) {
 	var foundGRPC, foundJaeger bool
 	for _, entry := range srv.Logs.All() {
 		if entry.Logger == "beater.grpc" {
-			require.Equal(t, "/opentelemetry.proto.collector.trace.v1.TraceService/Export", entry.Fields["grpc.request.method"])
-			require.Equal(t, "OK", entry.Fields["grpc.response.status_code"])
-			foundGRPC = true
-		}
-		if entry.Logger == "beater.jaeger" {
-			require.Equal(t, "/jaeger.api_v2.CollectorService/PostSpans", entry.Fields["grpc.request.method"])
-			require.Equal(t, "OK", entry.Fields["grpc.response.status_code"])
-			foundJaeger = true
+			switch entry.Fields["grpc.request.method"] {
+			case "/jaeger.api_v2.CollectorService/PostSpans":
+				require.Equal(t, "beater.grpc", entry.Logger)
+				require.Equal(t, "OK", entry.Fields["grpc.response.status_code"])
+				foundJaeger = true
+			case "/opentelemetry.proto.collector.trace.v1.TraceService/Export":
+				require.Equal(t, "beater.grpc", entry.Logger)
+				require.Equal(t, "OK", entry.Fields["grpc.response.status_code"])
+				foundGRPC = true
+			}
 		}
 	}
 	require.True(t, foundGRPC)
@@ -85,7 +82,7 @@ func TestAPMServerGRPCRequestLoggingValid(t *testing.T) {
 }
 
 func TestAPMServerRequestLoggingValid(t *testing.T) {
-	srv := apmservertest.NewServer(t)
+	srv := apmservertest.NewServerTB(t)
 	eventsURL := srv.URL + "/intake/v2/events"
 
 	// Send a request to the server with a single valid event.
@@ -106,7 +103,7 @@ func TestAPMServerRequestLoggingValid(t *testing.T) {
 	))
 	resp, err = http.Post(eventsURL, "application/x-ndjson", overlargeBody)
 	require.NoError(t, err)
-	io.Copy(ioutil.Discard, resp.Body) // Wait for server to respond
+	io.Copy(io.Discard, resp.Body) // Wait for server to respond
 	resp.Body.Close()
 
 	type requestEntry struct {
@@ -146,7 +143,7 @@ func TestAPMServerRequestLoggingValid(t *testing.T) {
 
 	assert.NotContains(t, logEntries[0].Fields, "error")
 	assert.Regexp(t, "validation error: 'transaction' required", logEntries[1].Fields["error.message"])
-	assert.Equal(t, "event exceeded the permitted size.", logEntries[2].Fields["error.message"])
+	assert.Equal(t, "event exceeded the permitted size", logEntries[2].Fields["error.message"])
 }
 
 // validMetadataJSON returns valid JSON-encoded metadata,

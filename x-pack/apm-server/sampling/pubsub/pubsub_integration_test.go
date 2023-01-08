@@ -1,6 +1,6 @@
 // Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
-// or more contributor license agreements. Licensed under the Elastic License;
-// you may not use this file except in compliance with the Elastic License.
+// or more contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
 
 package pubsub_test
 
@@ -19,9 +19,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/elastic/go-elasticsearch/v7/esapi"
+	"github.com/elastic/go-elasticsearch/v8"
+	"github.com/elastic/go-elasticsearch/v8/esapi"
 
-	"github.com/elastic/apm-server/elasticsearch"
 	"github.com/elastic/apm-server/x-pack/apm-server/sampling/pubsub"
 )
 
@@ -34,7 +34,7 @@ const (
 
 func TestElasticsearchIntegration_PublishSampledTraceIDs(t *testing.T) {
 	const (
-		localBeatID = "local_beat_id"
+		localServerID = "local_server_id"
 	)
 
 	dataStream := pubsub.DataStreamConfig{
@@ -49,7 +49,7 @@ func TestElasticsearchIntegration_PublishSampledTraceIDs(t *testing.T) {
 	es, err := pubsub.New(pubsub.Config{
 		Client:         client,
 		DataStream:     dataStream,
-		BeatID:         localBeatID,
+		ServerID:       localServerID,
 		FlushInterval:  100 * time.Millisecond,
 		SearchInterval: time.Minute,
 	})
@@ -81,8 +81,8 @@ func TestElasticsearchIntegration_PublishSampledTraceIDs(t *testing.T) {
 		Hits struct {
 			Hits []struct {
 				Source struct {
-					Observer struct {
-						ID string
+					Agent struct {
+						EphemeralID string `json:"ephemeral_id"`
 					}
 					Trace struct {
 						ID string
@@ -114,7 +114,7 @@ func TestElasticsearchIntegration_PublishSampledTraceIDs(t *testing.T) {
 
 	output := make([]string, len(input))
 	for i, hit := range result.Hits.Hits {
-		assert.Equal(t, localBeatID, hit.Source.Observer.ID)
+		assert.Equal(t, localServerID, hit.Source.Agent.EphemeralID)
 		output[i] = hit.Source.Trace.ID
 	}
 	assert.ElementsMatch(t, input, output)
@@ -122,8 +122,8 @@ func TestElasticsearchIntegration_PublishSampledTraceIDs(t *testing.T) {
 
 func TestElasticsearchIntegration_SubscribeSampledTraceIDs(t *testing.T) {
 	const (
-		localBeatID  = "local_observer_id"
-		remoteBeatID = "remote_observer_id"
+		localServerID  = "local_agent_id"
+		remoteServerID = "remote_agent_id"
 	)
 
 	dataStream := pubsub.DataStreamConfig{
@@ -138,7 +138,7 @@ func TestElasticsearchIntegration_SubscribeSampledTraceIDs(t *testing.T) {
 	es, err := pubsub.New(pubsub.Config{
 		Client:         client,
 		DataStream:     dataStream,
-		BeatID:         localBeatID,
+		ServerID:       localServerID,
 		FlushInterval:  time.Minute,
 		SearchInterval: 100 * time.Millisecond,
 	})
@@ -160,19 +160,19 @@ func TestElasticsearchIntegration_SubscribeSampledTraceIDs(t *testing.T) {
 		Index struct{} `json:"index"`
 	}
 	type doc struct {
-		Observer struct {
-			ID string `json:"id"`
-		} `json:"observer"`
+		Agent struct {
+			EphemeralID string `json:"ephemeral_id"`
+		} `json:"agent"`
 		Trace struct {
 			ID string `json:"id"`
 		} `json:"trace"`
 	}
-	indexTraceID := func(observerID string, traceID ...string) {
+	indexTraceID := func(agentID string, traceID ...string) {
 		var body bytes.Buffer
 		enc := json.NewEncoder(&body)
 		for _, id := range traceID {
 			var doc doc
-			doc.Observer.ID = observerID
+			doc.Agent.EphemeralID = agentID
 			doc.Trace.ID = id
 			assert.NoError(t, enc.Encode(indexAction{}))
 			assert.NoError(t, enc.Encode(&doc))
@@ -192,7 +192,7 @@ func TestElasticsearchIntegration_SubscribeSampledTraceIDs(t *testing.T) {
 	for i := 0; i < 500; i++ {
 		input = append(input, uuid.Must(uuid.NewV4()).String())
 	}
-	indexTraceID(localBeatID, input...)
+	indexTraceID(localServerID, input...)
 	expectNone(t, out)
 
 	// Index some remote observations. Repeat twice, to ensure that the
@@ -202,7 +202,7 @@ func TestElasticsearchIntegration_SubscribeSampledTraceIDs(t *testing.T) {
 		for i := 0; i < 500; i++ {
 			input = append(input, uuid.Must(uuid.NewV4()).String())
 		}
-		indexTraceID(remoteBeatID, input...)
+		indexTraceID(remoteServerID, input...)
 
 		output := make([]string, len(input))
 		for i := range input {
@@ -212,7 +212,7 @@ func TestElasticsearchIntegration_SubscribeSampledTraceIDs(t *testing.T) {
 	}
 }
 
-func recreateDataStream(tb testing.TB, client elasticsearch.Client, dataStream pubsub.DataStreamConfig) {
+func recreateDataStream(tb testing.TB, client *elasticsearch.Client, dataStream pubsub.DataStreamConfig) {
 	body := strings.NewReader(`{
   "settings": {
     "index.number_of_shards": 1
@@ -220,7 +220,7 @@ func recreateDataStream(tb testing.TB, client elasticsearch.Client, dataStream p
   "mappings": {
     "properties": {
       "event.ingested": {"type": "date"},
-      "observer": {
+      "agent": {
         "properties": {
           "id": {"type": "keyword"}
         }
@@ -254,7 +254,7 @@ func recreateDataStream(tb testing.TB, client elasticsearch.Client, dataStream p
 	resp.Body.Close()
 }
 
-func newElasticsearchClient(tb testing.TB) elasticsearch.Client {
+func newElasticsearchClient(tb testing.TB) *elasticsearch.Client {
 	switch strings.ToLower(os.Getenv("INTEGRATION_TESTS")) {
 	case "1", "true":
 	default:
@@ -265,10 +265,10 @@ func newElasticsearchClient(tb testing.TB) elasticsearch.Client {
 		getenvDefault("ES_HOST", defaultElasticsearchHost),
 		getenvDefault("ES_PORT", defaultElasticsearchPort),
 	)
-	client, err := elasticsearch.NewClient(&elasticsearch.Config{
-		Hosts:    []string{esHost},
-		Username: getenvDefault("ES_USER", defaultElasticsearchUser),
-		Password: getenvDefault("ES_PASS", defaultElasticsearchPass),
+	client, err := elasticsearch.NewClient(elasticsearch.Config{
+		Addresses: []string{"http://" + esHost},
+		Username:  getenvDefault("ES_USER", defaultElasticsearchUser),
+		Password:  getenvDefault("ES_PASS", defaultElasticsearchPass),
 	})
 	require.NoError(tb, err)
 	return client

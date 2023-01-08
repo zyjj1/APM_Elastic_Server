@@ -18,7 +18,8 @@
 package apmservertest
 
 import (
-	"io/ioutil"
+	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -32,14 +33,14 @@ import (
 
 // ServerCommand returns a ServerCmd (wrapping os/exec) for running
 // apm-server with args.
-func ServerCommand(subcommand string, args ...string) *ServerCmd {
-	binary, buildErr := BuildServerBinary(runtime.GOOS)
+func ServerCommand(ctx context.Context, subcommand string, args ...string) *ServerCmd {
+	binary, buildErr := BuildServerBinary(runtime.GOOS, runtime.GOARCH)
 	if buildErr != nil {
 		// Dummy command; Start etc. will return the build error.
 		binary = "/usr/bin/false"
 	}
 	args = append([]string{subcommand}, args...)
-	cmd := exec.Command(binary, args...)
+	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.SysProcAttr = serverCommandSysProcAttr
 	return &ServerCmd{
 		Cmd:        cmd,
@@ -101,6 +102,11 @@ func (c *ServerCmd) Wait() error {
 	return c.Cmd.Wait()
 }
 
+// InterruptProcess sends an interrupt signal
+func (c *ServerCmd) InterruptProcess() error {
+	return interruptProcess(c.Process)
+}
+
 func (c *ServerCmd) prestart() error {
 	if c.buildError != nil {
 		return c.buildError
@@ -114,11 +120,11 @@ func (c *ServerCmd) prestart() error {
 }
 
 func (c *ServerCmd) createTempDir() error {
-	tempdir, err := ioutil.TempDir("", "apm-server-systemtest")
+	tempdir, err := os.MkdirTemp("", "apm-server-systemtest")
 	if err != nil {
 		return err
 	}
-	if err := ioutil.WriteFile(filepath.Join(tempdir, "apm-server.yml"), nil, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tempdir, "apm-server.yml"), nil, 0644); err != nil {
 		os.RemoveAll(tempdir)
 		return err
 	}
@@ -149,22 +155,9 @@ func (c *ServerCmd) cleanup() {
 	}
 }
 
-// BuildServerBinary builds the apm-server binary for the given GOOS,
-// returning its absolute path.
-func BuildServerBinary(goos string) (string, error) {
-	// Build apm-server binary in the repo root, unless
-	// we're building for another GOOS, in which case we
-	// suffix the binary with that GOOS and place it in
-	// the build directory.
-	var reldir, suffix string
-	if goos != runtime.GOOS {
-		reldir = "build/"
-		suffix = "-" + goos
-		if runtime.GOOS == "windows" {
-			suffix += ".exe"
-		}
-	}
-
+// BuildServerBinary builds the apm-server binary for the given GOOS
+// and GOARCH, returning its absolute path.
+func BuildServerBinary(goos, goarch string) (string, error) {
 	apmServerBinaryMu.Lock()
 	defer apmServerBinaryMu.Unlock()
 	if binary := apmServerBinary[goos]; binary != "" {
@@ -175,11 +168,14 @@ func BuildServerBinary(goos string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	abspath := filepath.Join(repoRoot, reldir, "apm-server"+suffix)
+	relpath := filepath.Join("build", fmt.Sprintf("apm-server-%s-%s", goos, goarch))
+	if goos == "windows" {
+		relpath += ".exe"
+	}
+	abspath := filepath.Join(repoRoot, relpath)
 
 	log.Println("Building apm-server...")
-	cmd := exec.Command("go", "build", "-o", abspath, "./x-pack/apm-server")
-	cmd.Env = append(os.Environ(), "GOOS="+goos)
+	cmd := exec.Command("make", relpath)
 	cmd.Dir = repoRoot
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

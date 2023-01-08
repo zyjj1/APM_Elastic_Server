@@ -31,12 +31,12 @@ These release notes include all changes made in the alpha, beta, and RC releases
 
 Also see:
 
-* {apm-server-ref-v}/breaking-changes.html[Breaking changes in 7.0]
+* {apm-guide-ref}/breaking-changes.html[Breaking changes in 7.0]
 
 [float]
 ==== Added
 
-- Perform Basic license check on Elasticsearch connect {pull}2077[2077].
+- Perform Basic license check on {es} connect {pull}2077[2077].
 - Update Elastic APM Go agent to v1.1.2 {pull}1711[1711], {pull}1728[1728].
 - Update response format of the healthcheck handler and prettyfy all JSON responses {pull}1748[1748].
 - Add `transaction.type` to error data {pull}1781[1781].
@@ -44,7 +44,7 @@ Also see:
 - Add `observer.version_major` {pull}1857[1857].
 - Move default index configuration to code {pull}1865[1865].
 - Change default user-agent pipeline to index information under root key `user_agent` {pull}1871[1871].
-- Use _doc as document type for Elasticsearch >= 7.0.0 https://github.com/elastic/beats/pull/9056[beats/9057].
+- Use _doc as document type for {es} >= 7.0.0 https://github.com/elastic/beats/pull/9056[beats/9057].
 - Automatically cap signed integers to 63bits https://github.com/elastic/beats/pull/8991[beats/8991].
 - Build default distribution under the Elastic License. {pull}1645[1645].
 - Log to journald under systemd by default rather than file. To revert this behaviour override BEAT_LOG_OPTS with an empty value https://github.com/elastic/beats/pull/8942[beats/8942] via {pull}1645[1645].
@@ -52,7 +52,7 @@ Also see:
 [float]
 ==== Removed
 
-- Remove support for deprecated Intake v1 endpoints. {apm-overview-ref-v}/breaking-7.0.0.html#breaking-remove-v1[More information], {pull}1731[1731].
+- Remove support for deprecated Intake v1 endpoints. {apm-guide-ref}/breaking-7.0.0.html#breaking-remove-v1[More information], {pull}1731[1731].
 - Remove `concurrent_requests` setting and use number of CPUs instead {pull}1749[1749].
 - Remove `frontend` setting {pull}1751[1751].
 - Remove `metrics.enabled` setting {pull}1759[1759].
@@ -70,7 +70,7 @@ Also see:
 
 [float]
 ==== Breaking Changes
-- Move fields in ES to be ECS compliant. {apm-overview-ref-v}/breaking-7.0.0.html#breaking-ecs[More information], {pull}1766[1766], {pull}1783[1783], {pull}1813[1813], {pull}1836[1836], {pull}1838[1838], {pull}1844[1844], {pull}1848[1848], {pull}1849[1849], {pull}1863[1863], {pull}1870[1870].
+- Move fields in ES to be ECS compliant. {apm-guide-ref}/breaking-7.0.0.html#breaking-ecs[More information], {pull}1766[1766], {pull}1783[1783], {pull}1813[1813], {pull}1836[1836], {pull}1838[1838], {pull}1844[1844], {pull}1848[1848], {pull}1849[1849], {pull}1863[1863], {pull}1870[1870].
 - Rename `transaction.span_count.dropped.total` to `transaction.span_count.dropped` {pull}1809[1809].
 - Rename `span.hex_id` to `span.id` {pull}1811[1811].
 - Index `error.exception` as array of objects {pull}1825[1825]
@@ -109,7 +109,7 @@ https://github.com/elastic/apm-server/compare/v7.0.0-alpha2\...v7.0.0-beta1[View
 
 [float]
 ==== Breaking Changes
-- Move fields in ES to be ECS compliant. {apm-overview-ref-v}/breaking-7.0.0.html#breaking-ecs[More information], {pull}1766[1766], {pull}1783[1783], {pull}1813[1813], {pull}1836[1836], {pull}1838[1838], {pull}1844[1844], {pull}1848[1848], {pull}1849[1849], {pull}1863[1863], {pull}1870[1870].
+- Move fields in ES to be ECS compliant. {apm-guide-ref}/breaking-7.0.0.html#breaking-ecs[More information], {pull}1766[1766], {pull}1783[1783], {pull}1813[1813], {pull}1836[1836], {pull}1838[1838], {pull}1844[1844], {pull}1848[1848], {pull}1849[1849], {pull}1863[1863], {pull}1870[1870].
 
 [float]
 ==== Added
@@ -130,7 +130,7 @@ https://github.com/elastic/apm-server/compare/v7.0.0-alpha2\...v7.0.0-beta1[View
 [float]
 ==== Removed
 
-- Remove support for deprecated Intake v1 endpoints. {apm-overview-ref-v}/breaking-7.0.0.html#breaking-remove-v1[More information], {pull}1731[1731].
+- Remove support for deprecated Intake v1 endpoints. {apm-guide-ref}/breaking-7.0.0.html#breaking-remove-v1[More information], {pull}1731[1731].
 - Remove `concurrent_requests` setting and use number of CPUs instead {pull}1749[1749].
 - Remove `frontend` setting {pull}1751[1751].
 - Remove `metrics.enabled` setting {pull}1759[1759].
@@ -146,7 +146,7 @@ https://github.com/elastic/apm-server/compare/v7.0.0-alpha1\...v7.0.0-alpha2[Vie
 ==== Added
 
 - Update Go to 1.11.2 {pull}1605[1605].
-- Use _doc as document type for Elasticsearch >= 7.0.0 https://github.com/elastic/beats/pull/9056[beats/9057].
+- Use _doc as document type for {es} >= 7.0.0 https://github.com/elastic/beats/pull/9056[beats/9057].
 - Automatically cap signed integers to 63bits https://github.com/elastic/beats/pull/8991[beats/8991].
 - Build default distribution under the Elastic License. {pull}1645[1645].
 - Log to journald under systemd by default rather than file. To revert this behaviour override BEAT_LOG_OPTS with an empty value https://github.com/elastic/beats/pull/8942[beats/8942] via {pull}1645[1645].

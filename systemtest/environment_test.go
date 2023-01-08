@@ -18,7 +18,6 @@
 package systemtest_test
 
 import (
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,15 +31,14 @@ import (
 
 func TestDefaultServiceEnvironment(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
-	srv := apmservertest.NewUnstartedServer(t)
+	srv := apmservertest.NewUnstartedServerTB(t)
 	srv.Config.DefaultServiceEnvironment = "default"
 	err := srv.Start()
 	require.NoError(t, err)
 
-	defer os.Unsetenv("ELASTIC_APM_ENVIRONMENT")
 	tracerDefaultEnvironment := srv.Tracer()
 
-	os.Setenv("ELASTIC_APM_ENVIRONMENT", "specified")
+	t.Setenv("ELASTIC_APM_ENVIRONMENT", "specified")
 	tracerSpecifiedEnvironment := srv.Tracer()
 
 	tracerDefaultEnvironment.StartTransaction("default_environment", "type").End()
@@ -49,7 +47,7 @@ func TestDefaultServiceEnvironment(t *testing.T) {
 	tracerSpecifiedEnvironment.StartTransaction("specified_environment", "type").End()
 	tracerSpecifiedEnvironment.Flush(nil)
 
-	result := systemtest.Elasticsearch.ExpectMinDocs(t, 2, "apm-*",
+	result := systemtest.Elasticsearch.ExpectMinDocs(t, 2, "traces-apm*",
 		estest.TermQuery{Field: "processor.event", Value: "transaction"},
 	)
 	environments := make(map[string]string)

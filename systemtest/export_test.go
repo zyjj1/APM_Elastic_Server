@@ -18,7 +18,7 @@
 package systemtest_test
 
 import (
-	"io/ioutil"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,15 +31,15 @@ import (
 )
 
 func exportConfigCommand(t *testing.T, args ...string) (_ *apmservertest.ServerCmd, homedir string) {
-	tempdir, err := ioutil.TempDir("", "systemtest")
+	tempdir, err := os.MkdirTemp("", "systemtest")
 	require.NoError(t, err)
 	t.Cleanup(func() { os.RemoveAll(tempdir) })
-	err = ioutil.WriteFile(filepath.Join(tempdir, "apm-server.yml"), nil, 0644)
+	err = os.WriteFile(filepath.Join(tempdir, "apm-server.yml"), nil, 0644)
 	require.NoError(t, err)
 
 	allArgs := []string{"config", "--path.home", tempdir}
 	allArgs = append(allArgs, args...)
-	return apmservertest.ServerCommand("export", allArgs...), tempdir
+	return apmservertest.ServerCommand(context.Background(), "export", allArgs...), tempdir
 }
 
 func TestExportConfigDefaults(t *testing.T) {
@@ -48,16 +48,11 @@ func TestExportConfigDefaults(t *testing.T) {
 	require.NoError(t, err)
 
 	expectedConfig := strings.ReplaceAll(`
-logging:
-  ecs: true
-  json: true
-  metrics:
-    enabled: false
 path:
-  config: /home/apm-server
-  data: /home/apm-server/data
-  home: /home/apm-server
-  logs: /home/apm-server/logs
+    config: /home/apm-server
+    data: /home/apm-server/data
+    home: /home/apm-server
+    logs: /home/apm-server/logs
 `[1:], "/home/apm-server", tempdir)
 	assert.Equal(t, expectedConfig, string(out))
 }
@@ -65,21 +60,22 @@ path:
 func TestExportConfigOverrideDefaults(t *testing.T) {
 	cmd, tempdir := exportConfigCommand(t,
 		"-E", "logging.metrics.enabled=true",
+		"-E", "seccomp.enabled=true",
 	)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err)
 
 	expectedConfig := strings.ReplaceAll(`
 logging:
-  ecs: true
-  json: true
-  metrics:
-    enabled: true
+    metrics:
+        enabled: true
 path:
-  config: /home/apm-server
-  data: /home/apm-server/data
-  home: /home/apm-server
-  logs: /home/apm-server/logs
+    config: /home/apm-server
+    data: /home/apm-server/data
+    home: /home/apm-server
+    logs: /home/apm-server/logs
+seccomp:
+    enabled: true
 `[1:], "/home/apm-server", tempdir)
 	assert.Equal(t, expectedConfig, string(out))
 }

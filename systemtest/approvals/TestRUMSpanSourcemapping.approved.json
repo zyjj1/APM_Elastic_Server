@@ -9,19 +9,18 @@
             "client": {
                 "ip": "127.0.0.1"
             },
-            "ecs": {
-                "version": "dynamic"
-            },
+            "data_stream.dataset": "apm.rum",
+            "data_stream.namespace": "default",
+            "data_stream.type": "traces",
             "event": {
+                "agent_id_status": "missing",
+                "ingested": "dynamic",
                 "outcome": "unknown"
             },
             "observer": {
-                "ephemeral_id": "dynamic",
                 "hostname": "dynamic",
-                "id": "dynamic",
                 "type": "apm-server",
-                "version": "dynamic",
-                "version_major": "dynamic"
+                "version": "dynamic"
             },
             "parent": {
                 "id": "611f4fa950f04631"
@@ -41,7 +40,6 @@
                 "duration": {
                     "us": 643000
                 },
-                "http.url.original": "http://localhost:8000/test/e2e/general-usecase/span",
                 "id": "aaaaaaaaaaaaaaaa",
                 "name": "transaction",
                 "stacktrace": [
@@ -118,9 +116,6 @@
                         }
                     }
                 ],
-                "start": {
-                    "us": 0
-                },
                 "type": "transaction"
             },
             "timestamp": {

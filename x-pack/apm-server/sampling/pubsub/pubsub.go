@@ -1,6 +1,6 @@
 // Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
-// or more contributor license agreements. Licensed under the Elastic License;
-// you may not use this file except in compliance with the Elastic License.
+// or more contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
 
 package pubsub
 
@@ -10,21 +10,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
-	"go.elastic.co/fastjson"
+	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/elastic/beats/v7/libbeat/logp"
-	"github.com/elastic/go-elasticsearch/v7/esapi"
-	"github.com/elastic/go-elasticsearch/v7/esutil"
+	"github.com/elastic/elastic-agent-libs/logp"
+	"github.com/elastic/go-docappender"
+	"github.com/elastic/go-elasticsearch/v8/esapi"
+	"github.com/elastic/go-elasticsearch/v8/esutil"
 
-	"github.com/elastic/apm-server/elasticsearch"
-	logs "github.com/elastic/apm-server/log"
+	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-server/internal/logs"
 )
 
 // ErrClosed may be returned by Pubsub methods after the Close method is called.
@@ -59,54 +60,65 @@ func New(config Config) (*Pubsub, error) {
 
 // PublishSampledTraceIDs receives trace IDs from the traceIDs channel,
 // indexing them into Elasticsearch. PublishSampledTraceIDs returns when
-// ctx is canceled.
+// ctx is canceled, or traceIDs is closed.
 func (p *Pubsub) PublishSampledTraceIDs(ctx context.Context, traceIDs <-chan string) error {
-	indexer, err := p.config.Client.NewBulkIndexer(elasticsearch.BulkIndexerConfig{
-		Index:         p.config.DataStream.String(),
-		FlushInterval: p.config.FlushInterval,
-		OnError: func(ctx context.Context, err error) {
-			p.config.Logger.With(logp.Error(err)).Debug("publishing sampled trace IDs failed")
-		},
+	appender, err := docappender.New(p.config.Client, docappender.Config{
+		CompressionLevel:   p.config.CompressionLevel,
+		FlushInterval:      p.config.FlushInterval,
+		DocumentBufferSize: 100, // Reduce memory footprint
+		// Disable autoscaling for the TBS sampled traces published documents.
+		Scaling: docappender.ScalingConfig{Disabled: true},
+		Logger:  zap.New(p.config.Logger.Core(), zap.WithCaller(true)),
 	})
 	if err != nil {
 		return err
 	}
 
-	var closeIndexerOnce sync.Once
-	var closeIndexerErr error
-	closeIndexer := func() error {
-		closeIndexerOnce.Do(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), p.config.FlushInterval)
-			defer cancel()
-			closeIndexerErr = indexer.Close(ctx)
-		})
-		return closeIndexerErr
+	result := p.indexSampledTraceIDs(ctx, traceIDs, appender)
+	ctx, cancel := context.WithTimeout(context.Background(), p.config.FlushInterval)
+	defer cancel()
+	if err := appender.Close(ctx); err != nil {
+		result = multierror.Append(result, err)
 	}
-	defer closeIndexer()
+	return result
+}
 
+func (p *Pubsub) indexSampledTraceIDs(ctx context.Context, traceIDs <-chan string, appender *docappender.Appender) error {
+	index := p.config.DataStream.String()
 	for {
 		select {
 		case <-ctx.Done():
 			if err := ctx.Err(); err != context.Canceled {
 				return err
 			}
-			return closeIndexer()
-		case id := <-traceIDs:
-			var json fastjson.Writer
-			p.marshalTraceIDDocument(&json, id, time.Now(), p.config.DataStream)
-			if err := indexer.Add(ctx, elasticsearch.BulkIndexerItem{
-				Action:    "create",
-				Body:      bytes.NewReader(json.Bytes()),
-				OnFailure: p.onBulkIndexerItemFailure,
-			}); err != nil {
+			return nil
+		case id, ok := <-traceIDs:
+			if !ok {
+				return nil
+			}
+			doc := model.APMEvent{
+				Timestamp:  time.Now(),
+				DataStream: model.DataStream(p.config.DataStream),
+				Agent:      model.Agent{EphemeralID: p.config.ServerID},
+				Trace:      model.Trace{ID: id},
+			}
+			data, err := doc.MarshalJSON()
+			if err != nil {
+				p.config.Logger.With(
+					logp.Error(err),
+					logp.Reflect("event", doc),
+				).Debug("failed to encode sampled trace document")
+				return err
+			}
+			if err := appender.Add(ctx, index, bytes.NewReader(data)); err != nil {
+				p.config.Logger.With(
+					logp.Error(err),
+					logp.Reflect("event", doc),
+				).Debug("failed to index sampled trace document")
 				return err
 			}
 		}
 	}
-}
-
-func (p *Pubsub) onBulkIndexerItemFailure(ctx context.Context, item elasticsearch.BulkIndexerItem, resp elasticsearch.BulkIndexerResponseItem, err error) {
-	p.config.Logger.With(logp.Error(err)).Debug("publishing sampled trace ID failed", resp.Error)
 }
 
 // SubscribeSampledTraceIDs subscribes to sampled trace IDs after the given position,
@@ -140,7 +152,7 @@ func (p *Pubsub) SubscribeSampledTraceIDs(
 			if err != nil {
 				// Errors may occur due to rate limiting, or while the index is
 				// still being created, so just log and continue.
-				p.config.Logger.With(logp.Error(err)).Debug("error searching for trace IDs")
+				p.config.Logger.With(logp.Error(err)).With(logp.Reflect("position", pos)).Debug("error searching for trace IDs")
 				continue
 			}
 			if changed {
@@ -228,7 +240,7 @@ func (p *Pubsub) refreshIndices(ctx context.Context, indices []string) error {
 	}
 	defer resp.Body.Close()
 	if resp.IsError() {
-		message, _ := ioutil.ReadAll(resp.Body)
+		message, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("index refresh request failed: %s", message)
 	}
 	return nil
@@ -269,8 +281,8 @@ func (p *Pubsub) searchIndexTraceIDs(ctx context.Context, out chan<- string, ind
 					// Filter out local observations.
 					"must_not": map[string]interface{}{
 						"term": map[string]interface{}{
-							"observer.id": map[string]interface{}{
-								"value": p.config.BeatID,
+							"agent.ephemeral_id": map[string]interface{}{
+								"value": p.config.ServerID,
 							},
 						},
 					},
@@ -306,6 +318,7 @@ func (p *Pubsub) searchIndexTraceIDs(ctx context.Context, out chan<- string, ind
 			}
 		}
 		maxObservedSeqno = result.Hits.Hits[len(result.Hits.Hits)-1].Seqno
+		minSeqno = maxObservedSeqno
 	}
 	return maxObservedSeqno, nil
 }
@@ -323,37 +336,20 @@ func (p *Pubsub) doSearchRequest(ctx context.Context, index string, body io.Read
 		if resp.StatusCode == http.StatusNotFound {
 			return errIndexNotFound
 		}
-		message, _ := ioutil.ReadAll(resp.Body)
+		message, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("search request failed: %s", message)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-func (p *Pubsub) marshalTraceIDDocument(w *fastjson.Writer, traceID string, timestamp time.Time, dataStream DataStreamConfig) {
-	w.RawString(`{"@timestamp":"`)
-	w.Time(timestamp.UTC(), time.RFC3339Nano)
-	w.RawString(`","data_stream.type":`)
-	w.String(dataStream.Type)
-	w.RawString(`,"data_stream.dataset":`)
-	w.String(dataStream.Dataset)
-	w.RawString(`,"data_stream.namespace":`)
-	w.String(dataStream.Namespace)
-	w.RawString(`,"observer":{"id":`)
-	w.String(p.config.BeatID)
-	w.RawString(`},`)
-	w.RawString(`"trace":{"id":`)
-	w.String(traceID)
-	w.RawString(`}}`)
-}
-
 type traceIDDocument struct {
-	// Observer identifies the entity (typically an APM Server) that observed
-	// and indexed the/ trace ID document. This can be used to filter out local
-	// observations.
-	Observer struct {
-		// ID holds the unique ID of the observer.
-		ID string `json:"id"`
-	} `json:"observer"`
+	// Agent identifies the entity (typically an APM Server) that observed
+	// and indexed the sampled trace ID document. This can be used to filter
+	// out local observations.
+	Agent struct {
+		// EphemeralID holds the unique ID of the agent.
+		EphemeralID string `json:"ephemeral_id"`
+	} `json:"agent"`
 
 	// Trace identifies a trace.
 	Trace struct {
