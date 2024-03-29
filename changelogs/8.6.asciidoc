@@ -1,7 +1,34 @@
-[[release-notes-head]]
-== APM version HEAD
+[[apm-release-notes-8.6]]
+== APM version 8.6
 
-https://github.com/elastic/apm-server/compare/8.5\...8.6[View commits]
+* <<apm-release-notes-8.6.2>>
+* <<apm-release-notes-8.6.1>>
+* <<apm-release-notes-8.6.0>>
+
+[float]
+[[apm-release-notes-8.6.2]]
+=== APM version 8.6.2
+
+https://github.com/elastic/apm-server/compare/v8.6.1\...v8.6.2[View commits]
+
+No significant changes.
+
+[float]
+[[apm-release-notes-8.6.1]]
+=== APM version 8.6.1
+
+https://github.com/elastic/apm-server/compare/v8.6.0\...v8.6.1[View commits]
+
+[float]
+==== Bug fixes
+- Fix panic when memory limits are missing in cgroupV1 {pull}10098[10098]
+- Fix internal traffic filter handling on Elastic Cloud when managed by Elastic Agent (Integrations Server)
+
+[float]
+[[apm-release-notes-8.6.0]]
+=== APM version 8.6.0
+
+https://github.com/elastic/apm-server/compare/v8.5.3\...v8.6.0[View commits]
 
 [float]
 ==== Breaking Changes
@@ -28,10 +55,10 @@ https://github.com/elastic/apm-server/compare/8.5\...8.6[View commits]
 [float]
 ==== Added
 - Service metrics now support global labels {pull}9248[9248]
-- OpenTelemetry GRPC Spans from the Javascript API/SDK/Instrumentations are now correctly transformed into transactions with type=`request`
+- OpenTelemetry GRPC Spans from the Javascript API/SDK/Instrumentations are now correctly transformed into transactions with type=`request` {pull}9308[9308]
 - Improve Elasticsearch output performance, particularly when compression is enabled (default) {pull}9318[9318]
 - Java attacher support for macOS {pull}9413[9413]
 - Improve Elasticsearch output performance in instances with more than 6 cores {pull}9393[9393]
 - Tune internal server configuration based on available cgroup or machine RAM, improving resource utilization and performance {pull}9358[9358]
-- Disallow auto-scaling of active indexers when Elasticsarch 429 response rate exceeds 1% of total requests issued {pull}9463[9463]
+- Disallow auto-scaling of active indexers when Elasticsearch 429 response rate exceeds 1% of total requests issued {pull}9463[9463]
 - We now record `transaction.representative_count` and `span.representative_count` -- the inverse sample rate {pull}9458[9458]

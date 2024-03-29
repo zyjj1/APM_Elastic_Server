@@ -27,7 +27,8 @@ import (
 
 	"go.elastic.co/fastjson"
 
-	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-data/model/modeljson"
+	"github.com/elastic/apm-data/model/modelpb"
 	"github.com/elastic/apm-server/internal/beater/auth"
 	"github.com/elastic/apm-server/internal/beater/ratelimit"
 	"github.com/elastic/apm-server/internal/version"
@@ -40,7 +41,7 @@ const (
 
 // authorizeEventIngestProcessor is a model.BatchProcessor that checks that the
 // client is authorized to ingest events for the given agent and service name.
-func authorizeEventIngestProcessor(ctx context.Context, batch *model.Batch) error {
+func authorizeEventIngestProcessor(ctx context.Context, batch *modelpb.Batch) error {
 	for _, event := range *batch {
 		if err := auth.Authorize(ctx, auth.ActionEventIngest, auth.Resource{
 			AgentName:   event.Agent.Name,
@@ -55,7 +56,7 @@ func authorizeEventIngestProcessor(ctx context.Context, batch *model.Batch) erro
 // rateLimitBatchProcessor is a model.BatchProcessor that rate limits based on
 // the batch size. This will be invoked after decoding events, but before sending
 // on to the libbeat publisher.
-func rateLimitBatchProcessor(ctx context.Context, batch *model.Batch) error {
+func rateLimitBatchProcessor(ctx context.Context, batch *modelpb.Batch) error {
 	if limiter, ok := ratelimit.FromContext(ctx); ok {
 		ctx, cancel := context.WithTimeout(ctx, rateLimitTimeout)
 		defer cancel()
@@ -68,11 +69,14 @@ func rateLimitBatchProcessor(ctx context.Context, batch *model.Batch) error {
 
 // newObserverBatchProcessor returns a model.BatchProcessor that sets
 // observer fields from information about the apm-server process.
-func newObserverBatchProcessor() model.ProcessBatchFunc {
+func newObserverBatchProcessor() modelpb.ProcessBatchFunc {
 	hostname, _ := os.Hostname()
-	return func(ctx context.Context, b *model.Batch) error {
+	return func(ctx context.Context, b *modelpb.Batch) error {
 		for i := range *b {
-			observer := &(*b)[i].Observer
+			if (*b)[i].Observer == nil {
+				(*b)[i].Observer = modelpb.ObserverFromVTPool()
+			}
+			observer := (*b)[i].Observer
 			observer.Hostname = hostname
 			observer.Type = "apm-server"
 			observer.Version = version.Version
@@ -81,18 +85,20 @@ func newObserverBatchProcessor() model.ProcessBatchFunc {
 	}
 }
 
-func newDocappenderBatchProcessor(a *docappender.Appender) model.ProcessBatchFunc {
+func newDocappenderBatchProcessor(a *docappender.Appender) modelpb.ProcessBatchFunc {
 	var pool sync.Pool
 	pool.New = func() any {
 		return &pooledReader{pool: &pool}
 	}
-	return func(ctx context.Context, b *model.Batch) error {
+	return func(ctx context.Context, b *modelpb.Batch) error {
 		for _, event := range *b {
 			r := pool.Get().(*pooledReader)
-			if err := event.MarshalFastJSON(&r.jsonw); err != nil {
+			if err := modeljson.MarshalAPMEvent(event, &r.jsonw); err != nil {
 				r.reset()
 				return err
 			}
+			r.indexBuilder.Grow(len(event.DataStream.Type) + 1 +
+				len(event.DataStream.Dataset) + 1 + len(event.DataStream.Namespace))
 			r.indexBuilder.WriteString(event.DataStream.Type)
 			r.indexBuilder.WriteByte('-')
 			r.indexBuilder.WriteString(event.DataStream.Dataset)

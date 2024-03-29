@@ -11,7 +11,7 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/hashicorp/go-multierror"
 
-	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-data/model/modelpb"
 )
 
 // ShardedReadWriter provides sharded, locked, access to a Storage.
@@ -42,10 +42,10 @@ func (s *ShardedReadWriter) Close() {
 }
 
 // Flush flushes all sharded storage readWriters.
-func (s *ShardedReadWriter) Flush(limit int64) error {
+func (s *ShardedReadWriter) Flush() error {
 	var result error
 	for i := range s.readWriters {
-		if err := s.readWriters[i].Flush(limit); err != nil {
+		if err := s.readWriters[i].Flush(); err != nil {
 			result = multierror.Append(result, err)
 		}
 	}
@@ -53,12 +53,12 @@ func (s *ShardedReadWriter) Flush(limit int64) error {
 }
 
 // ReadTraceEvents calls Writer.ReadTraceEvents, using a sharded, locked, Writer.
-func (s *ShardedReadWriter) ReadTraceEvents(traceID string, out *model.Batch) error {
+func (s *ShardedReadWriter) ReadTraceEvents(traceID string, out *modelpb.Batch) error {
 	return s.getWriter(traceID).ReadTraceEvents(traceID, out)
 }
 
 // WriteTraceEvent calls Writer.WriteTraceEvent, using a sharded, locked, Writer.
-func (s *ShardedReadWriter) WriteTraceEvent(traceID, id string, event *model.APMEvent, opts WriterOpts) error {
+func (s *ShardedReadWriter) WriteTraceEvent(traceID, id string, event *modelpb.APMEvent, opts WriterOpts) error {
 	return s.getWriter(traceID).WriteTraceEvent(traceID, id, event, opts)
 }
 
@@ -99,19 +99,19 @@ func (rw *lockedReadWriter) Close() {
 	rw.rw.Close()
 }
 
-func (rw *lockedReadWriter) Flush(limit int64) error {
+func (rw *lockedReadWriter) Flush() error {
 	rw.mu.Lock()
 	defer rw.mu.Unlock()
-	return rw.rw.Flush(limit)
+	return rw.rw.Flush()
 }
 
-func (rw *lockedReadWriter) ReadTraceEvents(traceID string, out *model.Batch) error {
+func (rw *lockedReadWriter) ReadTraceEvents(traceID string, out *modelpb.Batch) error {
 	rw.mu.Lock()
 	defer rw.mu.Unlock()
 	return rw.rw.ReadTraceEvents(traceID, out)
 }
 
-func (rw *lockedReadWriter) WriteTraceEvent(traceID, id string, event *model.APMEvent, opts WriterOpts) error {
+func (rw *lockedReadWriter) WriteTraceEvent(traceID, id string, event *modelpb.APMEvent, opts WriterOpts) error {
 	rw.mu.Lock()
 	defer rw.mu.Unlock()
 	return rw.rw.WriteTraceEvent(traceID, id, event, opts)

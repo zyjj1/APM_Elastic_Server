@@ -23,24 +23,25 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/dustin/go-humanize"
 	"github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
 	"go.elastic.co/apm/module/apmgrpc/v2"
-	"go.elastic.co/apm/module/apmhttp/v2"
+	"go.elastic.co/apm/module/apmotel/v2"
 	"go.elastic.co/apm/v2"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/sdk/metric"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
 	"google.golang.org/grpc"
+	_ "google.golang.org/grpc/encoding/gzip"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
-	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/esleg/eslegclient"
 	"github.com/elastic/beats/v7/libbeat/instrumentation"
 	"github.com/elastic/beats/v7/libbeat/licenser"
@@ -51,12 +52,11 @@ import (
 	agentconfig "github.com/elastic/elastic-agent-libs/config"
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/monitoring"
-	"github.com/elastic/elastic-agent-libs/transport"
-	"github.com/elastic/elastic-agent-libs/transport/tlscommon"
 	"github.com/elastic/go-docappender"
 	"github.com/elastic/go-ucfg"
 
-	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-data/model/modelpb"
+	"github.com/elastic/apm-data/model/modelprocessor"
 	"github.com/elastic/apm-server/internal/agentcfg"
 	"github.com/elastic/apm-server/internal/beater/auth"
 	"github.com/elastic/apm-server/internal/beater/config"
@@ -66,10 +66,15 @@ import (
 	"github.com/elastic/apm-server/internal/elasticsearch"
 	"github.com/elastic/apm-server/internal/idxmgmt"
 	"github.com/elastic/apm-server/internal/kibana"
-	"github.com/elastic/apm-server/internal/model/modelprocessor"
+	srvmodelprocessor "github.com/elastic/apm-server/internal/model/modelprocessor"
 	"github.com/elastic/apm-server/internal/publish"
 	"github.com/elastic/apm-server/internal/sourcemap"
 	"github.com/elastic/apm-server/internal/version"
+)
+
+var (
+	monitoringRegistry         = monitoring.Default.NewRegistry("apm-server.sampling")
+	transactionsDroppedCounter = monitoring.NewInt(monitoringRegistry, "transactions_dropped")
 )
 
 // Runner initialises and runs and orchestrates the APM Server
@@ -221,16 +226,32 @@ func (s *Runner) Run(ctx context.Context) error {
 			s.config.MaxConcurrentDecoders, memLimitGB,
 		)
 	}
-	if s.config.Aggregation.Transactions.MaxTransactionGroups <= 0 {
-		s.config.Aggregation.Transactions.MaxTransactionGroups = maxGroupsForAggregation(memLimitGB)
-		s.logger.Infof("MaxTransactionGroups set to %d based on %0.1fgb of memory",
-			s.config.Aggregation.Transactions.MaxTransactionGroups, memLimitGB,
+
+	if s.config.Aggregation.MaxServices <= 0 {
+		s.config.Aggregation.MaxServices = linearScaledValue(1_000, memLimitGB, 0)
+		s.logger.Infof("Aggregation.MaxServices set to %d based on %0.1fgb of memory",
+			s.config.Aggregation.MaxServices, memLimitGB,
 		)
 	}
-	if s.config.Aggregation.Service.MaxGroups <= 0 {
-		s.config.Aggregation.Service.MaxGroups = maxGroupsForAggregation(memLimitGB)
-		s.logger.Infof("MaxGroups for service aggregation set to %d based on %0.1fgb of memory",
-			s.config.Aggregation.Service.MaxGroups, memLimitGB,
+
+	if s.config.Aggregation.ServiceTransactions.MaxGroups <= 0 {
+		s.config.Aggregation.ServiceTransactions.MaxGroups = linearScaledValue(1_000, memLimitGB, 0)
+		s.logger.Infof("Aggregation.ServiceTransactions.MaxGroups for service aggregation set to %d based on %0.1fgb of memory",
+			s.config.Aggregation.ServiceTransactions.MaxGroups, memLimitGB,
+		)
+	}
+
+	if s.config.Aggregation.Transactions.MaxGroups <= 0 {
+		s.config.Aggregation.Transactions.MaxGroups = linearScaledValue(5_000, memLimitGB, 0)
+		s.logger.Infof("Aggregation.Transactions.MaxGroups set to %d based on %0.1fgb of memory",
+			s.config.Aggregation.Transactions.MaxGroups, memLimitGB,
+		)
+	}
+
+	if s.config.Aggregation.ServiceDestinations.MaxGroups <= 0 {
+		s.config.Aggregation.ServiceDestinations.MaxGroups = linearScaledValue(5_000, memLimitGB, 5_000)
+		s.logger.Infof("Aggregation.ServiceDestinations.MaxGroups set to %d based on %0.1fgb of memory",
+			s.config.Aggregation.ServiceDestinations.MaxGroups, memLimitGB,
 		)
 	}
 
@@ -286,6 +307,22 @@ func (s *Runner) Run(ctx context.Context) error {
 	}
 	defer tracer.Close()
 
+	tracerProvider, err := apmotel.NewTracerProvider(apmotel.WithAPMTracer(tracer))
+	if err != nil {
+		return err
+	}
+	otel.SetTracerProvider(tracerProvider)
+
+	exporter, err := apmotel.NewGatherer()
+	if err != nil {
+		return err
+	}
+	meterProvider := metric.NewMeterProvider(
+		metric.WithReader(exporter),
+	)
+	otel.SetMeterProvider(meterProvider)
+	tracer.RegisterMetricsGatherer(exporter)
+
 	// Ensure the libbeat output and go-elasticsearch clients do not index
 	// any events to Elasticsearch before the integration is ready.
 	publishReady := make(chan struct{})
@@ -330,20 +367,16 @@ func (s *Runner) Run(ctx context.Context) error {
 
 	var sourcemapFetcher sourcemap.Fetcher
 	if s.config.RumConfig.Enabled && s.config.RumConfig.SourceMapping.Enabled {
-		fetcher, err := newSourcemapFetcher(
-			s.config.RumConfig.SourceMapping, s.fleetConfig,
+		fetcher, cancel, err := newSourcemapFetcher(
+			s.config.RumConfig.SourceMapping,
 			kibanaClient, newElasticsearchClient,
+			tracer,
 		)
 		if err != nil {
 			return err
 		}
-		cachingFetcher, err := sourcemap.NewCachingFetcher(
-			fetcher, s.config.RumConfig.SourceMapping.Cache.Expiration,
-		)
-		if err != nil {
-			return err
-		}
-		sourcemapFetcher = cachingFetcher
+		defer cancel()
+		sourcemapFetcher = fetcher
 	}
 
 	// Create the runServer function. We start with newBaseRunServer, and then
@@ -370,7 +403,7 @@ func (s *Runner) Run(ctx context.Context) error {
 		apmgrpc.NewUnaryServerInterceptor(apmgrpc.WithRecovery(), apmgrpc.WithTracer(tracer)),
 		interceptors.ClientMetadata(),
 		interceptors.Logging(gRPCLogger),
-		interceptors.Metrics(gRPCLogger),
+		interceptors.Metrics(gRPCLogger, nil),
 		interceptors.Timeout(),
 		interceptors.Auth(authenticator),
 		interceptors.AnonymousRateLimit(ratelimitStore),
@@ -384,13 +417,13 @@ func (s *Runner) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	batchProcessor := modelprocessor.Chained{
+	batchProcessor := srvmodelprocessor.NewTracer("beater.ProcessBatch", modelprocessor.Chained{
 		// Ensure all events have observer.*, ecs.*, and data_stream.* fields added,
 		// and are counted in metrics. This is done in the final processors to ensure
 		// aggregated metrics are also processed.
 		newObserverBatchProcessor(),
 		&modelprocessor.SetDataStream{Namespace: s.config.DataStreams.Namespace},
-		modelprocessor.NewEventCounter(monitoring.Default.GetRegistry("apm-server")),
+		srvmodelprocessor.NewEventCounter(monitoring.Default.GetRegistry("apm-server")),
 
 		// The server always drops non-RUM unsampled transactions. We store RUM unsampled
 		// transactions as they are needed by the User Experience app, which performs
@@ -398,13 +431,30 @@ func (s *Runner) Run(ctx context.Context) error {
 		//
 		// It is important that this is done just before calling the publisher to
 		// avoid affecting aggregations.
-		modelprocessor.NewDropUnsampled(false /* don't drop RUM unsampled transactions*/),
-		modelprocessor.DroppedSpansStatsDiscarder{},
+		modelprocessor.NewDropUnsampled(false /* don't drop RUM unsampled transactions*/, func(i int64) {
+			transactionsDroppedCounter.Add(i)
+		}),
 		finalBatchProcessor,
+	})
+
+	agentConfigFetcher, fetcherRunFunc, err := newAgentConfigFetcher(
+		ctx,
+		s.config,
+		kibanaClient,
+		newElasticsearchClient,
+		tracer,
+	)
+	if err != nil {
+		return err
+	}
+	if fetcherRunFunc != nil {
+		g.Go(func() error {
+			return fetcherRunFunc(ctx)
+		})
 	}
 
 	agentConfigReporter := agentcfg.NewReporter(
-		newAgentConfigFetcher(s.config, kibanaClient),
+		agentConfigFetcher,
 		batchProcessor, 30*time.Second,
 	)
 	g.Go(func() error {
@@ -415,7 +465,6 @@ func (s *Runner) Run(ctx context.Context) error {
 	// wrap depending on the configuration in order to inject behaviour.
 	serverParams := ServerParams{
 		Config:                 s.config,
-		Managed:                s.fleetConfig != nil,
 		Namespace:              s.config.DataStreams.Namespace,
 		Logger:                 s.logger,
 		Tracer:                 tracer,
@@ -428,6 +477,7 @@ func (s *Runner) Run(ctx context.Context) error {
 		KibanaClient:           kibanaClient,
 		NewElasticsearchClient: newElasticsearchClient,
 		GRPCServer:             grpcServer,
+		Semaphore:              semaphore.NewWeighted(int64(s.config.MaxConcurrentDecoders)),
 	}
 	if s.wrapServer != nil {
 		// Wrap the serverParams and runServer function, enabling
@@ -444,17 +494,19 @@ func (s *Runner) Run(ctx context.Context) error {
 		// Add a model processor that rate limits, and checks authorization for the
 		// agent and service for each event. These must come at the beginning of the
 		// processor chain.
-		model.ProcessBatchFunc(rateLimitBatchProcessor),
-		model.ProcessBatchFunc(authorizeEventIngestProcessor),
+		modelpb.ProcessBatchFunc(rateLimitBatchProcessor),
+		modelpb.ProcessBatchFunc(authorizeEventIngestProcessor),
+
+		// Add a model processor that removes `event.received`, which is added by
+		// apm-data, but which we don't yet map.
+		modelprocessor.RemoveEventReceived{},
 
 		// Pre-process events before they are sent to the final processors for
 		// aggregation, sampling, and indexing.
 		modelprocessor.SetHostHostname{},
 		modelprocessor.SetServiceNodeName{},
-		modelprocessor.SetMetricsetName{},
 		modelprocessor.SetGroupingKey{},
 		modelprocessor.SetErrorMessage{},
-		modelprocessor.SetUnknownSpanType{},
 	}
 	if s.config.DefaultServiceEnvironment != "" {
 		preBatchProcessors = append(preBatchProcessors, &modelprocessor.SetDefaultServiceEnvironment{
@@ -468,7 +520,7 @@ func (s *Runner) Run(ctx context.Context) error {
 		return runServer(ctx, serverParams)
 	})
 	if tracerServerListener != nil {
-		tracerServer, err := newTracerServer(s.config, tracerServerListener, s.logger, serverParams.BatchProcessor)
+		tracerServer, err := newTracerServer(s.config, tracerServerListener, s.logger, serverParams.BatchProcessor, serverParams.Semaphore)
 		if err != nil {
 			return fmt.Errorf("failed to create self-instrumentation server: %w", err)
 		}
@@ -502,16 +554,14 @@ func maxConcurrentDecoders(memLimitGB float64) uint {
 	return decoders
 }
 
-// maxGroupsForAggregation calculates the maximum transaction groups or service
-// groups that a particular memory limit can have. The previous default value
-// of 10_000 is kept as a starting point for 1GB instances and scaled linearly
-// for bigger instances.
-func maxGroupsForAggregation(memLimitGB float64) int {
+// linearScaledValue calculates linearly scaled value based on memory limit using
+// the formula y = (perGBIncrement * memLimitGB) + constant
+func linearScaledValue(perGBIncrement, memLimitGB, constant float64) int {
 	const maxMemGB = 64
 	if memLimitGB > maxMemGB {
 		memLimitGB = maxMemGB
 	}
-	return int(memLimitGB * 10_000)
+	return int(memLimitGB*perGBIncrement + constant)
 }
 
 // waitReady waits until the server is ready to index events.
@@ -601,7 +651,7 @@ func (s *Runner) newFinalBatchProcessor(
 	tracer *apm.Tracer,
 	newElasticsearchClient func(cfg *elasticsearch.Config) (*elasticsearch.Client, error),
 	memLimit float64,
-) (model.BatchProcessor, func(context.Context) error, error) {
+) (modelpb.BatchProcessor, func(context.Context) error, error) {
 
 	monitoring.Default.Remove("libbeat")
 	libbeatMonitoringRegistry := monitoring.Default.NewRegistry("libbeat")
@@ -629,8 +679,13 @@ func (s *Runner) newFinalBatchProcessor(
 	}
 	esConfig.FlushInterval = time.Second
 	esConfig.Config = elasticsearch.DefaultConfig()
+	esConfig.MaxIdleConnsPerHost = 10
 	if err := s.elasticsearchOutputConfig.Unpack(&esConfig); err != nil {
 		return nil, nil, err
+	}
+
+	if esConfig.MaxRequests != 0 {
+		esConfig.MaxIdleConnsPerHost = esConfig.MaxRequests
 	}
 
 	var flushBytes int
@@ -640,6 +695,11 @@ func (s *Runner) newFinalBatchProcessor(
 			return nil, nil, errors.Wrap(err, "failed to parse flush_bytes")
 		}
 		flushBytes = int(b)
+	}
+	minFlush := 24 * 1024
+	if esConfig.CompressionLevel != 0 && flushBytes < minFlush {
+		s.logger.Warnf("flush_bytes config value is too small (%d) and might be ignored by the indexer, increasing value to %d", flushBytes, minFlush)
+		flushBytes = minFlush
 	}
 	client, err := newElasticsearchClient(esConfig.Config)
 	if err != nil {
@@ -754,7 +814,7 @@ func docappenderConfig(
 func (s *Runner) newLibbeatFinalBatchProcessor(
 	tracer *apm.Tracer,
 	libbeatMonitoringRegistry *monitoring.Registry,
-) (model.BatchProcessor, func(context.Context) error, error) {
+) (modelpb.BatchProcessor, func(context.Context) error, error) {
 	// When the publisher stops cleanly it will close its pipeline client,
 	// calling the acker's Close method and unblock Wait.
 	acker := publish.NewWaitPublishedAcker()
@@ -786,7 +846,11 @@ func (s *Runner) newLibbeatFinalBatchProcessor(
 		output, err := outputs.Load(indexSupporter, beatInfo, stats, outputName, s.outputConfig.Config())
 		return outputName, output, err
 	}
-	pipeline, err := pipeline.Load(beatInfo, monitors, pipeline.Config{}, nopProcessingSupporter{}, outputFactory)
+	var pipelineConfig pipeline.Config
+	if err := s.rawConfig.Unpack(&pipelineConfig); err != nil {
+		return nil, nil, fmt.Errorf("failed to unpack libbeat pipeline config: %w", err)
+	}
+	pipeline, err := pipeline.Load(beatInfo, monitors, pipelineConfig, nopProcessingSupporter{}, outputFactory)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create libbeat output pipeline: %w", err)
 	}
@@ -796,6 +860,10 @@ func (s *Runner) newLibbeatFinalBatchProcessor(
 		return nil, nil, err
 	}
 	stop := func(ctx context.Context) error {
+		// clients need to be closed before running Close so
+		// this method needs to be called after the publisher has
+		// stopped
+		defer pipeline.Close()
 		if err := publisher.Stop(ctx); err != nil {
 			return err
 		}
@@ -808,78 +876,43 @@ func (s *Runner) newLibbeatFinalBatchProcessor(
 	return publisher, stop, nil
 }
 
+const sourcemapIndex = ".apm-source-map"
+
 func newSourcemapFetcher(
 	cfg config.SourceMapping,
-	fleetCfg *config.Fleet,
 	kibanaClient *kibana.Client,
 	newElasticsearchClient func(*elasticsearch.Config) (*elasticsearch.Client, error),
-) (sourcemap.Fetcher, error) {
-	// When running under Fleet we only fetch via Fleet Server.
-	if fleetCfg != nil {
-		var tlsConfig *tlscommon.TLSConfig
-		var err error
-		if fleetCfg.TLS.IsEnabled() {
-			if tlsConfig, err = tlscommon.LoadTLSConfig(fleetCfg.TLS); err != nil {
-				return nil, err
-			}
-		}
-
-		timeout := 30 * time.Second
-		dialer := transport.NetDialer(timeout)
-		tlsDialer := transport.TLSDialer(dialer, tlsConfig, timeout)
-
-		client := *http.DefaultClient
-		client.Transport = apmhttp.WrapRoundTripper(&http.Transport{
-			Proxy:           http.ProxyFromEnvironment,
-			Dial:            dialer.Dial,
-			DialTLS:         tlsDialer.Dial,
-			TLSClientConfig: tlsConfig.ToConfig(),
-		})
-
-		fleetServerURLs := make([]*url.URL, len(fleetCfg.Hosts))
-		for i, host := range fleetCfg.Hosts {
-			urlString, err := common.MakeURL(fleetCfg.Protocol, "", host, 8220)
-			if err != nil {
-				return nil, err
-			}
-			u, err := url.Parse(urlString)
-			if err != nil {
-				return nil, err
-			}
-			fleetServerURLs[i] = u
-		}
-
-		artifactRefs := make([]sourcemap.FleetArtifactReference, len(cfg.Metadata))
-		for i, meta := range cfg.Metadata {
-			artifactRefs[i] = sourcemap.FleetArtifactReference{
-				ServiceName:        meta.ServiceName,
-				ServiceVersion:     meta.ServiceVersion,
-				BundleFilepath:     meta.BundleFilepath,
-				FleetServerURLPath: meta.SourceMapURL,
-			}
-		}
-
-		return sourcemap.NewFleetFetcher(
-			&client,
-			fleetCfg.AccessAPIKey,
-			fleetServerURLs,
-			artifactRefs,
-		)
-	}
-
-	// For standalone, we query both Kibana and Elasticsearch for backwards compatibility.
-	var chained sourcemap.ChainedFetcher
-	if kibanaClient != nil {
-		chained = append(chained, sourcemap.NewKibanaFetcher(kibanaClient))
-	}
+	tracer *apm.Tracer,
+) (sourcemap.Fetcher, context.CancelFunc, error) {
 	esClient, err := newElasticsearchClient(cfg.ESConfig)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	index := strings.ReplaceAll(cfg.IndexPattern, "%{[observer.version]}", version.Version)
-	esFetcher := sourcemap.NewElasticsearchFetcher(esClient, index)
-	chained = append(chained, esFetcher)
-	return chained, nil
+
+	var fetchers []sourcemap.Fetcher
+
+	// start background sync job
+	ctx, cancel := context.WithCancel(context.Background())
+	metadataFetcher, invalidationChan := sourcemap.NewMetadataFetcher(ctx, esClient, sourcemapIndex, tracer)
+
+	esFetcher := sourcemap.NewElasticsearchFetcher(esClient, sourcemapIndex)
+	size := 128
+	cachingFetcher, err := sourcemap.NewBodyCachingFetcher(esFetcher, size, invalidationChan)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	sourcemapFetcher := sourcemap.NewSourcemapFetcher(metadataFetcher, cachingFetcher)
+
+	fetchers = append(fetchers, sourcemapFetcher)
+
+	if kibanaClient != nil {
+		fetchers = append(fetchers, sourcemap.NewKibanaFetcher(kibanaClient))
+	}
+
+	chained := sourcemap.NewChainedFetcher(fetchers)
+
+	return chained, cancel, nil
 }
 
 // TODO: This is copying behavior from libbeat:
@@ -937,9 +970,14 @@ func queryClusterUUID(ctx context.Context, esClient *elasticsearch.Client) error
 	return nil
 }
 
-type nopProcessingSupporter struct{}
+type nopProcessingSupporter struct {
+}
 
 func (nopProcessingSupporter) Close() error {
+	return nil
+}
+
+func (nopProcessingSupporter) Processors() []string {
 	return nil
 }
 

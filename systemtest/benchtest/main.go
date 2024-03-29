@@ -37,9 +37,9 @@ import (
 	"go.elastic.co/apm/v2/stacktrace"
 	"golang.org/x/time/rate"
 
+	"github.com/elastic/apm-perf/loadgen"
+	loadgencfg "github.com/elastic/apm-perf/loadgen/config"
 	"github.com/elastic/apm-server/systemtest/benchtest/expvar"
-	"github.com/elastic/apm-server/systemtest/loadgen"
-	loadgencfg "github.com/elastic/apm-server/systemtest/loadgen/config"
 )
 
 const waitInactiveTimeout = 60 * time.Second
@@ -72,7 +72,7 @@ func runBenchmark(f BenchmarkFunc) (testing.BenchmarkResult, bool, bool, error) 
 			return
 		}
 
-		limiter := loadgen.GetNewLimiter(loadgencfg.Config.MaxEPM)
+		limiter := loadgen.GetNewLimiter(loadgencfg.Config.EventRate.Burst, loadgencfg.Config.EventRate.Interval)
 		b.ResetTimer()
 		signal := make(chan bool)
 		// f can panic or call runtime.Goexit, stopping the goroutine.
@@ -250,8 +250,13 @@ func Run(allBenchmarks ...BenchmarkFunc) error {
 // warmup sends events to the remote APM Server using the specified number of
 // agents for the specified duration.
 func warmup(agents int, duration time.Duration, url, token string) error {
-	rl := loadgen.GetNewLimiter(loadgencfg.Config.MaxEPM)
-	h, err := newEventHandler(`*.ndjson`, url, token, rl)
+	rl := loadgen.GetNewLimiter(loadgencfg.Config.EventRate.Burst, loadgencfg.Config.EventRate.Interval)
+	h, err := loadgen.NewEventHandler(loadgen.EventHandlerParams{
+		Path:    `*.ndjson`,
+		URL:     url,
+		Token:   token,
+		Limiter: rl,
+	})
 	if err != nil {
 		return fmt.Errorf("unable to create warm-up handler: %w", err)
 	}
@@ -262,7 +267,7 @@ func warmup(agents int, duration time.Duration, url, token string) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			h.WarmUpServer(ctx)
+			h.SendBatchesInLoop(ctx)
 		}()
 	}
 	wg.Wait()

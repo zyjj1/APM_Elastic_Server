@@ -29,9 +29,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
-	"github.com/elastic/apm-server/systemtest/loadgen"
-	loadgencfg "github.com/elastic/apm-server/systemtest/loadgen/config"
-	"github.com/elastic/apm-server/systemtest/loadgen/eventhandler"
+	"github.com/elastic/apm-perf/loadgen"
+	loadgencfg "github.com/elastic/apm-perf/loadgen/config"
+	"github.com/elastic/apm-perf/loadgen/eventhandler"
 
 	"go.elastic.co/apm/v2"
 	"go.elastic.co/apm/v2/transport"
@@ -100,13 +100,17 @@ func NewOTLPExporter(tb testing.TB) *otlptrace.Exporter {
 // passed regex.
 func NewEventHandler(tb testing.TB, p string, l *rate.Limiter) *eventhandler.Handler {
 	serverCfg := loadgencfg.Config
-	h, err := newEventHandler(p, serverCfg.ServerURL.String(), serverCfg.SecretToken, l)
+	h, err := loadgen.NewEventHandler(loadgen.EventHandlerParams{
+		Path:              p,
+		URL:               serverCfg.ServerURL.String(),
+		Token:             serverCfg.SecretToken,
+		Limiter:           l,
+		RewriteIDs:        serverCfg.RewriteIDs,
+		RewriteTimestamps: serverCfg.RewriteTimestamps,
+		Headers:           serverCfg.Headers,
+	})
 	if err != nil {
 		tb.Fatal(err)
 	}
 	return h
-}
-
-func newEventHandler(p, url, token string, l *rate.Limiter) (*eventhandler.Handler, error) {
-	return loadgen.NewEventHandler(p, url, token, l)
 }

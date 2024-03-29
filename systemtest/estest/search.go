@@ -18,31 +18,34 @@
 package estest
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/elastic/apm-tools/pkg/espoll"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
-	"github.com/elastic/go-elasticsearch/v8/esutil"
 )
 
-// ExpectDocs searches index with query, returning the results.
-//
-// ExpectDocs is equivalent to calling ExpectMinDocs with a minimum of 1.
-func (es *Client) ExpectDocs(t testing.TB, index string, query interface{}, opts ...RequestOption) SearchResult {
+func ExpectDocs(t testing.TB, es *espoll.Client, index string, query interface{}, opts ...espoll.RequestOption) espoll.SearchResult {
 	t.Helper()
-	return es.ExpectMinDocs(t, 1, index, query, opts...)
+	return ExpectMinDocs(t, es, 1, index, query, opts...)
 }
 
 // ExpectMinDocs searches index with query, returning the results.
 //
 // If the search returns fewer than min results within 10 seconds
 // (by default), ExpectMinDocs will call t.Error().
-func (es *Client) ExpectMinDocs(t testing.TB, min int, index string, query interface{}, opts ...RequestOption) SearchResult {
+func ExpectMinDocs(t testing.TB, es *espoll.Client, min int, index string, query interface{}, opts ...espoll.RequestOption) espoll.SearchResult {
 	t.Helper()
-	var result SearchResult
-	req := es.Search(index)
+	var result espoll.SearchResult
+	req := es.NewSearchRequest(index)
+	req.ExpandWildcards = "open,hidden"
 	if min > 10 {
 		// Size defaults to 10. If the caller expects more than 10,
 		// return it in the search so we don't have to search again.
@@ -51,7 +54,7 @@ func (es *Client) ExpectMinDocs(t testing.TB, min int, index string, query inter
 	if query != nil {
 		req = req.WithQuery(query)
 	}
-	opts = append(opts, WithCondition(AllCondition(
+	opts = append(opts, espoll.WithCondition(espoll.AllCondition(
 		result.Hits.MinHitsCondition(min),
 		result.Hits.TotalHitsCondition(req),
 	)))
@@ -74,112 +77,82 @@ func (es *Client) ExpectMinDocs(t testing.TB, min int, index string, query inter
 	return result
 }
 
-func (es *Client) Search(index string) *SearchRequest {
-	req := &SearchRequest{es: es}
-	req.Index = strings.Split(index, ",")
-	req.Body = strings.NewReader(`{"fields": ["*"]}`)
-	return req
-}
+func ExpectSourcemapError(t testing.TB, es *espoll.Client, index string, retry func(), query interface{}, updated bool) espoll.SearchResult {
+	t.Helper()
 
-type SearchRequest struct {
-	esapi.SearchRequest
-	es *Client
-}
+	deadline := time.After(5 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 
-func (r *SearchRequest) WithQuery(q interface{}) *SearchRequest {
-	var body struct {
-		Query  interface{} `json:"query"`
-		Fields []string    `json:"fields"`
-	}
-	body.Query = q
-	body.Fields = []string{"*"}
-	r.Body = esutil.NewJSONReader(&body)
-	return r
-}
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timed out while querying es")
+		case <-ticker.C:
+			rsp, err := es.Do(context.Background(), &esapi.IndicesDeleteDataStreamRequest{
+				Name:            []string{index},
+				ExpandWildcards: "all",
+			}, nil)
+			require.NoError(t, err)
+			require.NoError(t, rsp.Body.Close())
+			require.Equal(t, http.StatusOK, rsp.StatusCode)
 
-func (r *SearchRequest) WithSort(fieldDirection ...string) *SearchRequest {
-	r.Sort = fieldDirection
-	return r
-}
+			retry()
 
-func (r *SearchRequest) WithSize(size int) *SearchRequest {
-	r.Size = &size
-	return r
-}
+			result := ExpectDocs(t, es, index, query)
 
-func (r *SearchRequest) Do(ctx context.Context, out *SearchResult, opts ...RequestOption) (*esapi.Response, error) {
-	return r.es.Do(ctx, &r.SearchRequest, out, opts...)
-}
-
-type SearchResult struct {
-	Hits         SearchHits                 `json:"hits"`
-	Aggregations map[string]json.RawMessage `json:"aggregations"`
-}
-
-type SearchHits struct {
-	Total SearchHitsTotal `json:"total"`
-	Hits  []SearchHit     `json:"hits"`
-}
-
-type SearchHitsTotal struct {
-	Value    int    `json:"value"`
-	Relation string `json:"relation"` // "eq" or "gte"
-}
-
-// NonEmptyCondition returns a ConditionFunc which will return true if h.Hits is non-empty.
-func (h *SearchHits) NonEmptyCondition() ConditionFunc {
-	return h.MinHitsCondition(1)
-}
-
-// MinHitsCondition returns a ConditionFunc which will return true if the number of h.Hits
-// is at least min.
-func (h *SearchHits) MinHitsCondition(min int) ConditionFunc {
-	return func(*esapi.Response) bool { return len(h.Hits) >= min }
-}
-
-// TotalHitsCondition returns a ConditionFunc which will return true if the number of h.Hits
-// is at least h.Total.Value. If the condition returns false, it will update req.Size to
-// accommodate the number of hits in the following search.
-func (h *SearchHits) TotalHitsCondition(req *SearchRequest) ConditionFunc {
-	return func(*esapi.Response) bool {
-		if len(h.Hits) >= h.Total.Value {
-			return true
+			if isFetcherAvailable(t, result) {
+				assertSourcemapUpdated(t, result, updated)
+				return result
+			}
 		}
-		size := h.Total.Value
-		req.Size = &size
-		return false
 	}
 }
 
-type SearchHit struct {
-	Index     string
-	ID        string
-	Score     float64
-	Fields    map[string][]interface{}
-	Source    map[string]interface{}
-	RawSource json.RawMessage
+func isFetcherAvailable(t testing.TB, result espoll.SearchResult) bool {
+	t.Helper()
+
+	for _, sh := range result.Hits.Hits {
+		if bytes.Contains(sh.RawSource, []byte("metadata fetcher is not ready: fetcher unavailable")) {
+			return false
+		}
+	}
+
+	return true
 }
 
-func (h *SearchHit) UnmarshalJSON(data []byte) error {
-	var searchHit struct {
-		Index  string                   `json:"_index"`
-		ID     string                   `json:"_id"`
-		Score  float64                  `json:"_score"`
-		Source json.RawMessage          `json:"_source"`
-		Fields map[string][]interface{} `json:"fields"`
-	}
-	if err := json.Unmarshal(data, &searchHit); err != nil {
-		return err
-	}
-	h.Index = searchHit.Index
-	h.ID = searchHit.ID
-	h.Score = searchHit.Score
-	h.RawSource = searchHit.Source
-	h.Fields = searchHit.Fields
-	h.Source = make(map[string]interface{})
-	return json.Unmarshal(h.RawSource, &h.Source)
-}
+func assertSourcemapUpdated(t testing.TB, result espoll.SearchResult, updated bool) {
+	t.Helper()
 
-func (h *SearchHit) UnmarshalSource(out interface{}) error {
-	return json.Unmarshal(h.RawSource, out)
+	type StacktraceFrame struct {
+		Sourcemap struct {
+			Updated bool
+		}
+	}
+	type Error struct {
+		Exception []struct {
+			Stacktrace []StacktraceFrame
+		}
+		Log struct {
+			Stacktrace []StacktraceFrame
+		}
+	}
+
+	for _, hit := range result.Hits.Hits {
+		var source struct {
+			Error Error
+		}
+		err := hit.UnmarshalSource(&source)
+		require.NoError(t, err)
+
+		for _, exception := range source.Error.Exception {
+			for _, stacktrace := range exception.Stacktrace {
+				assert.Equal(t, updated, stacktrace.Sourcemap.Updated)
+			}
+		}
+
+		for _, stacktrace := range source.Error.Log.Stacktrace {
+			assert.Equal(t, updated, stacktrace.Sourcemap.Updated)
+		}
+	}
 }

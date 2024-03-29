@@ -18,14 +18,10 @@
 package systemtest_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 
@@ -36,6 +32,7 @@ import (
 	"github.com/elastic/apm-server/systemtest"
 	"github.com/elastic/apm-server/systemtest/apmservertest"
 	"github.com/elastic/apm-server/systemtest/estest"
+	"github.com/elastic/apm-tools/pkg/espoll"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 )
 
@@ -65,52 +62,24 @@ func TestIngestPipeline(t *testing.T) {
 	tx.End()
 	tracer.Flush(nil)
 
-	getDoc := func(query estest.TermQuery) estest.SearchHit {
-		result := systemtest.Elasticsearch.ExpectDocs(t, "traces-apm*", query)
+	getDoc := func(query espoll.TermQuery) espoll.SearchHit {
+		result := estest.ExpectDocs(t, systemtest.Elasticsearch, "traces-apm*", query)
 		require.Len(t, result.Hits.Hits, 1)
 		return result.Hits.Hits[0]
 	}
 
-	txDoc := getDoc(estest.TermQuery{Field: "processor.event", Value: "transaction"})
+	txDoc := getDoc(espoll.TermQuery{Field: "processor.event", Value: "transaction"})
 	assert.Equal(t, httpRequest.Header.Get("User-Agent"), gjson.GetBytes(txDoc.RawSource, "user_agent.original").String())
 	assert.Equal(t, "Firefox", gjson.GetBytes(txDoc.RawSource, "user_agent.name").String())
 
-	span1Doc := getDoc(estest.TermQuery{Field: "span.id", Value: span1.TraceContext().Span.String()})
+	span1Doc := getDoc(espoll.TermQuery{Field: "span.id", Value: span1.TraceContext().Span.String()})
 	destinationIP := gjson.GetBytes(span1Doc.RawSource, "destination.ip")
 	assert.True(t, destinationIP.Exists())
 	assert.Equal(t, "::1", destinationIP.String())
 
-	span2Doc := getDoc(estest.TermQuery{Field: "span.id", Value: span2.TraceContext().Span.String()})
+	span2Doc := getDoc(espoll.TermQuery{Field: "span.id", Value: span2.TraceContext().Span.String()})
 	destinationIP = gjson.GetBytes(span2Doc.RawSource, "destination.ip")
 	assert.False(t, destinationIP.Exists()) // destination.address is not an IP
-}
-
-func TestIngestPipelineVersionEnforcement(t *testing.T) {
-	source := `{"observer": {"version": "100.200.300"}}` // apm-server version is too new
-	dataStreams := []string{
-		"traces-apm-default",
-		"traces-apm.rum-default",
-		"metrics-apm.internal-default",
-		"metrics-apm.app.service_name-default",
-		"logs-apm.error-default",
-	}
-
-	for _, dataStream := range dataStreams {
-		body := strings.NewReader(source)
-		resp, err := systemtest.Elasticsearch.Index(dataStream, body)
-		require.NoError(t, err)
-
-		respBody, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
-		resp.Body.Close()
-
-		if !assert.Equal(t, http.StatusInternalServerError, resp.StatusCode, "%s: %s", dataStream, respBody) {
-			continue
-		}
-		assert.Contains(t, string(respBody),
-			`Document produced by APM Server v100.200.300, which is newer than the installed APM integration`,
-		)
-	}
 }
 
 func TestIngestPipelineEventDuration(t *testing.T) {
@@ -121,10 +90,11 @@ func TestIngestPipelineEventDuration(t *testing.T) {
 	}
 
 	tests := []test{{
-		// No transaction.* field, no update.
-		source: `{"@timestamp": "2022-02-15", "observer": {"version": "8.2.0"}, "processor": {"event": "transaction"}}`,
+		// No transaction.* field, no event.duration: set transaction.duration.us to zero.
+		source:                        `{"@timestamp": "2022-02-15", "observer": {"version": "8.2.0"}, "processor": {"event": "transaction"}}`,
+		expectedTransactionDurationUS: 0.0,
 	}, {
-		// Set transaction.duration.us to zero if event.duration not found.
+		// transaction exists without duration.us, no event.duration: set transaction.duration.us to zero.
 		source:                        `{"@timestamp": "2022-02-15", "observer": {"version": "8.2.0"}, "processor": {"event": "transaction"}, "transaction": {}}`,
 		expectedTransactionDurationUS: 0.0,
 	}, {
@@ -149,82 +119,33 @@ func TestIngestPipelineEventDuration(t *testing.T) {
 		}, &indexResponse)
 		require.NoError(t, err)
 
-		var doc struct {
-			Source json.RawMessage `json:"_source"`
-		}
-		_, err = systemtest.Elasticsearch.Do(context.Background(), esapi.GetRequest{
-			Index:      indexResponse.Index,
-			DocumentID: indexResponse.ID,
-		}, &doc)
-		require.NoError(t, err)
+		result := estest.ExpectDocs(t, systemtest.Elasticsearch, indexResponse.Index, espoll.TermQuery{
+			Field: "_id",
+			Value: indexResponse.ID,
+		})
+
+		require.Len(t, result.Hits.Hits, 1)
+		doc := result.Hits.Hits[0]
 
 		// event.duration should always be removed.
-		assert.False(t, gjson.GetBytes(doc.Source, "event.duration").Exists())
+		assert.NotContains(t, doc.Fields, "event.duration")
 
-		transactionDurationUS := gjson.GetBytes(doc.Source, "transaction.duration.us")
+		transactionDurationUS := doc.Fields["transaction.duration.us"]
 		if test.expectedTransactionDurationUS != nil {
-			assert.Equal(t, test.expectedTransactionDurationUS, transactionDurationUS.Value())
+			require.Len(t, transactionDurationUS, 1)
+			assert.Equal(t, test.expectedTransactionDurationUS, transactionDurationUS[0])
 		} else {
-			assert.False(t, transactionDurationUS.Exists())
+			assert.Nil(t, transactionDurationUS)
 		}
 
-		spanDurationUS := gjson.GetBytes(doc.Source, "span.duration.us")
+		spanDurationUS := doc.Fields["span.duration.us"]
 		if test.expectedSpanDurationUS != nil {
-			assert.Equal(t, test.expectedSpanDurationUS, spanDurationUS.Value())
+			require.Len(t, spanDurationUS, 1)
+			assert.Equal(t, test.expectedSpanDurationUS, spanDurationUS[0])
 		} else {
-			assert.False(t, spanDurationUS.Exists())
+			assert.Nil(t, spanDurationUS)
 		}
 	}
-}
-
-func TestIngestPipelineDataStreamMigration(t *testing.T) {
-	systemtest.CleanupElasticsearch(t)
-
-	var testdata struct {
-		Hits struct {
-			Hits []struct {
-				Source json.RawMessage `json:"_source"`
-			} `json:"hits`
-		} `json:"hits`
-	}
-
-	data, err := os.ReadFile("../testdata/ingest/7_17_docs.json")
-	require.NoError(t, err)
-	err = json.Unmarshal(data, &testdata)
-	require.NoError(t, err)
-
-	// Index documents using the data stream migration ingest pipeline.
-	pipeline := fmt.Sprintf("traces-apm-%s-apm_data_stream_migration", systemtest.IntegrationPackage.Version)
-	for _, doc := range testdata.Hits.Hits {
-		_, err := systemtest.Elasticsearch.Do(context.Background(), esapi.IndexRequest{
-			Index:    "traces-apm-foo", // should not be created; ingest pipeline should take over
-			Pipeline: pipeline,
-			Body:     bytes.NewReader(doc.Source),
-		}, nil)
-		require.NoError(t, err)
-	}
-
-	result := systemtest.Elasticsearch.ExpectMinDocs(t,
-		len(testdata.Hits.Hits), "traces-apm*,logs-apm*,metrics-apm*", nil,
-	)
-	systemtest.ApproveEvents(t, t.Name(), result.Hits.Hits)
-}
-
-func TestECSVersion(t *testing.T) {
-	systemtest.CleanupElasticsearch(t)
-	srv := apmservertest.NewServerTB(t)
-
-	tracer := srv.Tracer()
-	tx := tracer.StartTransaction("name", "type")
-	tx.End()
-	tracer.Flush(nil)
-
-	// ecs.version is defined as a constant_keyword field,
-	// and is not present in _source. The value is defined
-	// by the version of ECS we use to build the integration
-	// package.
-	result := systemtest.Elasticsearch.ExpectDocs(t, "traces-apm*", nil)
-	assert.Equal(t, []interface{}{"8.6.0-dev"}, result.Hits.Hits[0].Fields["ecs.version"])
 }
 
 func TestIngestPipelineEventSuccessCount(t *testing.T) {
@@ -284,5 +205,32 @@ func TestIngestPipelineEventSuccessCount(t *testing.T) {
 		} else {
 			assert.Equal(t, test.eventSuccessCountVal, int(successCount.Value().(float64)))
 		}
+	}
+}
+
+func TestIngestPipelineBackwardCompatibility(t *testing.T) {
+	type test struct {
+		source string
+		index  string
+	}
+
+	tests := []test{
+		{
+			source: `{"@timestamp": "2022-02-15", "observer": {"version": "8.2.0"}, "timeseries": {"instance": "foobar"}}`,
+			index:  "metrics-apm.internal-default",
+		},
+	}
+
+	for _, test := range tests {
+		var indexResponse struct {
+			Index string `json:"_index"`
+			ID    string `json:"_id"`
+		}
+		_, err := systemtest.Elasticsearch.Do(context.Background(), esapi.IndexRequest{
+			Index:   test.index,
+			Body:    strings.NewReader(test.source),
+			Refresh: "true",
+		}, &indexResponse)
+		require.NoError(t, err)
 	}
 }

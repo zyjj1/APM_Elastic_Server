@@ -18,8 +18,10 @@
 package systemtest
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -27,29 +29,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func SendRUMEventsPayload(t *testing.T, serverURL string, payloadFile string) {
-	f := openFile(t, payloadFile)
-	sendEventsPayload(t, serverURL, "/intake/v2/rum/events", f)
+type IntakeResponse struct {
+	Accepted int
 }
 
-func SendRUMEventsLiteral(t *testing.T, serverURL string, raw string) {
-	sendEventsPayload(t, serverURL, "/intake/v2/rum/events", strings.NewReader(raw))
+func SendRUMEventsPayload(t *testing.T, serverURL string, payloadFile string) IntakeResponse {
+	f := openFile(t, payloadFile)
+	return sendEventsPayload(t, serverURL, "/intake/v2/rum/events", f)
 }
 
-func SendBackendEventsPayload(t *testing.T, serverURL string, payloadFile string) {
-	f := openFile(t, payloadFile)
-	sendEventsPayload(t, serverURL, "/intake/v2/events", f)
+func SendRUMEventsLiteral(t *testing.T, serverURL string, raw string) IntakeResponse {
+	return sendEventsPayload(t, serverURL, "/intake/v2/rum/events", strings.NewReader(raw))
 }
 
-func SendBackendEventsAsyncPayload(t *testing.T, serverURL string, payloadFile string) {
+func SendBackendEventsPayload(t *testing.T, serverURL string, payloadFile string) IntakeResponse {
 	f := openFile(t, payloadFile)
-	sendEventsPayload(t, serverURL, "/intake/v2/events?async=true", f)
+	return sendEventsPayload(t, serverURL, "/intake/v2/events", f)
 }
 
 func SendBackendEventsAsyncPayloadError(t *testing.T, serverURL string, payloadFile string) {
 	f := openFile(t, payloadFile)
 
-	resp := doRequest(t, serverURL, "/intake/v2/events?async=true", f)
+	resp := doRequest(t, serverURL+"/intake/v2/events?async=true", f)
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
@@ -57,22 +58,33 @@ func SendBackendEventsAsyncPayloadError(t *testing.T, serverURL string, payloadF
 	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, string(respBody))
 }
 
-func SendBackendEventsLiteral(t *testing.T, serverURL string, raw string) {
-	sendEventsPayload(t, serverURL, "/intake/v2/events", strings.NewReader(raw))
+func SendBackendEventsLiteral(t *testing.T, serverURL string, raw string) IntakeResponse {
+	return sendEventsPayload(t, serverURL, "/intake/v2/events", strings.NewReader(raw))
 }
 
-func sendEventsPayload(t *testing.T, serverURL, urlPath string, f io.Reader) {
+func sendEventsPayload(t *testing.T, serverURL, urlPath string, f io.Reader) IntakeResponse {
 	t.Helper()
-	resp := doRequest(t, serverURL, urlPath, f)
+
+	u, _ := url.Parse(serverURL + urlPath)
+	query := u.Query()
+	query.Set("verbose", "true")
+	u.RawQuery = query.Encode()
+
+	resp := doRequest(t, u.String(), f)
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusAccepted, resp.StatusCode, string(respBody))
+
+	var response IntakeResponse
+	err = json.Unmarshal(respBody, &response)
+	require.NoError(t, err)
+	return response
 }
 
-func doRequest(t *testing.T, serverURL string, urlPath string, f io.Reader) *http.Response {
-	req, _ := http.NewRequest("POST", serverURL+urlPath, f)
+func doRequest(t *testing.T, url string, f io.Reader) *http.Response {
+	req, _ := http.NewRequest("POST", url, f)
 	req.Header.Add("Content-Type", "application/x-ndjson")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)

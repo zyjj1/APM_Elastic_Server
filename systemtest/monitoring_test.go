@@ -23,13 +23,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mitchellh/mapstructure"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 
 	"github.com/elastic/apm-server/systemtest"
 	"github.com/elastic/apm-server/systemtest/apmservertest"
 	"github.com/elastic/apm-server/systemtest/estest"
+	"github.com/elastic/apm-tools/pkg/espoll"
 )
 
 func TestAPMServerMonitoring(t *testing.T) {
@@ -47,7 +48,61 @@ func TestAPMServerMonitoring(t *testing.T) {
 	assert.Equal(t, "elasticsearch", state.Output.Name)
 
 	doc := getBeatsMonitoringStats(t, srv, nil)
-	assert.Contains(t, doc.Metrics, "apm-server")
+	assert.True(t, gjson.GetBytes(doc.Metrics, "apm-server").Exists())
+}
+
+func TestMonitoring(t *testing.T) {
+	srv := apmservertest.NewUnstartedServerTB(t)
+	srv.Config.Monitoring = newFastMonitoringConfig()
+	err := srv.Start()
+	require.NoError(t, err)
+
+	const N = 15
+	tracer := srv.Tracer()
+	for i := 0; i < N; i++ {
+		tx := tracer.StartTransaction("name", "type")
+		tx.Duration = time.Second
+		tx.End()
+	}
+	tracer.Flush(nil)
+	estest.ExpectMinDocs(t, systemtest.Elasticsearch, N, "traces-*", nil)
+
+	var metrics struct {
+		Libbeat json.RawMessage
+		Output  json.RawMessage
+	}
+
+	assert.Eventually(t, func() bool {
+		metrics.Libbeat = nil
+		metrics.Output = nil
+		getBeatsMonitoringStats(t, srv, &metrics)
+		acked := gjson.GetBytes(metrics.Libbeat, "output.events.acked")
+		return acked.Int() == N
+	}, 10*time.Second, 10*time.Millisecond)
+
+	// Assert the presence of output.write.bytes, and that it is non-zero;
+	// the exact value may change over time, and that is not relevant to this test.
+	outputWriteBytes := gjson.GetBytes(metrics.Libbeat, "output.write.bytes")
+	assert.NotZero(t, outputWriteBytes.Int())
+
+	// Assert there was a non-zero number of batches written. There's no
+	// guarantee that a single batch is written.
+	batches := gjson.GetBytes(metrics.Libbeat, "output.events.batches")
+	assert.NotZero(t, batches.Int())
+
+	assert.Equal(t, int64(0), gjson.GetBytes(metrics.Libbeat, "output.events.active").Int())
+	assert.Equal(t, int64(0), gjson.GetBytes(metrics.Libbeat, "output.events.failed").Int())
+	assert.Equal(t, int64(0), gjson.GetBytes(metrics.Libbeat, "output.events.toomany").Int())
+	assert.Equal(t, int64(N), gjson.GetBytes(metrics.Libbeat, "output.events.total").Int())
+	assert.Equal(t, int64(N), gjson.GetBytes(metrics.Libbeat, "pipeline.events.total").Int())
+	assert.Equal(t, "elasticsearch", gjson.GetBytes(metrics.Libbeat, "output.type").Str)
+
+	bulkRequestsAvailable := gjson.GetBytes(metrics.Output, "elasticsearch.bulk_requests.available")
+	assert.Greater(t, bulkRequestsAvailable.Int(), int64(10))
+	assert.Equal(t, batches.Int(), gjson.GetBytes(metrics.Output, "elasticsearch.bulk_requests.completed").Int())
+	assert.Equal(t, int64(1), gjson.GetBytes(metrics.Output, "elasticsearch.indexers.active").Int())
+	assert.Zero(t, gjson.GetBytes(metrics.Output, "elasticsearch.indexers.created").Int())
+	assert.Zero(t, gjson.GetBytes(metrics.Output, "elasticsearch.indexers.destroyed").Int())
 }
 
 func TestAPMServerMonitoringBuiltinUser(t *testing.T) {
@@ -81,11 +136,11 @@ func getBeatsMonitoringStats(t testing.TB, srv *apmservertest.Server, out interf
 }
 
 func getBeatsMonitoring(t testing.TB, srv *apmservertest.Server, type_ string, out interface{}) *beatsMonitoringDoc {
-	var result estest.SearchResult
-	req := systemtest.Elasticsearch.Search(".monitoring-beats-*").WithQuery(
-		estest.TermQuery{Field: type_ + ".beat.uuid", Value: srv.BeatUUID},
+	var result espoll.SearchResult
+	req := systemtest.Elasticsearch.NewSearchRequest(".monitoring-beats-*").WithQuery(
+		espoll.TermQuery{Field: type_ + ".beat.uuid", Value: srv.BeatUUID},
 	).WithSort("timestamp:desc")
-	if _, err := req.Do(context.Background(), &result, estest.WithCondition(result.Hits.MinHitsCondition(1))); err != nil {
+	if _, err := req.Do(context.Background(), &result, espoll.WithCondition(result.Hits.MinHitsCondition(1))); err != nil {
 		t.Error(err)
 	}
 
@@ -96,9 +151,9 @@ func getBeatsMonitoring(t testing.TB, srv *apmservertest.Server, type_ string, o
 	if out != nil {
 		switch doc.Type {
 		case "beats_state":
-			assert.NoError(t, mapstructure.Decode(doc.State, out))
+			assert.NoError(t, json.Unmarshal(doc.State, out))
 		case "beats_stats":
-			assert.NoError(t, mapstructure.Decode(doc.Metrics, out))
+			assert.NoError(t, json.Unmarshal(doc.Metrics, out))
 		}
 	}
 	return &doc
@@ -113,11 +168,11 @@ type beatsMonitoringDoc struct {
 }
 
 type BeatsState struct {
-	State map[string]interface{} `json:"state"`
+	State json.RawMessage `json:"state"`
 }
 
 type BeatsStats struct {
-	Metrics map[string]interface{} `json:"metrics"`
+	Metrics json.RawMessage `json:"metrics"`
 }
 
 func newFastMonitoringConfig() *apmservertest.MonitoringConfig {

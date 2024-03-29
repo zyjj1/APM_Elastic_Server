@@ -34,22 +34,22 @@ const (
 	defaultElasticsearchUser = "apm_server_user"
 	defaultElasticsearchPass = "changeme"
 
-	defaultKibanaHost = "localhost"
-	defaultKibanaPort = "5601"
-	defaultKibanaUser = "apm_user_ro"
-	defaultKibanaPass = "changeme"
+	defaultKibanaHost     = "localhost"
+	defaultKibanaPort     = "5601"
+	defaultKibanaUser     = "apm_user_ro"
+	defaultKibanaPass     = "changeme"
+	defaultKibanaBasePath = ""
 )
 
 // Config holds APM Server configuration.
 type Config struct {
-	Kibana                    *KibanaConfig      `json:"apm-server.kibana,omitempty"`
-	Aggregation               *AggregationConfig `json:"apm-server.aggregation,omitempty"`
-	Sampling                  *SamplingConfig    `json:"apm-server.sampling,omitempty"`
-	RUM                       *RUMConfig         `json:"apm-server.rum,omitempty"`
-	WaitForIntegration        *bool              `json:"apm-server.data_streams.wait_for_integration,omitempty"`
-	DefaultServiceEnvironment string             `json:"apm-server.default_service_environment,omitempty"`
-	KibanaAgentConfig         *KibanaAgentConfig `json:"apm-server.agent.config,omitempty"`
-	TLS                       *TLSConfig         `json:"apm-server.ssl,omitempty"`
+	Kibana                    *KibanaConfig   `json:"apm-server.kibana,omitempty"`
+	Sampling                  *SamplingConfig `json:"apm-server.sampling,omitempty"`
+	RUM                       *RUMConfig      `json:"apm-server.rum,omitempty"`
+	WaitForIntegration        *bool           `json:"apm-server.data_streams.wait_for_integration,omitempty"`
+	DefaultServiceEnvironment string          `json:"apm-server.default_service_environment,omitempty"`
+	AgentConfig               *AgentConfig    `json:"apm-server.agent.config,omitempty"`
+	TLS                       *TLSConfig      `json:"apm-server.ssl,omitempty"`
 
 	// AgentAuth holds configuration for APM agent authorization.
 	AgentAuth AgentAuthConfig `json:"apm-server.auth"`
@@ -70,6 +70,9 @@ type Config struct {
 
 	// Output holds configuration for the libbeat output.
 	Output OutputConfig `json:"output"`
+
+	// AggregationConfig holds configuration related to aggregation.
+	Aggregation *AggregationConfig `json:"apm-server.aggregation,omitempty"`
 }
 
 // Args formats cfg as a list of arguments to pass to apm-server,
@@ -90,20 +93,29 @@ type TLSConfig struct {
 	SupportedProtocols []string `json:"supported_protocols,omitempty"`
 }
 
-// KibanaAgentConfig holds configuration related to the Kibana-based
-// implementation of agent configuration.
-type KibanaAgentConfig struct {
-	CacheExpiration time.Duration
+// AgentConfig holds configuration related to the Kibana-based or
+// Elasticsearch-based implementation of agent configuration.
+type AgentConfig struct {
+	CacheExpiration       time.Duration
+	ElasticsearchUsername string
+	ElasticsearchPassword string
+	ElasticsearchAPIKey   string
 }
 
-func (c *KibanaAgentConfig) MarshalJSON() ([]byte, error) {
+func (c *AgentConfig) MarshalJSON() ([]byte, error) {
 	// time.Duration is encoded as int64.
 	// Convert time.Durations to durations, to encode as duration strings.
 	type config struct {
-		CacheExpiration string `json:"cache.expiration,omitempty"`
+		CacheExpiration       string `json:"cache.expiration,omitempty"`
+		ElasticsearchUsername string `json:"elasticsearch.username,omitempty"`
+		ElasticsearchPassword string `json:"elasticsearch.password,omitempty"`
+		ElasticsearchAPIKey   string `json:"elasticsearch.api_key,omitempty"`
 	}
 	return json.Marshal(config{
-		CacheExpiration: durationString(c.CacheExpiration),
+		CacheExpiration:       durationString(c.CacheExpiration),
+		ElasticsearchUsername: c.ElasticsearchUsername,
+		ElasticsearchPassword: c.ElasticsearchPassword,
+		ElasticsearchAPIKey:   c.ElasticsearchAPIKey,
 	})
 }
 
@@ -119,7 +131,7 @@ type FileLoggingConfig struct {
 
 // KibanaConfig holds APM Server Kibana connection configuration.
 type KibanaConfig struct {
-	Enabled  bool   `json:"enabled,omitempty"`
+	Enabled  bool   `json:"enabled"`
 	Host     string `json:"host,omitempty"`
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
@@ -183,13 +195,8 @@ type RUMConfig struct {
 
 // RUMSourcemapConfig holds APM Server RUM sourcemap configuration.
 type RUMSourcemapConfig struct {
-	Enabled bool                     `json:"enabled,omitempty"`
-	Cache   *RUMSourcemapCacheConfig `json:"cache,omitempty"`
-}
-
-// RUMSourcemapCacheConfig holds sourcemap cache expiration.
-type RUMSourcemapCacheConfig struct {
-	Expiration time.Duration `json:"expiration,omitempty"`
+	Enabled  bool                       `json:"enabled"`
+	ESConfig *ElasticsearchOutputConfig `json:"elasticsearch"`
 }
 
 // APIKeyConfig holds agent auth configuration.
@@ -231,11 +238,19 @@ type InstrumentationConfig struct {
 type OutputConfig struct {
 	Console       *ConsoleOutputConfig       `json:"console,omitempty"`
 	Elasticsearch *ElasticsearchOutputConfig `json:"elasticsearch,omitempty"`
+	Logstash      *LogstashOutputConfig      `json:"logstash,omitempty"`
 }
 
 // ConsoleOutputConfig holds APM Server libbeat console output configuration.
 type ConsoleOutputConfig struct {
 	Enabled bool `json:"enabled"`
+}
+
+// LogstashOutputConfig holds APM Server libbeat logstash output configuration.
+type LogstashOutputConfig struct {
+	Enabled     bool     `json:"enabled"`
+	Hosts       []string `json:"hosts,omitempty"`
+	BulkMaxSize int      `json:"bulk_max_size,omitempty"`
 }
 
 // ElasticsearchOutputConfig holds APM Server libbeat Elasticsearch output configuration.
@@ -294,37 +309,16 @@ func (m *MonitoringConfig) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// AggregationConfig holds APM Server metrics aggregation configuration.
-type AggregationConfig struct {
-	Service *ServiceAggregationConfig `json:"service,omitempty"`
-}
-
-// ServiceAggregationConfig holds APM Server service metrics aggregation configuration.
-type ServiceAggregationConfig struct {
-	// Enabled controls whether service metrics aggregation enabled.
-	//
-	// Service metrics aggregation is disabled by default while the
-	// feature is in technical preview.
-	Enabled *bool `json:"enabled,omitempty"`
-}
-
-func (s *ServiceAggregationConfig) MarshalJSON() ([]byte, error) {
-	// time.Duration is encoded as int64.
-	// Convert time.Durations to durations, to encode as duration strings.
-	type config struct {
-		Enabled  *bool  `json:"enabled,omitempty"`
-		Interval string `json:"interval,omitempty"`
-	}
-	return json.Marshal(config{
-		Enabled: s.Enabled,
-	})
-}
-
 func durationString(d time.Duration) string {
 	if d == 0 {
 		return ""
 	}
 	return d.String()
+}
+
+// AggregationConfig holds configuration related to aggregation.
+type AggregationConfig struct {
+	MaxServices int `json:"max_services,omitempty"`
 }
 
 func configArgs(cfg Config, extra map[string]interface{}) ([]string, error) {
@@ -386,6 +380,7 @@ func DefaultConfig() Config {
 					getenvDefault("KIBANA_HOST", defaultKibanaHost),
 					KibanaPort(),
 				),
+				Path: getenvDefault("KIBANA_BASE_PATH", defaultKibanaBasePath),
 			}).String(),
 			Username: getenvDefault("KIBANA_USER", defaultKibanaUser),
 			Password: getenvDefault("KIBANA_PASS", defaultKibanaPass),

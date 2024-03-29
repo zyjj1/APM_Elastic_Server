@@ -20,7 +20,6 @@ package api
 import (
 	"net/http"
 	httppprof "net/http/pprof"
-	"net/netip"
 	"regexp"
 	"runtime/pprof"
 
@@ -31,8 +30,10 @@ import (
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/monitoring"
 
+	"github.com/elastic/apm-data/input"
 	"github.com/elastic/apm-data/input/elasticapm"
-	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-data/model/modelpb"
+	"github.com/elastic/apm-data/model/modelprocessor"
 	"github.com/elastic/apm-server/internal/agentcfg"
 	"github.com/elastic/apm-server/internal/beater/api/config/agent"
 	"github.com/elastic/apm-server/internal/beater/api/intake"
@@ -44,7 +45,7 @@ import (
 	"github.com/elastic/apm-server/internal/beater/ratelimit"
 	"github.com/elastic/apm-server/internal/beater/request"
 	"github.com/elastic/apm-server/internal/logs"
-	"github.com/elastic/apm-server/internal/model/modelprocessor"
+	srvmodelprocessor "github.com/elastic/apm-server/internal/model/modelprocessor"
 	"github.com/elastic/apm-server/internal/sourcemap"
 	"github.com/elastic/apm-server/internal/version"
 )
@@ -81,13 +82,13 @@ const (
 // APM Server API.
 func NewMux(
 	beaterConfig *config.Config,
-	batchProcessor model.BatchProcessor,
+	batchProcessor modelpb.BatchProcessor,
 	authenticator *auth.Authenticator,
 	fetcher agentcfg.Fetcher,
 	ratelimitStore *ratelimit.Store,
 	sourcemapFetcher sourcemap.Fetcher,
-	fleetManaged bool,
 	publishReady func() bool,
+	semaphore input.Semaphore,
 ) (*mux.Router, error) {
 	pool := request.NewContextPool()
 	logger := logp.NewLogger(logs.Handler)
@@ -100,14 +101,13 @@ func NewMux(
 		batchProcessor:   batchProcessor,
 		ratelimitStore:   ratelimitStore,
 		sourcemapFetcher: sourcemapFetcher,
-		fleetManaged:     fleetManaged,
-		intakeSemaphore:  make(chan struct{}, beaterConfig.MaxConcurrentDecoders),
+		intakeSemaphore:  semaphore,
 	}
 
 	zapLogger := zap.New(logger.Core(), zap.WithCaller(true))
 	builder.intakeProcessor = elasticapm.NewProcessor(elasticapm.Config{
 		MaxEventSize: beaterConfig.MaxEventSize,
-		Semaphore:    builder.intakeSemaphore,
+		Semaphore:    semaphore,
 		Logger:       zapLogger,
 	})
 
@@ -116,7 +116,7 @@ func NewMux(
 		handlerFn func() (request.Handler, error)
 	}
 
-	otlpHandlers := otlp.NewHTTPHandlers(zapLogger, batchProcessor)
+	otlpHandlers := otlp.NewHTTPHandlers(zapLogger, batchProcessor, semaphore)
 	rumIntakeHandler := builder.rumIntakeHandler()
 	routeMap := []route{
 		{RootPath, builder.rootHandler(publishReady)},
@@ -163,12 +163,11 @@ func NewMux(
 type routeBuilder struct {
 	cfg              *config.Config
 	authenticator    *auth.Authenticator
-	batchProcessor   model.BatchProcessor
+	batchProcessor   modelpb.BatchProcessor
 	ratelimitStore   *ratelimit.Store
 	sourcemapFetcher sourcemap.Fetcher
-	fleetManaged     bool
 	intakeProcessor  *elasticapm.Processor
-	intakeSemaphore  chan struct{}
+	intakeSemaphore  input.Semaphore
 }
 
 func (r *routeBuilder) backendIntakeHandler() (request.Handler, error) {
@@ -194,6 +193,7 @@ func (r *routeBuilder) rumIntakeHandler() func() (request.Handler, error) {
 			batchProcessors = append(batchProcessors, sourcemap.BatchProcessor{
 				Fetcher: r.sourcemapFetcher,
 				Timeout: r.cfg.RumConfig.SourceMapping.Timeout,
+				Logger:  logp.NewLogger(logs.Stacktrace),
 			})
 		}
 		if r.cfg.RumConfig.LibraryPattern != "" {
@@ -201,14 +201,14 @@ func (r *routeBuilder) rumIntakeHandler() func() (request.Handler, error) {
 			if err != nil {
 				return nil, errors.Wrap(err, "invalid library pattern regex")
 			}
-			batchProcessors = append(batchProcessors, modelprocessor.SetLibraryFrame{Pattern: re})
+			batchProcessors = append(batchProcessors, srvmodelprocessor.SetLibraryFrame{Pattern: re})
 		}
 		if r.cfg.RumConfig.ExcludeFromGrouping != "" {
 			re, err := regexp.Compile(r.cfg.RumConfig.ExcludeFromGrouping)
 			if err != nil {
 				return nil, errors.Wrap(err, "invalid exclude from grouping regex")
 			}
-			batchProcessors = append(batchProcessors, modelprocessor.SetExcludeFromGrouping{Pattern: re})
+			batchProcessors = append(batchProcessors, srvmodelprocessor.SetExcludeFromGrouping{Pattern: re})
 		}
 		if r.sourcemapFetcher != nil {
 			batchProcessors = append(batchProcessors, modelprocessor.SetCulprit{})
@@ -231,13 +231,13 @@ func (r *routeBuilder) rootHandler(publishReady func() bool) func() (request.Han
 
 func (r *routeBuilder) backendAgentConfigHandler(f agentcfg.Fetcher) func() (request.Handler, error) {
 	return func() (request.Handler, error) {
-		return agentConfigHandler(r.cfg, r.authenticator, r.ratelimitStore, backendMiddleware, f, r.fleetManaged)
+		return agentConfigHandler(r.cfg, r.authenticator, r.ratelimitStore, backendMiddleware, f)
 	}
 }
 
 func (r *routeBuilder) rumAgentConfigHandler(f agentcfg.Fetcher) func() (request.Handler, error) {
 	return func() (request.Handler, error) {
-		return agentConfigHandler(r.cfg, r.authenticator, r.ratelimitStore, rumMiddleware, f, r.fleetManaged)
+		return agentConfigHandler(r.cfg, r.authenticator, r.ratelimitStore, rumMiddleware, f)
 	}
 }
 
@@ -249,19 +249,9 @@ func agentConfigHandler(
 	ratelimitStore *ratelimit.Store,
 	middlewareFunc middlewareFunc,
 	f agentcfg.Fetcher,
-	fleetManaged bool,
 ) (request.Handler, error) {
 	mw := middlewareFunc(cfg, authenticator, ratelimitStore, agent.MonitoringMap)
-	h := agent.NewHandler(f, cfg.KibanaAgentConfig.Cache.Expiration, cfg.DefaultServiceEnvironment, cfg.AgentAuth.Anonymous.AllowAgent)
-
-	if !cfg.Kibana.Enabled && !fleetManaged {
-		msg := "Agent remote configuration is disabled. " +
-			"Configure the `apm-server.kibana` section in apm-server.yml to enable it. " +
-			"If you are using a RUM agent, you also need to configure the `apm-server.rum` section. " +
-			"If you are not using remote configuration, you can safely ignore this error."
-		mw = append(mw, middleware.KillSwitchMiddleware(cfg.Kibana.Enabled, msg))
-	}
-
+	h := agent.NewHandler(f, cfg.AgentConfig.Cache.Expiration, cfg.DefaultServiceEnvironment, cfg.AgentAuth.Anonymous.AllowAgent)
 	return middleware.Wrap(h, mw...)
 }
 
@@ -270,7 +260,7 @@ func apmMiddleware(m map[request.ResultID]*monitoring.Int) []middleware.Middlewa
 		middleware.LogMiddleware(),
 		middleware.TimeoutMiddleware(),
 		middleware.RecoverPanicMiddleware(),
-		middleware.MonitoringMiddleware(m),
+		middleware.MonitoringMiddleware(m, nil),
 	}
 }
 
@@ -304,43 +294,54 @@ func rootMiddleware(cfg *config.Config, authenticator *auth.Authenticator) []mid
 	)
 }
 
-func baseRequestMetadata(c *request.Context) model.APMEvent {
-	return model.APMEvent{
-		Timestamp: c.Timestamp,
+func baseRequestMetadata(c *request.Context) *modelpb.APMEvent {
+	return &modelpb.APMEvent{
+		Timestamp: modelpb.FromTime(c.Timestamp),
 	}
 }
 
-func backendRequestMetadataFunc(cfg *config.Config) func(c *request.Context) model.APMEvent {
+func backendRequestMetadataFunc(cfg *config.Config) func(c *request.Context) *modelpb.APMEvent {
 	if !cfg.AugmentEnabled {
 		return baseRequestMetadata
 	}
-	return func(c *request.Context) model.APMEvent {
-		var hostIP []netip.Addr
+	return func(c *request.Context) *modelpb.APMEvent {
+		e := modelpb.APMEvent{
+			Timestamp: modelpb.FromTime(c.Timestamp),
+		}
+
 		if c.ClientIP.IsValid() {
-			hostIP = []netip.Addr{c.ClientIP}
+			e.Host = &modelpb.Host{
+				Ip: []*modelpb.IP{modelpb.Addr2IP(c.ClientIP)},
+			}
 		}
-		return model.APMEvent{
-			Host:      model.Host{IP: hostIP},
-			Timestamp: c.Timestamp,
-		}
+		return &e
 	}
 }
 
-func rumRequestMetadataFunc(cfg *config.Config) func(c *request.Context) model.APMEvent {
+func rumRequestMetadataFunc(cfg *config.Config) func(c *request.Context) *modelpb.APMEvent {
 	if !cfg.AugmentEnabled {
 		return baseRequestMetadata
 	}
-	return func(c *request.Context) model.APMEvent {
-		e := model.APMEvent{
-			Client:    model.Client{IP: c.ClientIP},
-			Source:    model.Source{IP: c.SourceIP, Port: c.SourcePort},
-			Timestamp: c.Timestamp,
-			UserAgent: model.UserAgent{Original: c.UserAgent},
+	return func(c *request.Context) *modelpb.APMEvent {
+		e := modelpb.APMEvent{
+			Timestamp: modelpb.FromTime(c.Timestamp),
+		}
+		if c.UserAgent != "" {
+			e.UserAgent = &modelpb.UserAgent{Original: c.UserAgent}
+		}
+		if c.ClientIP.IsValid() {
+			e.Client = &modelpb.Client{Ip: modelpb.Addr2IP(c.ClientIP)}
+		}
+		if c.SourcePort != 0 || c.SourceIP.IsValid() {
+			e.Source = &modelpb.Source{Port: uint32(c.SourcePort)}
+			if c.SourceIP.IsValid() {
+				e.Source.Ip = modelpb.Addr2IP(c.SourceIP)
+			}
 		}
 		if c.SourceNATIP.IsValid() {
-			e.Source.NAT = &model.NAT{IP: c.SourceNATIP}
+			e.Source.Nat = &modelpb.NAT{Ip: modelpb.Addr2IP(c.SourceNATIP)}
 		}
-		return e
+		return &e
 	}
 }
 

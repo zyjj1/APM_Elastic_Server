@@ -27,11 +27,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
-	"strings"
+	"path"
 	"testing"
 	"time"
 
@@ -39,7 +35,9 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/elastic/apm-server/systemtest/apmservertest"
+	"github.com/elastic/apm-server/systemtest/estest"
 	"github.com/elastic/apm-server/systemtest/fleettest"
+	"github.com/elastic/apm-tools/pkg/espoll"
 )
 
 const (
@@ -77,9 +75,9 @@ func init() {
 }
 
 // InitFleet ensures Fleet is set up, destroys any existing agent policies previously
-// created by the system tests and unenrolls the associated agents, uninstalls the
-// integration package if it is installed, and finally installs the integration pacakge.
-// After InitFleet returns successfully, the IntegrationPackage var will be initialised.
+// created by the system tests and unenrolls the associated agents. After InitFleet
+// returns successfully, the IntegrationPackage var will be initialised to the details
+// of the installed APM integration package.
 func InitFleet() error {
 	if err := Fleet.Setup(); err != nil {
 		log.Fatal(err)
@@ -98,40 +96,22 @@ func InitFleet() error {
 	return InitFleetPackage()
 }
 
-// InitFleetPackage (re)installs the APM integration package, and sets
-// IntegrationPackage to the installed package. InitFleetPackage assumes
-// that Fleet has been set up already.
+// InitFleetPackage and sets IntegrationPackage to the details of the installed
+// APM integration package. InitFleetPackage assumes that Fleet has been set up
+// already.
 func InitFleetPackage() error {
-	_, filename, _, ok := runtime.Caller(0)
-	if !ok {
-		return errors.New("could not locate systemtest directory")
-	}
-	systemtestDir := filepath.Dir(filename)
-	repoRoot := filepath.Join(systemtestDir, "..")
-
-	// Locate the integration package zip.
-	cmd := exec.Command("make", "--no-print-directory", "get-version")
-	cmd.Dir = repoRoot
-	output, err := cmd.Output()
+	packages, err := Fleet.ListPackages()
 	if err != nil {
 		return err
 	}
-	packageVersion := strings.TrimSpace(string(output))
-	packagesBuildDir := filepath.Join(systemtestDir, "..", "build", "packages")
-	packageFilename := filepath.Join(packagesBuildDir, fmt.Sprintf("apm-%s.zip", packageVersion))
-
-	log.Printf("Installing package %s", packageFilename)
-	f, err := os.Open(packageFilename)
-	if err != nil {
-		return err
+	for _, pkg := range packages {
+		if pkg.Name != "apm" {
+			continue
+		}
+		IntegrationPackage = &pkg
+		return nil
 	}
-	defer f.Close()
-
-	if err := Fleet.InstallPackageByUpload(f); err != nil {
-		return err
-	}
-	IntegrationPackage, err = Fleet.Package("apm", packageVersion)
-	return err
+	return errors.New("'apm' integration package not installed")
 }
 
 // CreateAgentPolicy creates an Agent policy with the given name and namespace,
@@ -263,7 +243,7 @@ type SourceMap struct {
 // CreateSourceMap creates or replaces a source map with the given service name
 // and version, and bundle filepath. CreateSourceMap returns the ID of the stored
 // source map, which may be passed to DeleteSourceMap for cleanup.
-func CreateSourceMap(t testing.TB, sourcemap, serviceName, serviceVersion, bundleFilepath string) string {
+func CreateSourceMap(t testing.TB, sourcemap []byte, serviceName, serviceVersion, bundleFilepath string) string {
 	t.Helper()
 
 	var data bytes.Buffer
@@ -274,12 +254,12 @@ func CreateSourceMap(t testing.TB, sourcemap, serviceName, serviceVersion, bundl
 
 	sourcemapFileWriter, err := mw.CreateFormFile("sourcemap", "sourcemap.js.map")
 	require.NoError(t, err)
-	sourcemapFileWriter.Write([]byte(sourcemap))
+	sourcemapFileWriter.Write(sourcemap)
 	require.NoError(t, mw.Close())
 
-	url := *KibanaURL
-	url.Path += "/api/apm/sourcemaps"
-	req, _ := http.NewRequest("POST", url.String(), &data)
+	apiURL := *KibanaURL
+	apiURL.Path += "/api/apm/sourcemaps"
+	req, _ := http.NewRequest("POST", apiURL.String(), &data)
 	req.Header.Add("Content-Type", mw.FormDataContentType())
 	req.Header.Set("kbn-xsrf", "1")
 
@@ -296,9 +276,26 @@ func CreateSourceMap(t testing.TB, sourcemap, serviceName, serviceVersion, bundl
 	}
 	err = json.Unmarshal(respBody, &result)
 	require.NoError(t, err)
+
+	cleanPath := bundleFilepath
+	u, err := url.Parse(bundleFilepath)
+	if err == nil {
+		u.Fragment = ""
+		u.RawQuery = ""
+		u.Path = path.Clean(u.Path)
+		cleanPath = u.String()
+	}
+
+	id := serviceName + "-" + serviceVersion + "-" + cleanPath
+	estest.ExpectMinDocs(t, Elasticsearch, 1, ".apm-source-map", espoll.TermQuery{
+		Field: "_id",
+		Value: id,
+	})
+
 	t.Cleanup(func() {
 		DeleteSourceMap(t, result.ID)
 	})
+
 	return result.ID
 }
 

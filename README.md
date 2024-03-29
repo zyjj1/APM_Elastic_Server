@@ -1,5 +1,6 @@
-[![Build Status](https://apm-ci.elastic.co/buildStatus/icon?job=apm-server/apm-server-mbp/main)](https://apm-ci.elastic.co/job/apm-server/job/apm-server-mbp/view/change-requests/job/main/)
-[![Smoke Tests on ESS](https://apm-ci.elastic.co/buildStatus/icon?job=apm-server/smoke-tests-ess-mbp/main&subject=smoke%20tests)](https://apm-ci.elastic.co/job/apm-server/job/smoke-tests-ess-mbp/job/main/)
+[![ci](https://github.com/elastic/apm-server/actions/workflows/ci.yml/badge.svg)](https://github.com/elastic/apm-server/actions/workflows/ci.yml)
+[![Smoke Tests](https://github.com/elastic/apm-server/actions/workflows/smoke-tests-schedule.yml/badge.svg)](https://github.com/elastic/apm-server/actions/workflows/smoke-tests-schedule.yml)
+[![Package status](https://badge.buildkite.com/fc4aa824ffecf245db871971507275aa3c35904e380fef449c.svg?branch=main)](https://buildkite.com/elastic/apm-server-package)
 
 # APM Server
 
@@ -10,13 +11,13 @@ For questions and feature requests, visit the [discussion forum](https://discuss
 
 ## Getting Started
 
-To get started with APM, see our [Quick start guide](https://www.elastic.co/guide/en/apm/get-started/current/install-and-run.html).
+To get started with APM, see our [Quick start guide](https://www.elastic.co/guide/en/apm/guide/current/apm-quick-start.html).
 
 ## APM Server Development
 
 ### Requirements
 
-* [Go][golang-download] 1.19.x
+* [Go][golang-download] 1.22.x
 
 [golang-download]: https://golang.org/dl/
 
@@ -60,8 +61,21 @@ To run APM Server with debugging output enabled, run:
 ```
 
 APM Server expects index templates, ILM policies, and ingest pipelines to be set up externally.
-This should be done by [installing the APM integration](https://www.elastic.co/guide/en/fleet/current/fleet-quick-start-traces.html#add-apm-integration).
+This should be done by [installing the APM integration](https://www.elastic.co/guide/en/observability/current/traces-get-started.html#add-apm-integration).
 When running APM Server directly, it is only necessary to install the integration and not to run an Elastic Agent.
+
+#### Tilt
+
+You can also run APM Server in a containerized environment using
+[Tilt](https://tilt.dev/).
+
+```
+tilt up
+```
+
+See [dev docs
+testing](https://github.com/elastic/apm-server/blob/5f247b3f66b0fab04381eee5a53e676dba030937/dev_docs/TESTING.md#tilt--kubernetes)
+for additional information.
 
 ### Testing
 
@@ -125,7 +139,7 @@ When complete, packages can be found in `build/distributions/`.
 
 ### Building docker packages
 
-To customize image configuration, see [the docs](https://www.elastic.co/guide/en/apm/server/current/running-on-docker.html).
+To customize image configuration, see [the docs](https://www.elastic.co/guide/en/apm/guide/current/running-on-docker.html).
 
 To build docker images from source, run:
 
@@ -140,4 +154,13 @@ Building pre-release images can be done by running `make package-docker-snapshot
 
 ## Documentation
 
-[Documentation](https://www.elastic.co/guide/en/apm/server/current/index.html) for the APM Server can be found in the `docs` folder.
+Documentation for the APM Server can be found in the [Observability guide's APM section](https://www.elastic.co/guide/en/observability/master/apm.html). Most documentation files live in the [elastic/observability-docs](https://github.com/elastic/observability-docs) repo's [`docs/en/observability/apm/` directory](https://github.com/elastic/observability-docs/tree/main/docs/en/observability/apm).
+
+However, the following content lives in this repo:
+
+* The **changelog** page listing all release notes is in [`CHANGELOG.asciidoc`](/CHANGELOG.asciidoc).
+* Each minor version's **release notes** are documented in individual files in the [`changelogs/`](/changelogs/) directory.
+* A list of all **breaking changes** are documented in [`changelogs/all-breaking-changes.asciidoc`](/changelogs/all-breaking-changes.asciidoc).
+* **Sample data sets** that are injected into the docs are in the [`docs/data/`](/docs/data/) directory.
+* **Specifications** that are injected into the docs are in the [`docs/spec/`](/docs/spec/) directory.
+

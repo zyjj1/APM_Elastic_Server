@@ -29,11 +29,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/elastic/apm-tools/pkg/espoll"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 
 	"github.com/elastic/apm-server/systemtest"
 	"github.com/elastic/apm-server/systemtest/apmservertest"
-	"github.com/elastic/apm-server/systemtest/estest"
 )
 
 func apiKeyCommand(subcommand string, args ...string) *apmservertest.ServerCmd {
@@ -126,7 +126,7 @@ func TestAPIKeyInvalidateName(t *testing.T) {
 	systemtest.InvalidateAPIKeys(t)
 	defer systemtest.InvalidateAPIKeys(t)
 
-	var clients []*estest.Client
+	var clients []*espoll.Client
 	for i := 0; i < 2; i++ {
 		cmd := apiKeyCommand("create", "--name", t.Name(), "--json")
 		out, err := cmd.Output()
@@ -244,21 +244,21 @@ func TestAPIKeyInfo(t *testing.T) {
 	assert.GreaterOrEqual(t, len(result.APIKeys), 2)
 }
 
-func assertAuthenticateSucceeds(t testing.TB, es *estest.Client) *esapi.Response {
+func assertAuthenticateSucceeds(t testing.TB, es *espoll.Client) {
 	t.Helper()
 	resp, err := es.Security.Authenticate()
 	require.NoError(t, err)
 	assert.False(t, resp.IsError())
-	return resp
+	assert.NoError(t, resp.Body.Close())
 }
 
-func assertAuthenticateFails(t testing.TB, es *estest.Client) *esapi.Response {
+func assertAuthenticateFails(t testing.TB, es *espoll.Client) {
 	t.Helper()
 	resp, err := es.Security.Authenticate()
 	require.NoError(t, err)
 	assert.True(t, resp.IsError())
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-	return resp
+	assert.NoError(t, resp.Body.Close())
 }
 
 func decodeJSONMap(t *testing.T, r io.Reader) map[string]interface{} {

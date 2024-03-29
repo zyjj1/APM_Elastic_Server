@@ -6,13 +6,18 @@ on:
       - main
       - 7.1*
       - 8.*
-    paths-ignore:
+    paths-ignore: # When updating the list of expressions also update ci-docs.yml
       - '**.md'
       - '**.asciidoc'
+      - '**.png'
+      - '**.svg'
   pull_request:
-    paths-ignore:
+    paths-ignore: # When updating the list of expressions also update ci-docs.yml
       - '**.md'
       - '**.asciidoc'
+      - '**.png'
+      - '**.svg'
+  merge_group:
 
 # limit the access of the generated GITHUB_TOKEN
 permissions:
@@ -22,8 +27,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
@@ -38,22 +43,23 @@ jobs:
   test:
     strategy:
       matrix:
-        # TODO: add ubuntu-latest if/when we're ready to move off Jenkins.
-        os: ['macos-latest', 'windows-latest']
+        os: ['macos-latest', 'ubuntu-latest', 'windows-latest']
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test -v ./...
+      - env:
+          CGO_ENABLED: "0"
+        run: go test -v ./...
 
   system-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version-file: systemtest/go.mod
           cache: true
@@ -66,7 +72,7 @@ jobs:
           go run -modfile=tools/go.mod gotest.tools/gotestsum \
           --no-color -f standard-quiet --jsonfile "$OUTPUT_JSON_FILE" --junitfile "$OUTPUT_JUNIT_FILE" \
           --raw-command -- make system-test
-      - uses: actions/upload-artifact@v3  # upload test results
+      - uses: actions/upload-artifact@v4  # upload test results
         if: ${{ always() }} # run this step even if previous step failed
         with:
           name: test-results

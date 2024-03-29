@@ -34,6 +34,8 @@ import (
 	"github.com/elastic/apm-server/systemtest"
 	"github.com/elastic/apm-server/systemtest/apmservertest"
 	"github.com/elastic/apm-server/systemtest/estest"
+	"github.com/elastic/apm-tools/pkg/approvaltest"
+	"github.com/elastic/apm-tools/pkg/espoll"
 )
 
 func TestRUMXForwardedFor(t *testing.T) {
@@ -64,11 +66,11 @@ func TestRUMXForwardedFor(t *testing.T) {
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
-	result := systemtest.Elasticsearch.ExpectMinDocs(t, 2, "traces-apm*,metrics-apm*", estest.TermsQuery{
+	result := estest.ExpectMinDocs(t, systemtest.Elasticsearch, 2, "traces-apm*,metrics-apm*", espoll.TermsQuery{
 		Field:  "processor.event",
 		Values: []interface{}{"transaction", "metric"},
 	})
-	systemtest.ApproveEvents(
+	approvaltest.ApproveFields(
 		t, t.Name(), result.Hits.Hits,
 		// RUM timestamps are set by the server based on the time the payload is received.
 		"@timestamp", "timestamp.us",
@@ -108,7 +110,7 @@ func TestRUMAllowServiceNames(t *testing.T) {
 
 	respBody, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode, string(respBody))
-	assert.Equal(t, `{"accepted":0,"errors":[{"message":"unauthorized: anonymous access not permitted for service \"disallowed\""}]}`+"\n", string(respBody))
+	assert.Equal(t, `{"accepted":0,"errors":[{"message":"cannot handle stream: cannot process batch: unauthorized: anonymous access not permitted for service \"disallowed\""}]}`+"\n", string(respBody))
 }
 
 func TestRUMRateLimit(t *testing.T) {
@@ -197,23 +199,27 @@ func TestRUMRoutingIntegration(t *testing.T) {
 	// This test asserts that the events that are coming from the RUM JS agent
 	// are sent to the appropriate datastream.
 	systemtest.CleanupElasticsearch(t)
-	apmIntegration := newAPMIntegration(t, nil)
-
-	body, err := os.Open(filepath.Join("..", "testdata", "intake-v3", "rum_events.ndjson"))
+	srv := apmservertest.NewUnstartedServerTB(t)
+	srv.Config.RUM = &apmservertest.RUMConfig{Enabled: true}
+	srv.Config.Kibana.Enabled = false
+	err := srv.Start()
 	require.NoError(t, err)
-	defer body.Close()
 
-	req, err := http.NewRequest("POST", apmIntegration.URL+"/intake/v3/rum/events", body)
+	body, err := os.ReadFile(filepath.Join("..", "testdata", "intake-v3", "rum_events.ndjson"))
 	require.NoError(t, err)
-	req.Header.Add("Content-Type", "application/x-ndjson")
 
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
+	retry := func() {
+		req, err := http.NewRequest("POST", srv.URL+"/intake/v3/rum/events", bytes.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Add("Content-Type", "application/x-ndjson")
 
-	result := systemtest.Elasticsearch.ExpectDocs(t, "traces-apm.rum*", nil)
-	systemtest.ApproveEvents(
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+	}
+	result := estest.ExpectSourcemapError(t, systemtest.Elasticsearch, "traces-apm.rum*", retry, nil, false)
+	approvaltest.ApproveFields(
 		t, t.Name(), result.Hits.Hits, "@timestamp", "timestamp.us",
-		"source.port", "source.ip", "client",
+		"source.port", "source.ip", "client.ip",
 	)
 }

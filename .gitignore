@@ -2,7 +2,6 @@
 /.ci/docker/tests/test_helper
 /.ci/docker/target
 /.ci/docker/golang-mage/go.*
-/.ci/docker/golang-mage/approvaltest/
 /.ci/docker/golang-mage/systemtest/
 /.ci/docker/golang-mage/internal/glog
 **/*.idea
@@ -43,10 +42,12 @@ cmd/intake-receiver/events
 terraform.tfstate
 terraform.tfstate.backup
 terraform.tfvars
-testing/benchmark/.envrc
-testing/benchmark/benchmark-result.txt
 testing/smoke/**/tf.log
+testing/smoke/**/apm-server-*.ndjson
+testing/smoke/**/provisioner_key*
 testing/smoke/**/main.tf
 !testing/smoke/main.tf
 !testing/smoke/supported-os/main.tf
+!testing/smoke/managed/main.tf
 testing/rally-cloud/build
+.bck

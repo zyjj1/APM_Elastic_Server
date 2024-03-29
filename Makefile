@@ -4,6 +4,7 @@
 
 include go.mk
 include packaging.mk
+include release.mk
 
 # By default we run tests with verbose output. This may be overridden, e.g.
 # scripts may set GOTESTFLAGS=-json to format test output for processing.
@@ -11,14 +12,6 @@ GOTESTFLAGS?=-v
 
 # Prevent unintended modifications of go.[mod|sum]
 GOMODFLAG?=-mod=readonly
-
-# Define the github.com/elastic/ecs ref used for the integration package for
-# resolving ECS fields. The top-level "value" file in the repo will be used
-# for populating the `ecs.version` field added to documents.
-#
-# TODO(axw) when the device.* fields we're using have been added to a release,
-# we should pin to a release tag here.
-ECS_REF?=266cf6aa62e46bff1965342a61191ce5ffe1b0d7
 
 PYTHON_ENV?=.
 PYTHON_VENV_DIR:=$(PYTHON_ENV)/build/ve/$(shell $(GO) env GOOS)
@@ -37,9 +30,7 @@ CURRENT_DIR=$(shell dirname $(shell readlink -f $(firstword $(MAKEFILE_LIST))))
 
 APM_SERVER_BINARIES:= \
 	build/apm-server-linux-amd64 \
-	build/apm-server-linux-386 \
 	build/apm-server-linux-arm64 \
-	build/apm-server-windows-386.exe \
 	build/apm-server-windows-amd64.exe \
 	build/apm-server-darwin-amd64 \
 	build/apm-server-darwin-arm64
@@ -64,7 +55,6 @@ $(APM_SERVER_BINARIES):
 build/apm-server-linux-%: GOOS=linux
 build/apm-server-darwin-%: GOOS=darwin
 build/apm-server-windows-%: GOOS=windows
-build/apm-server-%-386 build/apm-server-%-386.exe: GOARCH=386
 build/apm-server-%-amd64 build/apm-server-%-amd64.exe: GOARCH=amd64
 build/apm-server-%-amd64 build/apm-server-%-amd64.exe: GOFLAGS+=-buildmode=pie
 build/apm-server-%-arm64 build/apm-server-%-arm64.exe: GOARCH=arm64
@@ -75,7 +65,6 @@ GOVERSIONINFO_FLAGS := \
 	-product-version "$(APM_SERVER_VERSION)" \
 	-comment "commit=$(GITCOMMIT)"
 
-build/apm-server-windows-386.exe: x-pack/apm-server/versioninfo_windows_386.syso
 build/apm-server-windows-amd64.exe: x-pack/apm-server/versioninfo_windows_amd64.syso
 x-pack/apm-server/versioninfo_windows_amd64.syso: GOVERSIONINFO_FLAGS+=-64
 x-pack/apm-server/versioninfo_%.syso: $(GOVERSIONINFO) $(GITREFFILE) packaging/versioninfo.json
@@ -106,13 +95,13 @@ clean:
 ##############################################################################
 
 .PHONY: check-full
-check-full: update check staticcheck check-docker-compose
+check-full: update check staticcheck
 
 .PHONY: check-approvals
-check-approvals: $(APPROVALS)
-	@$(APPROVALS)
+check-approvals:
+	@$(GO) run -modfile=tools/go.mod github.com/elastic/apm-tools/cmd/check-approvals
 
-check: check-fmt check-headers check-git-diff check-package
+check: check-fmt check-headers check-git-diff
 
 .PHONY: check-git-diff
 check-git-diff:
@@ -128,15 +117,16 @@ bench:
 # Rules for updating config files, etc.
 ##############################################################################
 
-update: go-generate add-headers build-package notice apm-server.docker.yml docs/spec
-	@go mod download all # make sure go.sum is complete
+tidy:
+	@go mod tidy # make sure go.sum is complete
+
+update: tidy go-generate add-headers notice apm-server.docker.yml docs/spec
 
 apm-server.docker.yml: apm-server.yml
 	sed -e 's/127.0.0.1:8200/0.0.0.0:8200/' -e 's/localhost:9200/elasticsearch:9200/' $< > $@
 
 .PHONY: go-generate
 go-generate:
-	@$(GO) run internal/model/modelprocessor/generate_internal_metrics.go
 	@cd cmd/intake-receiver && APM_SERVER_VERSION=$(APM_SERVER_VERSION) $(GO) generate .
 
 .PHONY: add-headers
@@ -157,29 +147,6 @@ get-version:
 .PHONY: update-go-version
 update-go-version:
 	$(GITROOT)/script/update_go_version.sh
-
-##############################################################################
-# Integration package generation.
-##############################################################################
-
-ECS_REF_FILE:=build/ecs/$(ECS_REF).txt
-$(ECS_REF_FILE):
-	@mkdir -p $(@D)
-	@curl --fail --silent -o $@ https://raw.githubusercontent.com/elastic/ecs/$(ECS_REF)/version
-
-build-package: build/packages/apm-$(APM_SERVER_VERSION).zip
-build-package-snapshot: build/packages/apm-$(APM_SERVER_VERSION)-preview-$(GITCOMMITTIMESTAMPUNIX).zip
-build/packages/apm-$(APM_SERVER_VERSION).zip: build/apmpackage
-build/packages/apm-$(APM_SERVER_VERSION)-preview-$(GITCOMMITTIMESTAMPUNIX).zip: build/apmpackage-snapshot
-build/packages/apm-%.zip: $(ELASTICPACKAGE)
-	cd $(filter build/apmpackage%, $^) && $(ELASTICPACKAGE) build
-
-.PHONY: build/apmpackage build/apmpackage-snapshot
-build/apmpackage: PACKAGE_VERSION=$(APM_SERVER_VERSION)
-build/apmpackage-snapshot: PACKAGE_VERSION=$(APM_SERVER_VERSION)-preview-$(GITCOMMITTIMESTAMPUNIX)
-build/apmpackage build/apmpackage-snapshot: $(ECS_REF_FILE)
-	@mkdir -p $(@D) && rm -fr $@
-	@$(GO) run ./apmpackage/cmd/genpackage -o $@ -version=$(PACKAGE_VERSION) -ecs=$$(cat $(ECS_REF_FILE)) -ecsref=git@$(ECS_REF)
 
 ##############################################################################
 # Documentation.
@@ -220,7 +187,7 @@ update-beats: update-beats-module update
 
 .PHONY: update-beats-module
 update-beats-module:
-	$(GO) get -d -u $(BEATS_MODULE)@$(BEATS_VERSION) && $(GO) mod tidy
+	$(GO) get -d $(BEATS_MODULE)@$(BEATS_VERSION) && $(GO) mod tidy
 
 .PHONY: update-beats-docs
 update-beats-docs:
@@ -252,9 +219,6 @@ endif
 check-docker-compose:
 	./script/check_docker_compose.sh $(BEATS_VERSION)
 
-check-package: build-package $(ELASTICPACKAGE)
-	@(cd build/apmpackage && $(ELASTICPACKAGE) format --fail-fast && $(ELASTICPACKAGE) lint)
-
 .PHONY: check-gofmt gofmt
 check-fmt: check-gofmt
 fmt: gofmt
@@ -273,6 +237,7 @@ MODULE_DEPS=$(sort $(shell \
 
 notice: NOTICE.txt
 NOTICE.txt build/dependencies-$(APM_SERVER_VERSION).csv: go.mod tools/go.mod
+	mkdir -p build/
 	$(GO) list -m -json $(MODULE_DEPS) | go run -modfile=tools/go.mod go.elastic.co/go-licence-detector \
 		-includeIndirect \
 		-overrides tools/notice/overrides.json \
@@ -332,11 +297,11 @@ testing/rally/corpora:
 SMOKETEST_VERSIONS ?= latest
 # supported-os tests are exclude and hence they are not running as part of this process
 # since they are required to run against different versions in a different CI pipeline.
-SMOKETEST_DIRS = $$(find $(CURRENT_DIR)/testing/smoke -mindepth 1 -maxdepth 1 -type d | grep -v supported-os)
+SMOKETEST_DIRS = $$(find $(CURRENT_DIR)/testing/smoke -mindepth 1 -maxdepth 1 -type d | grep -v supported-os | grep -v /managed)
 
 .PHONY: smoketest/discover
 smoketest/discover:
-	@echo "$(SMOKETEST_DIRS)"
+	@ echo "$(SMOKETEST_DIRS)" | jq -cnR '[inputs | select(length > 0)]'
 
 .PHONY: smoketest/run-version
 smoketest/run-version:
@@ -362,7 +327,7 @@ smoketest/all:
 		$(MAKE) smoketest/run TEST_DIR=$${test_dir}; \
 	done
 
-.PHONY: smoketest/all
+.PHONY: smoketest/all/cleanup
 smoketest/all/cleanup:
 	@ for test_dir in $(SMOKETEST_DIRS); do \
 		echo "-> Cleanup $${test_dir} smoke tests..."; \

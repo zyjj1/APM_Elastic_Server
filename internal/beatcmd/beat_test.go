@@ -25,14 +25,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofrs/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/elastic/apm-server/internal/version"
 	"github.com/elastic/beats/v7/libbeat/common/reload"
-	"github.com/elastic/beats/v7/libbeat/feature"
 	"github.com/elastic/beats/v7/libbeat/management"
 	"github.com/elastic/elastic-agent-libs/config"
 	"github.com/elastic/elastic-agent-libs/logp"
@@ -77,7 +75,7 @@ func TestRunMaxProcs(t *testing.T) {
 
 func TestRunnerParams(t *testing.T) {
 	calls := make(chan RunnerParams, 1)
-	b := newBeat(t, "output.console.enabled: true", func(args RunnerParams) (Runner, error) {
+	b := newBeat(t, "output.console.enabled: true\nname: my-custom-name", func(args RunnerParams) (Runner, error) {
 		calls <- args
 		return newNopRunner(args), nil
 	})
@@ -88,6 +86,7 @@ func TestRunnerParams(t *testing.T) {
 	assert.Equal(t, "apm-server", args.Info.Beat)
 	assert.Equal(t, version.Version, args.Info.Version)
 	assert.True(t, args.Info.ElasticLicensed)
+	assert.Equal(t, "my-custom-name", b.Beat.Info.Name)
 	assert.NotZero(t, args.Info.ID)
 	assert.NotZero(t, args.Info.EphemeralID)
 	assert.NotZero(t, args.Info.FirstStart)
@@ -102,6 +101,7 @@ func TestRunnerParams(t *testing.T) {
 	err := args.Config.Unpack(&m)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]interface{}{
+		"name": "my-custom-name",
 		"output": map[string]interface{}{
 			"console": map[string]interface{}{
 				"enabled": true,
@@ -131,17 +131,9 @@ func TestRunManager(t *testing.T) {
 
 	// Register our own mock management implementation.
 	manager := newMockManager()
-	featureRegistry := feature.GlobalRegistry()
-	managementFeature := feature.New(
-		management.Namespace, "testing", management.PluginFunc(func(cfg *config.C) management.FactoryFunc {
-			return func(cfg *config.C, registry *reload.Registry, uuid uuid.UUID) (management.Manager, error) {
-				return manager, nil
-			}
-		}),
-		feature.MakeDetails("testing", "", feature.Experimental),
-	)
-	featureRegistry.Register(managementFeature)
-	defer featureRegistry.Unregister(management.Namespace, "testing")
+	management.SetManagerFactory(func(cfg *config.C, registry *reload.Registry) (management.Manager, error) {
+		return manager, nil
+	})
 
 	calls := make(chan RunnerParams, 1)
 	b := newBeat(t, "management.enabled: true", func(args RunnerParams) (Runner, error) {

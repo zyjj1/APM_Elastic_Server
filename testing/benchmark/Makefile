@@ -6,12 +6,12 @@ TFVARS_SOURCE ?= terraform.tfvars.example
 
 BENCHMARK_WARMUP_TIME ?= 5m
 BENCHMARK_AGENTS ?= 64
-BENCHMARK_COUNT ?= 3
+BENCHMARK_COUNT ?= 6
 BENCHMARK_TIME ?= 2m
 BENCHMARK_RUN ?= Benchmark
 BENCHMARK_RESULT ?= benchmark-result.txt
 BENCHMARK_DETAILED ?= true
-BENCHMARK_MAX_RATE ?= 0epm
+BENCHMARK_EVENT_RATE ?= 0/s
 
 GOBENCH_INDEX ?= apmbench-v2
 GOBENCH_USERNAME ?= admin
@@ -20,7 +20,7 @@ GOBENCH_HOST ?= http://localhost:9200
 GOBENCH_DEFAULT_TAGS = apm_server_version=$(APM_SERVER_VERSION)
 
 SSH_USER ?= ec2-user
-SSH_OPTS ?= -o LogLevel=ERROR -o StrictHostKeyChecking=no
+SSH_OPTS ?= -o LogLevel=ERROR -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=10
 SSH_KEY ?= ~/.ssh/id_rsa_terraform
 WORKER_IP = $(shell terraform output -raw public_ip)
 
@@ -28,7 +28,12 @@ SHELL = /bin/bash
 .SHELLFLAGS = -o pipefail -c
 
 # This profile will also be used by the Terraform provider.
-export AWS_PROFILE ?= default
+
+# export AWS_PROFILE if CI is not defined
+ifeq ($(CI),)
+	export AWS_PROFILE ?= default
+endif
+
 
 .default: all
 
@@ -37,6 +42,7 @@ all: $(SSH_KEY) terraform.tfvars apmbench auth apply
 
 MAKEFILE_PATH:=$(abspath $(lastword ${MAKEFILE_LIST}))
 MAKEFILE_DIR:=$(dir ${MAKEFILE_PATH})
+REPO_ROOT:=$(abspath ${MAKEFILE_DIR}/../../)
 
 include ${MAKEFILE_DIR}/../../go.mk
 
@@ -59,7 +65,7 @@ terraform.tfvars:
 .PHONY: apmbench
 apmbench:
 	@echo "-> Building apmbench..."
-	@cd $(APMBENCH_PATH) && GOOS=$(APMBENCH_GOOS) GOARCH=$(APMBENCH_GOARCH) $(GO) build .
+	@cd $(APMBENCH_PATH) && CGO_ENABLED=0 GOOS=$(APMBENCH_GOOS) GOARCH=$(APMBENCH_GOARCH) $(GO) build .
 
 .PHONY: init
 init:
@@ -73,12 +79,15 @@ apply:
 destroy:
 	@terraform destroy -auto-approve
 
+cp-cpuprof:
+	@[ "${BENCHMARK_CPU_OUT}" ] && scp $(SSH_OPTS) -i $(SSH_KEY) "$(SSH_USER)@$(WORKER_IP):./$(BENCHMARK_CPU_OUT)" $(BENCHMARK_CPU_OUT) || echo "skipping cpu out copy"
+
 .PHONY: log-benckmark-profile
 log-benckmark-profile:
 	@echo "Running benchmarks..."
 	@echo "Benchmark warmup time: $(BENCHMARK_WARMUP_TIME)"
 	@echo "Benchmark agents: $(BENCHMARK_AGENTS)"
-	@echo "Benchmark max rate: $(BENCHMARK_MAX_RATE)"
+	@echo "Benchmark event rate: $(BENCHMARK_EVENT_RATE)"
 	@echo "Benchmark count: $(BENCHMARK_COUNT)"
 	@echo "Benchmark duration: $(BENCHMARK_TIME)"
 	@echo "Benchmark run expression : $(BENCHMARK_RUN)"
@@ -87,7 +96,7 @@ log-benckmark-profile:
 run-benchmark: log-benckmark-profile
 	@ssh $(SSH_OPTS) -i $(SSH_KEY) $(SSH_USER)@$(WORKER_IP) ". .envrc && bin/apmbench -run='$(BENCHMARK_RUN)' \
 	-benchtime=$(BENCHMARK_TIME) -count=$(BENCHMARK_COUNT) -warmup-time=$(BENCHMARK_WARMUP_TIME) \
-	-agents=$(BENCHMARK_AGENTS) -detailed=$(BENCHMARK_DETAILED) -max-rate=$(BENCHMARK_MAX_RATE)" 2>&1 | tee $(BENCHMARK_RESULT)
+	-agents=$(BENCHMARK_AGENTS) -detailed=$(BENCHMARK_DETAILED) -event-rate=$(BENCHMARK_EVENT_RATE) -cpuprofile=$(BENCHMARK_CPU_OUT)" 2>&1 | tee $(BENCHMARK_RESULT)
 
 .PHONY: run-benchmark-autotuned
 run-benchmark-autotuned:
@@ -116,10 +125,20 @@ $(SSH_KEY):
 ssh:
 	@ssh $(SSH_OPTS) -i $(SSH_KEY) $(SSH_USER)@$(WORKER_IP)
 
+IMAGE_TAG?=$(shell grep docker.elastic.co/kibana ${REPO_ROOT}/docker-compose.yml | cut -d: -f3)
+# Tag custom images with the username and current timestamp.
+# The timestamp must be included to force images to be pulled.
+USER_NAME?=${USER}
+CUSTOM_IMAGE_TAG:=${IMAGE_TAG}-${USER_NAME}-$(shell date +%s)
+ELASTIC_AGENT_DOCKER_IMAGE?=docker.elastic.co/cloud-release/elastic-agent-cloud
+ELASTICSEARCH_DOCKER_IMAGE=docker.elastic.co/cloud-release/elasticsearch-cloud-ess
+KIBANA_DOCKER_IMAGE=docker.elastic.co/cloud-release/kibana-cloud
+CI_ELASTIC_AGENT_DOCKER_IMAGE=docker.elastic.co/observability-ci/elastic-agent
+ELASTIC_AGENT_IMAGE_TAG?=${IMAGE_TAG}
+
 .PHONY: docker-override-committed-version
-docker-override-committed-version:
-	$(eval TAG := $(shell grep docker.elastic.co/ ../../docker-compose.yml |grep SNAPSHOT| cut -d ':' -f3|uniq))
-	@echo 'export TF_VAR_docker_image_tag_override={"elasticsearch":"$(TAG)","kibana":"$(TAG)","apm":"$(TAG)"}'
+docker-override-committed-version: docker_image.auto.tfvars elastic_agent_docker_image
+	@echo '-> docker image override completed'
 
 .PHONY: cleanup-elasticsearch
 cleanup-elasticsearch:
@@ -129,3 +148,28 @@ cleanup-elasticsearch:
 	$(eval APM_DATA_STREAMS = traces-apm*,metrics-apm*,logs-apm*)
 	@ echo "-> Deleting APM Server data streams..."
 	@ curl -u $(ELASTICSEARCH_USER):$(ELASTICSEARCH_PASS) -XDELETE $(ELASTICSEARCH_URL)/_data_stream/$(APM_DATA_STREAMS)
+
+##############################################################################
+# Target for creating a .tfvars file, defining the custom Docker images to
+# use in the deployment.
+##############################################################################
+
+docker_image.auto.tfvars:
+	@echo 'docker_image_override={"elasticsearch":"${ELASTICSEARCH_DOCKER_IMAGE}","kibana":"${KIBANA_DOCKER_IMAGE}","apm":"${CI_ELASTIC_AGENT_DOCKER_IMAGE}"}' > $@
+	@echo 'docker_image_tag_override={"elasticsearch":"${IMAGE_TAG}","kibana":"${IMAGE_TAG}","apm":"${CUSTOM_IMAGE_TAG}"}' >> $@
+
+##############################################################################
+# Targets for building and pushing a custom Elastic Agent image.
+##############################################################################
+
+# elastic_agent_docker_image builds the Cloud Elastic Agent image
+# with the local APM Server binary injected. The image will be based
+# off the stack version defined in ${REPO_ROOT}/docker-compose.yml,
+# unless overridden.
+.PHONY: build_elastic_agent_docker_image
+elastic_agent_docker_image: build_elastic_agent_docker_image
+	docker push "${CI_ELASTIC_AGENT_DOCKER_IMAGE}:${CUSTOM_IMAGE_TAG}"
+build_elastic_agent_docker_image:
+	@env BASE_IMAGE=${ELASTIC_AGENT_DOCKER_IMAGE}:${ELASTIC_AGENT_IMAGE_TAG} GOARCH=amd64 \
+		bash ${REPO_ROOT}/testing/docker/elastic-agent/build.sh \
+		     -t ${CI_ELASTIC_AGENT_DOCKER_IMAGE}:${CUSTOM_IMAGE_TAG}

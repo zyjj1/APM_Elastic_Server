@@ -22,12 +22,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/tidwall/gjson"
+	"github.com/stretchr/testify/require"
 	"go.elastic.co/apm/v2"
 
 	"github.com/elastic/apm-server/systemtest"
 	"github.com/elastic/apm-server/systemtest/apmservertest"
 	"github.com/elastic/apm-server/systemtest/estest"
+	"github.com/elastic/apm-tools/pkg/espoll"
 )
 
 func TestErrorGroupingName(t *testing.T) {
@@ -40,14 +41,16 @@ func TestErrorGroupingName(t *testing.T) {
 	tracer.NewErrorLog(apm.ErrorLogRecord{Message: "log_message_overrides", Error: errors.New("exception_message_overridden")}).Send()
 	tracer.Flush(nil)
 
-	result := systemtest.Elasticsearch.ExpectMinDocs(t, 3, "logs-apm.error-*", estest.TermQuery{
+	result := estest.ExpectMinDocs(t, systemtest.Elasticsearch, 3, "logs-apm.error-*", espoll.TermQuery{
 		Field: "processor.event",
 		Value: "error",
 	})
 
 	var names []string
 	for _, hit := range result.Hits.Hits {
-		names = append(names, gjson.GetBytes(hit.RawSource, "error.grouping_name").String())
+		values := hit.Fields["error.grouping_name"]
+		require.Len(t, values, 1)
+		names = append(names, values[0].(string))
 	}
 
 	assert.ElementsMatch(t, []string{

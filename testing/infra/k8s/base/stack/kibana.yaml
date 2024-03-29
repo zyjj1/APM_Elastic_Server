@@ -3,7 +3,7 @@ kind: Kibana
 metadata:
   name: kibana
 spec:
-  version: 8.7.0-2320c424-SNAPSHOT
+  version: 8.14.0-3267fa9f-SNAPSHOT
   count: 1
   elasticsearchRef:
     name: elasticsearch
@@ -12,6 +12,15 @@ spec:
     tls:
       selfSignedCertificate:
         disabled: true
+  monitoring:
+    metrics:
+      elasticsearchRefs:
+        - name: elasticsearch
+          namespace: default
+    logs:
+      elasticsearchRefs:
+        - name: elasticsearch
+          namespace: default
   podTemplate:
     spec:
       containers:
@@ -44,40 +53,5 @@ spec:
       version: latest
     - name: elastic_agent
       version: latest
-    - name: fleet_server
-      version: latest
     - name: kubernetes
       version: latest
-    xpack.fleet.agentPolicies:
-    - name: Fleet Server on ECK policy
-      id: eck-fleet-server
-      is_default_fleet_server: true
-      namespace: default
-      monitoring_enabled:
-      - logs
-      - metrics
-      unenroll_timeout: 900
-      package_policies:
-      - name: fleet_server-1
-        id: fleet_server-1
-        package:
-          name: fleet_server
-    - name: APM Server on ECK policy
-      id: eck-apm-server
-      namespace: default
-      monitoring_enabled:
-      - logs
-      - metrics
-      unenroll_timeout: 900
-      is_default: true
-      package_policies:
-      - name: apm
-        id: apm-1
-        package:
-          name: apm
-        inputs:
-        - type: apm
-          enabled: true
-          vars:
-          - name: host
-            value: :8200

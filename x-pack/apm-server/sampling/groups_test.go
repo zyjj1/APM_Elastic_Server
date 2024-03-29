@@ -13,24 +13,24 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-data/model/modelpb"
 )
 
 func TestTraceGroupsPolicies(t *testing.T) {
-	makeTransaction := func(serviceName, serviceEnvironment, traceOutcome, traceName string) *model.APMEvent {
-		return &model.APMEvent{
-			Service: model.Service{
+	makeTransaction := func(serviceName, serviceEnvironment, traceOutcome, traceName string) *modelpb.APMEvent {
+		return &modelpb.APMEvent{
+			Service: &modelpb.Service{
 				Name:        serviceName,
 				Environment: serviceEnvironment,
 			},
-			Event: model.Event{
+			Event: &modelpb.Event{
 				Outcome: traceOutcome,
 			},
-			Processor: model.TransactionProcessor,
-			Trace:     model.Trace{ID: uuid.Must(uuid.NewV4()).String()},
-			Transaction: &model.Transaction{
+			Trace: &modelpb.Trace{Id: uuid.Must(uuid.NewV4()).String()},
+			Transaction: &modelpb.Transaction{
+				Type: "type",
 				Name: traceName,
-				ID:   uuid.Must(uuid.NewV4()).String(),
+				Id:   uuid.Must(uuid.NewV4()).String(),
 			},
 		}
 	}
@@ -96,15 +96,15 @@ func TestTraceGroupsMax(t *testing.T) {
 	for i := 0; i < maxDynamicServices; i++ {
 		serviceName := fmt.Sprintf("service_group_%d", i)
 		for i := 0; i < minReservoirSize; i++ {
-			admitted, err := groups.sampleTrace(&model.APMEvent{
-				Service: model.Service{
+			admitted, err := groups.sampleTrace(&modelpb.APMEvent{
+				Service: &modelpb.Service{
 					Name: serviceName,
 				},
-				Processor: model.TransactionProcessor,
-				Trace:     model.Trace{ID: uuid.Must(uuid.NewV4()).String()},
-				Transaction: &model.Transaction{
+				Trace: &modelpb.Trace{Id: uuid.Must(uuid.NewV4()).String()},
+				Transaction: &modelpb.Transaction{
+					Type: "type",
 					Name: "whatever",
-					ID:   uuid.Must(uuid.NewV4()).String(),
+					Id:   uuid.Must(uuid.NewV4()).String(),
 				},
 			})
 			require.NoError(t, err)
@@ -112,12 +112,12 @@ func TestTraceGroupsMax(t *testing.T) {
 		}
 	}
 
-	admitted, err := groups.sampleTrace(&model.APMEvent{
-		Processor: model.TransactionProcessor,
-		Trace:     model.Trace{ID: uuid.Must(uuid.NewV4()).String()},
-		Transaction: &model.Transaction{
+	admitted, err := groups.sampleTrace(&modelpb.APMEvent{
+		Trace: &modelpb.Trace{Id: uuid.Must(uuid.NewV4()).String()},
+		Transaction: &modelpb.Transaction{
+			Type: "type",
 			Name: "overflow",
-			ID:   uuid.Must(uuid.NewV4()).String(),
+			Id:   uuid.Must(uuid.NewV4()).String(),
 		},
 	})
 	assert.Equal(t, errTooManyTraceGroups, err)
@@ -134,10 +134,12 @@ func TestTraceGroupReservoirResize(t *testing.T) {
 
 	sendTransactions := func(n int) {
 		for i := 0; i < n; i++ {
-			groups.sampleTrace(&model.APMEvent{
-				Processor:   model.TransactionProcessor,
-				Trace:       model.Trace{ID: "0102030405060708090a0b0c0d0e0f10"},
-				Transaction: &model.Transaction{ID: "0102030405060708"},
+			groups.sampleTrace(&modelpb.APMEvent{
+				Trace: &modelpb.Trace{Id: "0102030405060708090a0b0c0d0e0f10"},
+				Transaction: &modelpb.Transaction{
+					Type: "type",
+					Id:   "0102030405060708",
+				},
 			})
 		}
 	}
@@ -153,13 +155,14 @@ func TestTraceGroupReservoirResize(t *testing.T) {
 		3500, // 0.2 * (0.25*10000 + 0.75*20000)
 		3875, // 0.2 * (0.25*17500 + 0.75*20000)
 		3969, // etc.
-		3992,
-		3998,
+		3993,
+		3999,
 		4000,
 		4000,
 	} {
 		sendTransactions(20000)
-		assert.Len(t, groups.finalizeSampledTraces(nil), expected, fmt.Sprintf("iteration %d", i))
+		traces := groups.finalizeSampledTraces(nil)
+		assert.Len(t, traces, expected, "iteration %d expected len %d actual len %d", i, expected, len(traces))
 	}
 }
 
@@ -173,10 +176,12 @@ func TestTraceGroupReservoirResizeMinimum(t *testing.T) {
 
 	sendTransactions := func(n int) {
 		for i := 0; i < n; i++ {
-			groups.sampleTrace(&model.APMEvent{
-				Processor:   model.TransactionProcessor,
-				Trace:       model.Trace{ID: "0102030405060708090a0b0c0d0e0f10"},
-				Transaction: &model.Transaction{ID: "0102030405060708"},
+			groups.sampleTrace(&modelpb.APMEvent{
+				Trace: &modelpb.Trace{Id: "0102030405060708090a0b0c0d0e0f10"},
+				Transaction: &modelpb.Transaction{
+					Type: "type",
+					Id:   "0102030405060708",
+				},
 			})
 		}
 	}
@@ -206,42 +211,37 @@ func TestTraceGroupsRemoval(t *testing.T) {
 	groups := newTraceGroups(policies, maxDynamicServices, ingestRateCoefficient)
 
 	for i := 0; i < 10000; i++ {
-		_, err := groups.sampleTrace(&model.APMEvent{
-			Service:     model.Service{Name: "many"},
-			Processor:   model.TransactionProcessor,
-			Transaction: &model.Transaction{},
+		_, err := groups.sampleTrace(&modelpb.APMEvent{
+			Service:     &modelpb.Service{Name: "many"},
+			Transaction: &modelpb.Transaction{Type: "type"},
 		})
 		assert.NoError(t, err)
 	}
-	_, err := groups.sampleTrace(&model.APMEvent{
-		Service:     model.Service{Name: "few"},
-		Processor:   model.TransactionProcessor,
-		Transaction: &model.Transaction{},
+	_, err := groups.sampleTrace(&modelpb.APMEvent{
+		Service:     &modelpb.Service{Name: "few"},
+		Transaction: &modelpb.Transaction{Type: "type"},
 	})
 	assert.NoError(t, err)
 
-	_, err = groups.sampleTrace(&model.APMEvent{
-		Service:     model.Service{Name: "another"},
-		Processor:   model.TransactionProcessor,
-		Transaction: &model.Transaction{},
+	_, err = groups.sampleTrace(&modelpb.APMEvent{
+		Service:     &modelpb.Service{Name: "another"},
+		Transaction: &modelpb.Transaction{Type: "type"},
 	})
 	assert.Equal(t, errTooManyTraceGroups, err)
 
 	// When there is a policy with an explicitly defined service name, that
 	// will not be affected by the limit...
-	_, err = groups.sampleTrace(&model.APMEvent{
-		Service:     model.Service{Name: "defined"},
-		Processor:   model.TransactionProcessor,
-		Transaction: &model.Transaction{},
+	_, err = groups.sampleTrace(&modelpb.APMEvent{
+		Service:     &modelpb.Service{Name: "defined"},
+		Transaction: &modelpb.Transaction{Type: "type"},
 	})
 	assert.NoError(t, err)
 
 	// ...unless the policy with an explicitly defined service name comes after
 	// a matching dynamic policy.
-	_, err = groups.sampleTrace(&model.APMEvent{
-		Service:     model.Service{Name: "defined_later"},
-		Processor:   model.TransactionProcessor,
-		Transaction: &model.Transaction{},
+	_, err = groups.sampleTrace(&modelpb.APMEvent{
+		Service:     &modelpb.Service{Name: "defined_later"},
+		Transaction: &modelpb.Transaction{Type: "type"},
 	})
 	assert.Equal(t, errTooManyTraceGroups, err)
 
@@ -250,10 +250,9 @@ func TestTraceGroupsRemoval(t *testing.T) {
 	groups.finalizeSampledTraces(nil)
 
 	// We should now be able to add another trace group.
-	_, err = groups.sampleTrace(&model.APMEvent{
-		Service:     model.Service{Name: "another"},
-		Processor:   model.TransactionProcessor,
-		Transaction: &model.Transaction{},
+	_, err = groups.sampleTrace(&modelpb.APMEvent{
+		Service:     &modelpb.Service{Name: "another"},
+		Transaction: &modelpb.Transaction{Type: "type"},
 	})
 	assert.NoError(t, err)
 }
@@ -272,16 +271,16 @@ func BenchmarkTraceGroups(b *testing.B) {
 		//
 		// Duration is non-zero to ensure transactions have a non-zero chance of
 		// being sampled.
-		tx := model.APMEvent{
-			Processor: model.TransactionProcessor,
-			Event:     model.Event{Duration: time.Second},
-			Transaction: &model.Transaction{
+		tx := modelpb.APMEvent{
+			Event: &modelpb.Event{Duration: uint64(time.Second)},
+			Transaction: &modelpb.Transaction{
+				Type: "type",
 				Name: uuid.Must(uuid.NewV4()).String(),
 			},
 		}
 		for pb.Next() {
 			groups.sampleTrace(&tx)
-			tx.Event.Duration += time.Second
+			tx.Event.Duration = tx.Event.Duration + uint64(time.Second)
 		}
 	})
 }

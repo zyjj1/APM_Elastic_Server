@@ -32,6 +32,8 @@ import (
 	"github.com/elastic/apm-server/systemtest"
 	"github.com/elastic/apm-server/systemtest/apmservertest"
 	"github.com/elastic/apm-server/systemtest/estest"
+	"github.com/elastic/apm-tools/pkg/approvaltest"
+	"github.com/elastic/apm-tools/pkg/espoll"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 )
 
@@ -67,18 +69,18 @@ func TestDropUnsampled(t *testing.T) {
 {"metadata":{"service":{"name":"allowed","version":"1.0.0","agent":{"name":"rum-js","version":"0.0.0"}}}}
 {"transaction":{"sampled":false,"trace_id":"x","id":"y","type":"TestDropUnsampled","duration":0,"span_count":{"started":1},"context":{"service":{"name":"allowed"}}}}`[1:])
 
-	result := systemtest.Elasticsearch.ExpectMinDocs(t, 2, "traces-apm*", estest.TermQuery{
+	result := estest.ExpectMinDocs(t, systemtest.Elasticsearch, 2, "traces-apm*", espoll.TermQuery{
 		Field: "transaction.type",
 		Value: "TestDropUnsampled",
 	})
 	assert.Len(t, result.Hits.Hits, 2)
-	systemtest.ApproveEvents(t, t.Name(), result.Hits.Hits,
+	approvaltest.ApproveFields(t, t.Name(), result.Hits.Hits,
 		// RUM timestamps are set by the server based on the time the payload is received.
 		"@timestamp", "timestamp.us",
 		// RUM events have the source port recorded, and in the tests it will be dynamic
 		"source.port",
 		// Ignore dynamically generated trace/transaction ID
-		"trace.id", "transaction.id",
+		"trace.id", "transaction.id", "span.id",
 	)
 
 	doc := getBeatsMonitoringStats(t, srv, nil)
@@ -89,23 +91,51 @@ func TestDropUnsampled(t *testing.T) {
 func TestTailSampling(t *testing.T) {
 	systemtest.CleanupElasticsearch(t)
 
-	apmIntegration1 := newAPMIntegration(t, map[string]interface{}{
-		"tail_sampling_enabled":  true,
-		"tail_sampling_interval": "1s",
-		"tail_sampling_policies": []map[string]interface{}{{"sample_rate": 0.5}},
-	})
+	srv1 := apmservertest.NewUnstartedServerTB(t)
+	srv1.Config.Sampling = &apmservertest.SamplingConfig{
+		Tail: &apmservertest.TailSamplingConfig{
+			Enabled:  true,
+			Interval: 1 * time.Second,
+			Policies: []apmservertest.TailSamplingPolicy{
+				{
+					SampleRate: 0.5,
+				},
+			},
+		},
+	}
+	srv1.Config.Monitoring = &apmservertest.MonitoringConfig{
+		Enabled:       true,
+		MetricsPeriod: 100 * time.Millisecond,
+		StatePeriod:   100 * time.Millisecond,
+	}
+	err := srv1.Start()
+	require.NoError(t, err)
 
-	apmIntegration2 := newAPMIntegration(t, map[string]interface{}{
-		"tail_sampling_enabled":  true,
-		"tail_sampling_interval": "1s",
-		"tail_sampling_policies": []map[string]interface{}{{"sample_rate": 0.5}},
-	})
+	srv2 := apmservertest.NewUnstartedServerTB(t)
+	srv2.Config.Sampling = &apmservertest.SamplingConfig{
+		Tail: &apmservertest.TailSamplingConfig{
+			Enabled:  true,
+			Interval: 1 * time.Second,
+			Policies: []apmservertest.TailSamplingPolicy{
+				{
+					SampleRate: 0.5,
+				},
+			},
+		},
+	}
+	srv2.Config.Monitoring = &apmservertest.MonitoringConfig{
+		Enabled:       true,
+		MetricsPeriod: 100 * time.Millisecond,
+		StatePeriod:   100 * time.Millisecond,
+	}
+	err = srv2.Start()
+	require.NoError(t, err)
 
 	const total = 200
 	const expected = 100 // 50%
 
-	tracer1 := apmIntegration1.Tracer
-	tracer2 := apmIntegration2.Tracer
+	tracer1 := srv1.Tracer()
+	tracer2 := srv2.Tracer()
 	for i := 0; i < total; i++ {
 		parent := tracer1.StartTransaction("GET /", "parent")
 		parent.Duration = time.Second * time.Duration(i+1)
@@ -124,21 +154,21 @@ func TestTailSampling(t *testing.T) {
 	refreshPeriodically(t, 250*time.Millisecond, "traces-apm.sampled-*")
 
 	for _, transactionType := range []string{"parent", "child"} {
-		var result estest.SearchResult
+		var result espoll.SearchResult
 		t.Logf("waiting for %d %q transactions", expected, transactionType)
-		_, err := systemtest.Elasticsearch.Search("traces-*").WithQuery(estest.TermQuery{
+		_, err := systemtest.Elasticsearch.NewSearchRequest("traces-*").WithQuery(espoll.TermQuery{
 			Field: "transaction.type",
 			Value: transactionType,
 		}).WithSize(total).Do(context.Background(), &result,
-			estest.WithCondition(result.Hits.MinHitsCondition(expected)),
+			espoll.WithCondition(result.Hits.MinHitsCondition(expected)),
 		)
 		require.NoError(t, err)
 		assert.Equal(t, expected, len(result.Hits.Hits), transactionType)
 	}
 
 	// Make sure apm-server.sampling.tail metrics are published. Metric values are unit tested.
-	doc := apmIntegration1.getBeatsMonitoringStats(t, nil)
-	assert.True(t, gjson.GetBytes(doc.RawSource, "apm-server.sampling.tail").Exists())
+	doc := getBeatsMonitoringStats(t, srv1, nil)
+	assert.True(t, gjson.GetBytes(doc.RawSource, "beats_stats.metrics.apm-server.sampling.tail").Exists(), string(doc.RawSource))
 
 	// Check tail-sampling config is reported in telemetry.
 	var state struct {
@@ -149,9 +179,9 @@ func TestTailSampling(t *testing.T) {
 					Policies int
 				}
 			}
-		} `mapstructure:"apm-server"`
+		} `json:"apm-server"`
 	}
-	apmIntegration1.getBeatsMonitoringState(t, &state)
+	getBeatsMonitoringState(t, srv1, &state)
 	assert.True(t, state.APMServer.Sampling.Tail.Enabled)
 	assert.Equal(t, 1, state.APMServer.Sampling.Tail.Policies)
 }

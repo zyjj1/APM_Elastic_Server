@@ -7,6 +7,7 @@ package sampling
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,7 +18,7 @@ import (
 	"github.com/pkg/errors"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-data/model/modelpb"
 	"github.com/elastic/apm-server/internal/logs"
 	"github.com/elastic/apm-server/x-pack/apm-server/sampling/eventstorage"
 	"github.com/elastic/apm-server/x-pack/apm-server/sampling/pubsub"
@@ -137,17 +138,17 @@ func (p *Processor) CollectMonitoring(_ monitoring.Mode, V monitoring.Visitor) {
 //
 // All other trace events will either be dropped (e.g. known to not
 // be tail-sampled), or stored for possible later publication.
-func (p *Processor) ProcessBatch(ctx context.Context, batch *model.Batch) error {
+func (p *Processor) ProcessBatch(ctx context.Context, batch *modelpb.Batch) error {
 	events := *batch
 	for i := 0; i < len(events); i++ {
-		event := &events[i]
+		event := events[i]
 		var report, stored, failed bool
 		var err error
-		switch event.Processor {
-		case model.TransactionProcessor:
+		switch event.Type() {
+		case modelpb.TransactionEventType:
 			atomic.AddInt64(&p.eventMetrics.processed, 1)
 			report, stored, err = p.processTransaction(event)
-		case model.SpanProcessor:
+		case modelpb.SpanEventType:
 			atomic.AddInt64(&p.eventMetrics.processed, 1)
 			report, stored, err = p.processSpan(event)
 		default:
@@ -202,7 +203,7 @@ func (p *Processor) updateProcessorMetrics(report, stored, failedWrite bool) {
 	}
 }
 
-func (p *Processor) processTransaction(event *model.APMEvent) (report, stored bool, _ error) {
+func (p *Processor) processTransaction(event *modelpb.APMEvent) (report, stored bool, _ error) {
 	if !event.Transaction.Sampled {
 		// (Head-based) unsampled transactions are passed through
 		// by the tail sampler.
@@ -210,7 +211,7 @@ func (p *Processor) processTransaction(event *model.APMEvent) (report, stored bo
 		return true, false, nil
 	}
 
-	traceSampled, err := p.eventStore.IsTraceSampled(event.Trace.ID)
+	traceSampled, err := p.eventStore.IsTraceSampled(event.Trace.Id)
 	switch err {
 	case nil:
 		// Tail-sampling decision has been made: report the transaction
@@ -227,11 +228,11 @@ func (p *Processor) processTransaction(event *model.APMEvent) (report, stored bo
 		return false, false, err
 	}
 
-	if event.Parent.ID != "" {
+	if event.GetParentId() != "" {
 		// Non-root transaction: write to local storage while we wait
 		// for a sampling decision.
 		return false, true, p.eventStore.WriteTraceEvent(
-			event.Trace.ID, event.Transaction.ID, event,
+			event.Trace.Id, event.Transaction.Id, event,
 		)
 	}
 
@@ -260,21 +261,21 @@ sampling policies without service name specified.
 		// This is a local optimisation only. To avoid creating network
 		// traffic and load on Elasticsearch for uninteresting root
 		// transactions, we do not propagate this to other APM Servers.
-		return false, false, p.eventStore.WriteTraceSampled(event.Trace.ID, false)
+		return false, false, p.eventStore.WriteTraceSampled(event.Trace.Id, false)
 	}
 
 	// The root transaction was admitted to the sampling reservoir, so we
 	// can proceed to write the transaction to storage; we may index it later,
 	// after finalising the sampling decision.
-	return false, true, p.eventStore.WriteTraceEvent(event.Trace.ID, event.Transaction.ID, event)
+	return false, true, p.eventStore.WriteTraceEvent(event.Trace.Id, event.Transaction.Id, event)
 }
 
-func (p *Processor) processSpan(event *model.APMEvent) (report, stored bool, _ error) {
-	traceSampled, err := p.eventStore.IsTraceSampled(event.Trace.ID)
+func (p *Processor) processSpan(event *modelpb.APMEvent) (report, stored bool, _ error) {
+	traceSampled, err := p.eventStore.IsTraceSampled(event.Trace.Id)
 	if err != nil {
 		if err == eventstorage.ErrNotFound {
 			// Tail-sampling decision has not yet been made, write event to local storage.
-			return false, true, p.eventStore.WriteTraceEvent(event.Trace.ID, event.Span.ID, event)
+			return false, true, p.eventStore.WriteTraceEvent(event.Trace.Id, event.Span.Id, event)
 		}
 		return false, false, err
 	}
@@ -509,7 +510,7 @@ func (p *Processor) Run() error {
 					"received error writing sampled trace: %s", err,
 				)
 			}
-			var events model.Batch
+			var events modelpb.Batch
 			if err := p.eventStore.ReadTraceEvents(traceID, &events); err != nil {
 				p.rateLimitedLogger.Warnf(
 					"received error reading trace events: %s", err,
@@ -526,14 +527,14 @@ func (p *Processor) Run() error {
 					// we don't publish duplicates; delivery is therefore
 					// at-most-once, not guaranteed.
 					for _, event := range events {
-						switch event.Processor {
-						case model.TransactionProcessor:
-							if err := p.eventStore.DeleteTraceEvent(event.Trace.ID, event.Transaction.ID); err != nil {
-								return errors.Wrap(err, "failed to delete transaction from local storage")
+						switch event.Type() {
+						case modelpb.TransactionEventType:
+							if err := p.eventStore.DeleteTraceEvent(event.Trace.Id, event.Transaction.Id); err != nil {
+								p.logger.With(logp.Error(err)).Warn("failed to delete transaction from local storage")
 							}
-						case model.SpanProcessor:
-							if err := p.eventStore.DeleteTraceEvent(event.Trace.ID, event.Span.ID); err != nil {
-								return errors.Wrap(err, "failed to delete span from local storage")
+						case modelpb.SpanEventType:
+							if err := p.eventStore.DeleteTraceEvent(event.Trace.Id, event.Span.Id); err != nil {
+								p.logger.With(logp.Error(err)).Warn("failed to delete span from local storage")
 							}
 						}
 					}
@@ -557,13 +558,14 @@ func readSubscriberPosition(logger *logp.Logger, storageDir string) (pubsub.Subs
 	if errors.Is(err, os.ErrNotExist) {
 		return pos, nil
 	} else if err != nil {
-		return pos, err
+		return pos, fmt.Errorf("error reading subscriber position file: %w", err)
 	}
 	err = json.Unmarshal(data, &pos)
 	if err != nil {
 		logger.With(logp.Error(err)).With(logp.ByteString("file", data)).Debug("failed to read subscriber position")
+		return pos, fmt.Errorf("error parsing subscriber position file: %w", err)
 	}
-	return pos, err
+	return pos, nil
 }
 
 func writeSubscriberPosition(storageDir string, pos pubsub.SubscriberPosition) error {
@@ -614,12 +616,12 @@ func newWrappedRW(rw *eventstorage.ShardedReadWriter, ttl time.Duration, limit i
 }
 
 // ReadTraceEvents calls ShardedReadWriter.ReadTraceEvents
-func (s *wrappedRW) ReadTraceEvents(traceID string, out *model.Batch) error {
+func (s *wrappedRW) ReadTraceEvents(traceID string, out *modelpb.Batch) error {
 	return s.rw.ReadTraceEvents(traceID, out)
 }
 
 // WriteTraceEvents calls ShardedReadWriter.WriteTraceEvents using the configured WriterOpts
-func (s *wrappedRW) WriteTraceEvent(traceID, id string, event *model.APMEvent) error {
+func (s *wrappedRW) WriteTraceEvent(traceID, id string, event *modelpb.APMEvent) error {
 	return s.rw.WriteTraceEvent(traceID, id, event, s.writerOpts)
 }
 
@@ -640,5 +642,5 @@ func (s *wrappedRW) DeleteTraceEvent(traceID, id string) error {
 
 // Flush calls ShardedReadWriter.Flush
 func (s *wrappedRW) Flush() error {
-	return s.rw.Flush(s.writerOpts.StorageLimitInBytes)
+	return s.rw.Flush()
 }

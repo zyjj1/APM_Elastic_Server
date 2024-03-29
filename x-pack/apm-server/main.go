@@ -6,12 +6,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"math"
-	"net/http"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/dgraph-io/badger/v2"
 	"github.com/gofrs/uuid"
@@ -27,29 +23,20 @@ import (
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/monitoring"
 	"github.com/elastic/elastic-agent-libs/paths"
-	"github.com/elastic/go-elasticsearch/v8"
-	"github.com/elastic/go-elasticsearch/v8/esutil"
 
-	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-data/model/modelpb"
+	"github.com/elastic/apm-data/model/modelprocessor"
 	"github.com/elastic/apm-server/internal/beatcmd"
 	"github.com/elastic/apm-server/internal/beater"
-	"github.com/elastic/apm-server/internal/model/modelprocessor"
-	"github.com/elastic/apm-server/x-pack/apm-server/aggregation/servicemetrics"
-	"github.com/elastic/apm-server/x-pack/apm-server/aggregation/spanmetrics"
-	"github.com/elastic/apm-server/x-pack/apm-server/aggregation/txmetrics"
-	"github.com/elastic/apm-server/x-pack/apm-server/profiling"
 	"github.com/elastic/apm-server/x-pack/apm-server/sampling"
 	"github.com/elastic/apm-server/x-pack/apm-server/sampling/eventstorage"
 )
 
 const (
 	tailSamplingStorageDir = "tail_sampling"
-	metricsInterval        = time.Minute
 )
 
 var (
-	aggregationMonitoringRegistry = monitoring.Default.NewRegistry("apm-server.aggregation")
-
 	// Note: this registry is created in github.com/elastic/apm-server/sampling. That package
 	// will hopefully disappear in the future, when agents no longer send unsampled transactions.
 	samplingMonitoringRegistry = monitoring.Default.GetRegistry("apm-server.sampling")
@@ -64,8 +51,6 @@ var (
 	// samplerUUID is a UUID used to identify sampled trace ID documents
 	// published by this process.
 	samplerUUID = uuid.Must(uuid.NewV4())
-
-	rollUpMetricsIntervals = []time.Duration{10 * time.Minute, time.Hour}
 )
 
 func init() {
@@ -96,7 +81,7 @@ type namedProcessor struct {
 }
 
 type processor interface {
-	model.BatchProcessor
+	modelpb.BatchProcessor
 	Run() error
 	Stop(context.Context) error
 }
@@ -104,53 +89,13 @@ type processor interface {
 // newProcessors returns a list of processors which will process
 // events in sequential order, prior to the events being published.
 func newProcessors(args beater.ServerParams) ([]namedProcessor, error) {
-	processors := make([]namedProcessor, 0, 3)
-	const txName = "transaction metrics aggregation"
-	args.Logger.Infof("creating %s with config: %+v", txName, args.Config.Aggregation.Transactions)
-	agg, err := txmetrics.NewAggregator(txmetrics.AggregatorConfig{
-		BatchProcessor:                 args.BatchProcessor,
-		MaxTransactionGroups:           args.Config.Aggregation.Transactions.MaxTransactionGroups,
-		MetricsInterval:                metricsInterval,
-		RollUpIntervals:                rollUpMetricsIntervals,
-		MaxTransactionGroupsPerService: int(math.Ceil(0.1 * float64(args.Config.Aggregation.Transactions.MaxTransactionGroups))),
-		MaxServices:                    args.Config.Aggregation.Transactions.MaxTransactionGroups, // same as max txn grps
-		HDRHistogramSignificantFigures: args.Config.Aggregation.Transactions.HDRHistogramSignificantFigures,
-	})
-	if err != nil {
-		return nil, errors.Wrapf(err, "error creating %s", txName)
-	}
-	processors = append(processors, namedProcessor{name: txName, processor: agg})
-	aggregationMonitoringRegistry.Remove("txmetrics")
-	monitoring.NewFunc(aggregationMonitoringRegistry, "txmetrics", agg.CollectMonitoring, monitoring.Report)
+	var processors []namedProcessor
 
-	const spanName = "service destinations aggregation"
-	args.Logger.Infof("creating %s with config: %+v", spanName, args.Config.Aggregation.ServiceDestinations)
-	spanAggregator, err := spanmetrics.NewAggregator(spanmetrics.AggregatorConfig{
-		BatchProcessor:  args.BatchProcessor,
-		Interval:        metricsInterval,
-		RollUpIntervals: rollUpMetricsIntervals,
-		MaxGroups:       args.Config.Aggregation.ServiceDestinations.MaxGroups,
-	})
+	aggregationProcessors, err := newAggregationProcessors(args)
 	if err != nil {
-		return nil, errors.Wrapf(err, "error creating %s", spanName)
+		return nil, err
 	}
-	processors = append(processors, namedProcessor{name: spanName, processor: spanAggregator})
-
-	if args.Config.Aggregation.Service.Enabled {
-		const serviceName = "service metrics aggregation"
-		args.Logger.Infof("creating %s with config: %+v", serviceName, args.Config.Aggregation.Service)
-		serviceAggregator, err := servicemetrics.NewAggregator(servicemetrics.AggregatorConfig{
-			BatchProcessor:                 args.BatchProcessor,
-			Interval:                       metricsInterval,
-			RollUpIntervals:                rollUpMetricsIntervals,
-			MaxGroups:                      args.Config.Aggregation.Service.MaxGroups,
-			HDRHistogramSignificantFigures: args.Config.Aggregation.Service.HDRHistogramSignificantFigures,
-		})
-		if err != nil {
-			return nil, errors.Wrapf(err, "error creating %s", spanName)
-		}
-		processors = append(processors, namedProcessor{name: spanName, processor: serviceAggregator})
-	}
+	processors = append(processors, aggregationProcessors...)
 
 	if args.Config.Sampling.Tail.Enabled {
 		const name = "tail sampler"
@@ -238,7 +183,7 @@ func getStorage(db *badger.DB) *eventstorage.ShardedReadWriter {
 	storageMu.Lock()
 	defer storageMu.Unlock()
 	if storage == nil {
-		eventCodec := eventstorage.JSONCodec{}
+		eventCodec := eventstorage.ProtobufCodec{}
 		storage = eventstorage.New(db, eventCodec).NewShardedReadWriter()
 	}
 	return storage
@@ -285,101 +230,6 @@ func runServerWithProcessors(ctx context.Context, runServer beater.RunServerFunc
 	return g.Wait()
 }
 
-func newProfilingCollector(args beater.ServerParams) (*profiling.ElasticCollector, func(context.Context) error, error) {
-	logger := args.Logger.Named("profiling")
-
-	client, err := args.NewElasticsearchClient(args.Config.Profiling.ESConfig)
-	if err != nil {
-		return nil, nil, err
-	}
-	clusterName, err := queryElasticsearchClusterName(client, logger)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Elasticsearch should default to 100 MB for the http.max_content_length configuration,
-	// so we flush the buffer (per-worker, number of workers is equal to the number of cores)
-	// when at 4 MiB or every 4 seconds. This should reduce the lock contention between
-	// multiple workers trying to write or flush the bulk indexer buffer but also keep
-	// memory spikes to acceptable levels (go-elasticsearch can exhibit pathological behavior
-	// if thousands of items are added to its bulk indexer at once, since they are kept in memory
-	// for the entire duration of an ES request-response cycle).
-	const (
-		flushBytes    = 1 << 22
-		flushInterval = 4 * time.Second
-	)
-	indexer, err := esutil.NewBulkIndexer(esutil.BulkIndexerConfig{
-		Client:        client,
-		FlushBytes:    flushBytes,
-		FlushInterval: flushInterval,
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	metricsClient, err := args.NewElasticsearchClient(args.Config.Profiling.MetricsESConfig)
-	if err != nil {
-		return nil, nil, err
-	}
-	metricsIndexer, err := esutil.NewBulkIndexer(esutil.BulkIndexerConfig{
-		Client:        metricsClient,
-		FlushBytes:    flushBytes,
-		FlushInterval: flushInterval,
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	profilingCollector := profiling.NewCollector(
-		indexer,
-		metricsIndexer,
-		clusterName,
-		logger,
-	)
-
-	ctx, stopILM := context.WithCancel(context.Background())
-	profiling.ScheduleILMExecution(ctx, logger.Named("ilm"), args.Config.Profiling)
-
-	cleanup := func(ctx context.Context) error {
-		stopILM()
-		var errors error
-		if indexer.Close(ctx); err != nil {
-			errors = multierror.Append(errors, err)
-		}
-		if metricsIndexer.Close(ctx); err != nil {
-			errors = multierror.Append(errors, err)
-		}
-		return errors
-	}
-	return profilingCollector, cleanup, nil
-}
-
-// Fetch the Cluster name from Elasticsearch: Profiling adds it as a field in
-// the host-agent metrics documents for debugging purposes.
-// In Cloud deployments, the Cluster name is set equal to the Cluster ID.
-func queryElasticsearchClusterName(client *elasticsearch.Client, logger *logp.Logger) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "/", nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := client.Perform(req)
-	if err != nil {
-		logger.Warnf("failed to fetch cluster name from Elasticsearch: %v", err)
-		return "", nil
-	}
-	var r struct {
-		ClusterName string `json:"cluster_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		logger.Warnf("failed to parse Elasticsearch JSON response: %v", err)
-	}
-	_ = resp.Body.Close()
-
-	return r.ClusterName, nil
-}
-
 func wrapServer(args beater.ServerParams, runServer beater.RunServerFunc) (beater.ServerParams, beater.RunServerFunc, error) {
 	processors, err := newProcessors(args)
 	if err != nil {
@@ -395,20 +245,6 @@ func wrapServer(args beater.ServerParams, runServer beater.RunServerFunc) (beate
 	args.BatchProcessor = processorChain
 
 	wrappedRunServer := func(ctx context.Context, args beater.ServerParams) error {
-		if args.Config.Profiling.Enabled {
-			profilingCollector, cleanup, err := newProfilingCollector(args)
-			if err != nil {
-				// Profiling support is in technical preview,
-				// so we'll treat errors as non-fatal for now.
-				args.Logger.With(logp.Error(err)).Error(
-					"failed to create profiling collector, continuing without profiling support",
-				)
-			} else {
-				defer cleanup(ctx)
-				profiling.RegisterCollectionAgentServer(args.GRPCServer, profilingCollector)
-				args.Logger.Info("registered profiling collection (technical preview)")
-			}
-		}
 		return runServerWithProcessors(ctx, runServer, args, processors...)
 	}
 	return args, wrappedRunServer, nil

@@ -33,6 +33,12 @@ import (
 	"github.com/elastic/apm-server/internal/elasticsearch"
 )
 
+var (
+	noneClientAuth     = tlscommon.TLSClientAuthNone
+	optionalClientAuth = tlscommon.TLSClientAuthOptional
+	requireClientAuth  = tlscommon.TLSClientAuthRequired
+)
+
 var testdataCertificateConfig = tlscommon.CertificateConfig{
 	Certificate: "../../testdata/tls/certificate.pem",
 	Key:         "../../testdata/tls/key.pem",
@@ -53,7 +59,10 @@ func TestUnpackConfig(t *testing.T) {
 	kibanaHeadersConfig := DefaultConfig()
 	kibanaHeadersConfig.Kibana.ClientConfig = defaultDecodedKibanaClientConfig
 	kibanaHeadersConfig.Kibana.Enabled = true
-	kibanaHeadersConfig.Kibana.Headers = map[string]string{"foo": "bar"}
+	kibanaHeadersConfig.Kibana.Headers = map[string]string{
+		"foo":                 "bar",
+		"Elastic-Api-Version": "2023-10-31",
+	}
 
 	responseHeadersConfig := DefaultConfig()
 	responseHeadersConfig.ResponseHeaders = map[string][]string{
@@ -64,9 +73,88 @@ func TestUnpackConfig(t *testing.T) {
 		"k4": []string{"v4"},
 	}
 
+	reuseOutputESConfig := DefaultConfig()
+	reuseOutputESConfig.AgentConfig.ESOverrideConfigured = false
+	reuseOutputESConfig.AgentConfig.ESConfig = &elasticsearch.Config{
+		Hosts:            elasticsearch.Hosts{"localhost:9200"},
+		Protocol:         "https",
+		Timeout:          5 * time.Second,
+		Username:         "output_username",
+		Password:         "output_password",
+		APIKey:           "",
+		MaxRetries:       3,
+		CompressionLevel: 5,
+		Backoff:          elasticsearch.DefaultBackoffConfig,
+	}
+	reuseOutputESConfig.RumConfig.Enabled = true
+	reuseOutputESConfig.RumConfig.SourceMapping.ESConfig = &elasticsearch.Config{
+		Hosts:            elasticsearch.Hosts{"localhost:9200"},
+		Protocol:         "https",
+		Timeout:          5 * time.Second,
+		Username:         "output_username",
+		Password:         "output_password",
+		APIKey:           "",
+		MaxRetries:       3,
+		CompressionLevel: 5,
+		Backoff:          elasticsearch.DefaultBackoffConfig,
+	}
+
+	overrideHostOutputESConfig := DefaultConfig()
+	overrideHostOutputESConfig.AgentConfig.ESOverrideConfigured = true
+	overrideHostOutputESConfig.AgentConfig.ESConfig = &elasticsearch.Config{
+		Hosts:            elasticsearch.Hosts{"localhost:9202"},
+		Protocol:         "https",
+		Timeout:          5 * time.Second,
+		Username:         "output_username",
+		Password:         "output_password",
+		APIKey:           "",
+		MaxRetries:       3,
+		CompressionLevel: 5,
+		Backoff:          elasticsearch.DefaultBackoffConfig,
+	}
+	overrideHostOutputESConfig.RumConfig.Enabled = true
+	overrideHostOutputESConfig.RumConfig.SourceMapping.ESConfig = &elasticsearch.Config{
+		Hosts:            elasticsearch.Hosts{"localhost:9201"},
+		Protocol:         "https",
+		Timeout:          5 * time.Second,
+		Username:         "output_username",
+		Password:         "output_password",
+		APIKey:           "",
+		MaxRetries:       3,
+		CompressionLevel: 5,
+		Backoff:          elasticsearch.DefaultBackoffConfig,
+	}
+
+	overrideCredentialsOutputESConfig := DefaultConfig()
+	overrideCredentialsOutputESConfig.AgentConfig.ESOverrideConfigured = true
+	overrideCredentialsOutputESConfig.AgentConfig.ESConfig = &elasticsearch.Config{
+		Hosts:            elasticsearch.Hosts{"localhost:9202"},
+		Protocol:         "https",
+		Timeout:          5 * time.Second,
+		Username:         "",
+		Password:         "",
+		APIKey:           "id2:api_key2",
+		MaxRetries:       3,
+		CompressionLevel: 5,
+		Backoff:          elasticsearch.DefaultBackoffConfig,
+	}
+	overrideCredentialsOutputESConfig.RumConfig.Enabled = true
+	overrideCredentialsOutputESConfig.RumConfig.SourceMapping.ESConfig = &elasticsearch.Config{
+		Hosts:            elasticsearch.Hosts{"localhost:9201"},
+		Protocol:         "https",
+		Timeout:          5 * time.Second,
+		Username:         "",
+		Password:         "",
+		APIKey:           "id:api_key",
+		MaxRetries:       3,
+		CompressionLevel: 5,
+		Backoff:          elasticsearch.DefaultBackoffConfig,
+	}
+
 	tests := map[string]struct {
-		inpCfg map[string]interface{}
-		outCfg *Config
+		inpCfg         map[string]interface{}
+		inpOutputESCfg map[string]interface{}
+		outCfg         *Config
 	}{
 		"default config": {
 			inpCfg: map[string]interface{}{},
@@ -135,7 +223,6 @@ func TestUnpackConfig(t *testing.T) {
 						"cache": map[string]interface{}{
 							"expiration": 8 * time.Minute,
 						},
-						"index_pattern":       "apm-test*",
 						"elasticsearch.hosts": []string{"localhost:9201", "localhost:9202"},
 						"timeout":             "2s",
 					},
@@ -152,25 +239,23 @@ func TestUnpackConfig(t *testing.T) {
 				},
 				"kibana":                        map[string]interface{}{"enabled": "true"},
 				"agent.config.cache.expiration": "2m",
+				"agent.config.elasticsearch": map[string]interface{}{
+					"api_key": "id:api_key",
+				},
 				"aggregation": map[string]interface{}{
+					"max_services": 111,
 					"transactions": map[string]interface{}{
-						"rollup_intervals":                 []string{"10s", "10m"},
-						"max_groups":                       123,
-						"hdrhistogram_significant_figures": 1,
+						"rollup_intervals": []string{"10s", "10m"},
+						"max_groups":       123,
 					},
 					"service_destinations": map[string]interface{}{
 						"max_groups": 456,
 					},
-					"service": map[string]interface{}{
+					"service_transactions": map[string]interface{}{
 						"max_groups": 457,
 					},
 				},
-				"default_service_environment":                     "overridden",
-				"profiling.enabled":                               true,
-				"profiling.metrics.elasticsearch.api_key":         "metrics_api_key",
-				"profiling.keyvalue_retention.age":                "4h",
-				"profiling.keyvalue_retention.size_bytes":         12345678,
-				"profiling.keyvalue_retention.execution_interval": "1s",
+				"default_service_environment": "overridden",
 			},
 			outCfg: &Config{
 				Host:                  "localhost:3000",
@@ -211,7 +296,7 @@ func TestUnpackConfig(t *testing.T) {
 				TLS: &tlscommon.ServerConfig{
 					Enabled:     newBool(true),
 					Certificate: testdataCertificateConfig,
-					ClientAuth:  4,
+					ClientAuth:  &requireClientAuth,
 					CAs:         []string{"../../testdata/tls/ca.crt.pem"},
 				},
 				AugmentEnabled: true,
@@ -227,9 +312,7 @@ func TestUnpackConfig(t *testing.T) {
 					AllowOrigins: []string{"example*"},
 					AllowHeaders: []string{"Authorization"},
 					SourceMapping: SourceMapping{
-						Enabled:      true,
-						Cache:        Cache{Expiration: 8 * time.Minute},
-						IndexPattern: "apm-test*",
+						Enabled: true,
 						ESConfig: &elasticsearch.Config{
 							Hosts:            elasticsearch.Hosts{"localhost:9201", "localhost:9202"},
 							Protocol:         "http",
@@ -238,9 +321,8 @@ func TestUnpackConfig(t *testing.T) {
 							CompressionLevel: 5,
 							Backoff:          elasticsearch.DefaultBackoffConfig,
 						},
-						Metadata:     []SourceMapMetadata{},
-						Timeout:      2 * time.Second,
-						esConfigured: true,
+						Timeout:              2 * time.Second,
+						esOverrideConfigured: true,
 					},
 					LibraryPattern:      "^custom",
 					ExcludeFromGrouping: "^grouping",
@@ -249,18 +331,29 @@ func TestUnpackConfig(t *testing.T) {
 					Enabled:      true,
 					ClientConfig: defaultDecodedKibanaClientConfig,
 				},
-				KibanaAgentConfig: KibanaAgentConfig{Cache: Cache{Expiration: 2 * time.Minute}},
+				AgentConfig: AgentConfig{
+					ESConfig: &elasticsearch.Config{
+						Hosts:            elasticsearch.Hosts{"localhost:9200"},
+						Protocol:         "http",
+						Timeout:          5 * time.Second,
+						APIKey:           "id:api_key",
+						MaxRetries:       3,
+						CompressionLevel: 5,
+						Backoff:          elasticsearch.DefaultBackoffConfig,
+					},
+					Cache:                Cache{Expiration: 2 * time.Minute},
+					ESOverrideConfigured: true,
+				},
 				Aggregation: AggregationConfig{
+					MaxServices: 111,
 					Transactions: TransactionAggregationConfig{
-						MaxTransactionGroups:           123,
-						HDRHistogramSignificantFigures: 1,
+						MaxGroups: 123,
 					},
 					ServiceDestinations: ServiceDestinationAggregationConfig{
 						MaxGroups: 456,
 					},
-					Service: ServiceAggregationConfig{
-						MaxGroups:                      457,
-						HDRHistogramSignificantFigures: 5,
+					ServiceTransactions: ServiceTransactionAggregationConfig{
+						MaxGroups: 457,
 					},
 				},
 				Sampling: SamplingConfig{
@@ -281,19 +374,6 @@ func TestUnpackConfig(t *testing.T) {
 					WaitForIntegration: true,
 				},
 				WaitReadyInterval: 5 * time.Second,
-				Profiling: ProfilingConfig{
-					Enabled:  true,
-					ESConfig: elasticsearch.DefaultConfig(),
-					MetricsESConfig: elasticsearchConfigWithAPIKey(
-						elasticsearch.DefaultConfig(),
-						"metrics_api_key",
-					),
-					ILMConfig: &ProfilingILMConfig{
-						Age:         4 * time.Hour,
-						SizeInBytes: 12345678,
-						Interval:    time.Second,
-					},
-				},
 			},
 		},
 		"merge config with default": {
@@ -318,14 +398,6 @@ func TestUnpackConfig(t *testing.T) {
 				"rum": map[string]interface{}{
 					"enabled": true,
 					"source_mapping": map[string]interface{}{
-						"metadata": []map[string]string{
-							{
-								"service.name":    "opbeans-rum",
-								"service.version": "1.2.3",
-								"bundle.filepath": "/test/e2e/general-usecase/bundle.js.map",
-								"sourcemap.url":   "http://somewhere.com/bundle.js.map",
-							},
-						},
 						"cache": map[string]interface{}{
 							"expiration": 7,
 						},
@@ -379,7 +451,6 @@ func TestUnpackConfig(t *testing.T) {
 				TLS: &tlscommon.ServerConfig{
 					Enabled:     newBool(true),
 					Certificate: testdataCertificateConfig,
-					ClientAuth:  0,
 				},
 				AugmentEnabled: true,
 				Expvar: ExpvarConfig{
@@ -394,38 +465,28 @@ func TestUnpackConfig(t *testing.T) {
 					AllowOrigins: []string{"*"},
 					AllowHeaders: []string{},
 					SourceMapping: SourceMapping{
-						Enabled: true,
-						Cache: Cache{
-							Expiration: 7 * time.Second,
-						},
-						IndexPattern: "apm-*-sourcemap*",
-						ESConfig:     elasticsearch.DefaultConfig(),
-						Metadata: []SourceMapMetadata{
-							{
-								ServiceName:    "opbeans-rum",
-								ServiceVersion: "1.2.3",
-								BundleFilepath: "/test/e2e/general-usecase/bundle.js.map",
-								SourceMapURL:   "http://somewhere.com/bundle.js.map",
-							},
-						},
-						Timeout: 5 * time.Second,
+						Enabled:  true,
+						ESConfig: elasticsearch.DefaultConfig(),
+						Timeout:  5 * time.Second,
 					},
 					LibraryPattern:      "rum",
 					ExcludeFromGrouping: "^/webpack",
 				},
-				Kibana:            defaultKibanaConfig(),
-				KibanaAgentConfig: KibanaAgentConfig{Cache: Cache{Expiration: 30 * time.Second}},
+				Kibana: defaultKibanaConfig(),
+				AgentConfig: AgentConfig{
+					ESConfig: elasticsearch.DefaultConfig(),
+					Cache:    Cache{Expiration: 30 * time.Second},
+				},
 				Aggregation: AggregationConfig{
+					MaxServices: 0, // Default value is set as per memory limit
 					Transactions: TransactionAggregationConfig{
-						MaxTransactionGroups:           0, // Default value is set as per memory limit
-						HDRHistogramSignificantFigures: 2,
+						MaxGroups: 0, // Default value is set as per memory limit
 					},
 					ServiceDestinations: ServiceDestinationAggregationConfig{
-						MaxGroups: 10000,
+						MaxGroups: 0, // Default value is set as per memory limit
 					},
-					Service: ServiceAggregationConfig{
-						MaxGroups:                      0, // Default value is set as per memory limit
-						HDRHistogramSignificantFigures: 5,
+					ServiceTransactions: ServiceTransactionAggregationConfig{
+						MaxGroups: 0, // Default value is set as per memory limit
 					},
 				},
 				Sampling: SamplingConfig{
@@ -446,12 +507,6 @@ func TestUnpackConfig(t *testing.T) {
 					WaitForIntegration: false,
 				},
 				WaitReadyInterval: 5 * time.Second,
-				Profiling: ProfilingConfig{
-					Enabled:         false,
-					ESConfig:        elasticsearch.DefaultConfig(),
-					MetricsESConfig: elasticsearch.DefaultConfig(),
-					ILMConfig:       defaultProfilingILMConfig(),
-				},
 			},
 		},
 		"kibana trailing slash": {
@@ -488,6 +543,58 @@ func TestUnpackConfig(t *testing.T) {
 			},
 			outCfg: responseHeadersConfig,
 		},
+		"agentcfg and rum sourcemapping reuse output es config": {
+			inpCfg: map[string]interface{}{
+				"rum.enabled": true,
+			},
+			inpOutputESCfg: map[string]interface{}{
+				"hosts":    []string{"localhost:9200"},
+				"username": "output_username",
+				"password": "output_password",
+				"protocol": "https",
+			},
+			outCfg: reuseOutputESConfig,
+		},
+		"agentcfg and rum sourcemapping override host output es config ": {
+			inpCfg: map[string]interface{}{
+				"rum.enabled": true,
+				"rum.source_mapping.elasticsearch": map[string]interface{}{
+					"hosts": []string{"localhost:9201"},
+				},
+				"agent.config.elasticsearch": map[string]interface{}{
+					"hosts": []string{"localhost:9202"},
+				},
+			},
+			inpOutputESCfg: map[string]interface{}{
+				"hosts":    []string{"localhost:9200"},
+				"username": "output_username",
+				"password": "output_password",
+				"protocol": "https",
+			},
+			outCfg: overrideHostOutputESConfig,
+		},
+		"agentcfg and rum sourcemapping override credentials output es config ": {
+			inpCfg: map[string]interface{}{
+				"rum.enabled": true,
+				"rum.source_mapping.elasticsearch": map[string]interface{}{
+					"hosts":   []string{"localhost:9201"},
+					"api_key": "id:api_key",
+					"invalid": "invalid",
+				},
+				"agent.config.elasticsearch": map[string]interface{}{
+					"hosts":   []string{"localhost:9202"},
+					"api_key": "id2:api_key2",
+					"invalid": "invalid",
+				},
+			},
+			inpOutputESCfg: map[string]interface{}{
+				"hosts":    []string{"localhost:9200"},
+				"username": "output_username",
+				"password": "output_password",
+				"protocol": "https",
+			},
+			outCfg: overrideCredentialsOutputESConfig,
+		},
 	}
 
 	for name, test := range tests {
@@ -495,7 +602,13 @@ func TestUnpackConfig(t *testing.T) {
 			inpCfg, err := config.NewConfigFrom(test.inpCfg)
 			assert.NoError(t, err)
 
-			cfg, err := NewConfig(inpCfg, nil)
+			var inpOutputESCfg *config.C
+			if test.inpOutputESCfg != nil {
+				inpOutputESCfg, err = config.NewConfigFrom(test.inpOutputESCfg)
+				assert.NoError(t, err)
+			}
+
+			cfg, err := NewConfig(inpCfg, inpOutputESCfg)
 			require.NoError(t, err)
 			require.NotNil(t, cfg)
 
@@ -520,7 +633,7 @@ func TestTLSSettings(t *testing.T) {
 					"key":         "../../testdata/tls/key.pem",
 					"certificate": "../../testdata/tls/certificate.pem",
 				}},
-				tls: &tlscommon.ServerConfig{ClientAuth: 0, Certificate: testdataCertificateConfig},
+				tls: &tlscommon.ServerConfig{Certificate: testdataCertificateConfig},
 			},
 			"ConfiguredToRequired": {
 				config: map[string]interface{}{"ssl": map[string]interface{}{
@@ -528,7 +641,7 @@ func TestTLSSettings(t *testing.T) {
 					"key":                   "../../testdata/tls/key.pem",
 					"certificate":           "../../testdata/tls/certificate.pem",
 				}},
-				tls: &tlscommon.ServerConfig{ClientAuth: 4, Certificate: testdataCertificateConfig},
+				tls: &tlscommon.ServerConfig{ClientAuth: &requireClientAuth, Certificate: testdataCertificateConfig},
 			},
 			"ConfiguredToOptional": {
 				config: map[string]interface{}{"ssl": map[string]interface{}{
@@ -536,7 +649,7 @@ func TestTLSSettings(t *testing.T) {
 					"key":                   "../../testdata/tls/key.pem",
 					"certificate":           "../../testdata/tls/certificate.pem",
 				}},
-				tls: &tlscommon.ServerConfig{ClientAuth: 3, Certificate: testdataCertificateConfig},
+				tls: &tlscommon.ServerConfig{ClientAuth: &optionalClientAuth, Certificate: testdataCertificateConfig},
 			},
 			"DefaultRequiredByCA": {
 				config: map[string]interface{}{"ssl": map[string]interface{}{
@@ -544,7 +657,7 @@ func TestTLSSettings(t *testing.T) {
 					"key":                     "../../testdata/tls/key.pem",
 					"certificate":             "../../testdata/tls/certificate.pem",
 				}},
-				tls: &tlscommon.ServerConfig{ClientAuth: 4, Certificate: testdataCertificateConfig},
+				tls: &tlscommon.ServerConfig{ClientAuth: &requireClientAuth, Certificate: testdataCertificateConfig},
 			},
 			"ConfiguredWithCA": {
 				config: map[string]interface{}{"ssl": map[string]interface{}{
@@ -553,7 +666,7 @@ func TestTLSSettings(t *testing.T) {
 					"key":                     "../../testdata/tls/key.pem",
 					"certificate":             "../../testdata/tls/certificate.pem",
 				}},
-				tls: &tlscommon.ServerConfig{ClientAuth: 0, Certificate: testdataCertificateConfig},
+				tls: &tlscommon.ServerConfig{ClientAuth: &noneClientAuth, Certificate: testdataCertificateConfig},
 			},
 		} {
 			t.Run(name, func(t *testing.T) {
@@ -593,10 +706,6 @@ func TestNewConfig_ESConfig(t *testing.T) {
 		"rum.enabled": true,
 		"auth.api_key.enabled": true,
 		"sampling.tail.policies": [{"sample_rate": 0.5}],
-		"profiling": {
-		  "enabled": true,
-		  "metrics.elasticsearch": {},
-		},
 	}`)
 	require.NoError(t, err)
 
@@ -606,8 +715,6 @@ func TestNewConfig_ESConfig(t *testing.T) {
 	assert.Equal(t, elasticsearch.DefaultConfig(), cfg.RumConfig.SourceMapping.ESConfig)
 	assert.Equal(t, elasticsearch.DefaultConfig(), cfg.AgentAuth.APIKey.ESConfig)
 	assert.Equal(t, elasticsearch.DefaultConfig(), cfg.Sampling.Tail.ESConfig)
-	assert.Equal(t, elasticsearch.DefaultConfig(), cfg.Profiling.ESConfig)
-	assert.Equal(t, elasticsearch.DefaultConfig(), cfg.Profiling.MetricsESConfig)
 
 	// with es config
 	outputESCfg := config.MustNewConfigFrom(`{"hosts":["192.0.0.168:9200"]}`)
@@ -617,18 +724,12 @@ func TestNewConfig_ESConfig(t *testing.T) {
 	assert.Equal(t, []string{"192.0.0.168:9200"}, []string(cfg.RumConfig.SourceMapping.ESConfig.Hosts))
 	assert.Equal(t, []string{"192.0.0.168:9200"}, []string(cfg.AgentAuth.APIKey.ESConfig.Hosts))
 	assert.Equal(t, []string{"192.0.0.168:9200"}, []string(cfg.Sampling.Tail.ESConfig.Hosts))
-	assert.Equal(t, []string{"192.0.0.168:9200"}, []string(cfg.Profiling.ESConfig.Hosts))
-	assert.NotEqual(t, []string{"192.0.0.168:9200"}, []string(cfg.Profiling.MetricsESConfig.Hosts))
+	assert.Equal(t, []string{"192.0.0.168:9200"}, []string(cfg.AgentConfig.ESConfig.Hosts))
+
 }
 
 func newBool(v bool) *bool {
 	return &v
-}
-
-func elasticsearchConfigWithAPIKey(in *elasticsearch.Config, apiKey string) *elasticsearch.Config {
-	out := *in
-	out.APIKey = apiKey
-	return &out
 }
 
 func ignoreUnexported() cmp.Option {

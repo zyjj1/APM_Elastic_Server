@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-data/model/modelpb"
 )
 
 const minReservoirSize = 1000
@@ -43,7 +43,7 @@ type policyGroup struct {
 	dynamic map[string]*traceGroup // nil for static
 }
 
-func (g *policyGroup) match(transactionEvent *model.APMEvent) bool {
+func (g *policyGroup) match(transactionEvent *modelpb.APMEvent) bool {
 	if g.policy.ServiceName != "" && g.policy.ServiceName != transactionEvent.Service.Name {
 		return false
 	}
@@ -118,7 +118,7 @@ func newTraceGroup(samplingFraction float64) *traceGroup {
 //
 // If the transaction is not admitted due to the transaction group limit
 // having been reached, sampleTrace will return errTooManyTraceGroups.
-func (g *traceGroups) sampleTrace(transactionEvent *model.APMEvent) (bool, error) {
+func (g *traceGroups) sampleTrace(transactionEvent *modelpb.APMEvent) (bool, error) {
 	group, err := g.getTraceGroup(transactionEvent)
 	if err != nil {
 		return false, err
@@ -126,7 +126,7 @@ func (g *traceGroups) sampleTrace(transactionEvent *model.APMEvent) (bool, error
 	return group.sampleTrace(transactionEvent)
 }
 
-func (g *traceGroups) getTraceGroup(transactionEvent *model.APMEvent) (*traceGroup, error) {
+func (g *traceGroups) getTraceGroup(transactionEvent *modelpb.APMEvent) (*traceGroup, error) {
 	var pg *policyGroup
 	for i := range g.policyGroups {
 		if g.policyGroups[i].match(transactionEvent) {
@@ -144,19 +144,19 @@ func (g *traceGroups) getTraceGroup(transactionEvent *model.APMEvent) (*traceGro
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	group, ok := pg.dynamic[transactionEvent.Service.Name]
+	group, ok := pg.dynamic[transactionEvent.GetService().GetName()]
 	if !ok {
 		if g.numDynamicServiceGroups == g.maxDynamicServiceGroups {
 			return nil, errTooManyTraceGroups
 		}
 		g.numDynamicServiceGroups++
 		group = newTraceGroup(pg.policy.SampleRate)
-		pg.dynamic[transactionEvent.Service.Name] = group
+		pg.dynamic[transactionEvent.GetService().GetName()] = group
 	}
 	return group, nil
 }
 
-func (g *traceGroup) sampleTrace(transactionEvent *model.APMEvent) (bool, error) {
+func (g *traceGroup) sampleTrace(transactionEvent *modelpb.APMEvent) (bool, error) {
 	if g.samplingFraction == 0 {
 		return false, nil
 	}
@@ -164,8 +164,8 @@ func (g *traceGroup) sampleTrace(transactionEvent *model.APMEvent) (bool, error)
 	defer g.mu.Unlock()
 	g.total++
 	return g.reservoir.Sample(
-		transactionEvent.Event.Duration.Seconds(),
-		transactionEvent.Trace.ID,
+		time.Duration(transactionEvent.GetEvent().GetDuration()).Seconds(),
+		transactionEvent.GetTrace().GetId(),
 	), nil
 }
 
@@ -211,7 +211,7 @@ func (g *traceGroup) finalizeSampledTraces(traceIDs []string, ingestRateDecayFac
 		g.ingestRate *= 1 - ingestRateDecayFactor
 		g.ingestRate += ingestRateDecayFactor * float64(g.total)
 	}
-	desiredTotal := int(math.Round(g.samplingFraction * float64(g.total)))
+	desiredTotal := int(math.Ceil(g.samplingFraction * float64(g.total)))
 	g.total = 0
 
 	for n := g.reservoir.Len(); n > desiredTotal; n-- {
@@ -224,7 +224,7 @@ func (g *traceGroup) finalizeSampledTraces(traceIDs []string, ingestRateDecayFac
 
 	// Resize the reservoir, so that it can hold the desired fraction of
 	// the observed ingest rate.
-	newReservoirSize := int(math.Round(g.samplingFraction * g.ingestRate))
+	newReservoirSize := int(math.Ceil(g.samplingFraction * g.ingestRate))
 	if newReservoirSize < minReservoirSize {
 		newReservoirSize = minReservoirSize
 	}

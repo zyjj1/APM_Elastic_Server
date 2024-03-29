@@ -28,8 +28,9 @@ import (
 
 	"github.com/elastic/elastic-agent-libs/monitoring"
 
+	"github.com/elastic/apm-data/input"
 	"github.com/elastic/apm-data/input/otlp"
-	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-data/model/modelpb"
 	"github.com/elastic/apm-server/internal/beater/interceptors"
 	"github.com/elastic/apm-server/internal/beater/request"
 )
@@ -66,7 +67,8 @@ func init() {
 func RegisterGRPCServices(
 	grpcServer *grpc.Server,
 	logger *zap.Logger,
-	processor model.BatchProcessor,
+	processor modelpb.BatchProcessor,
+	semaphore input.Semaphore,
 ) {
 	// TODO(axw) stop assuming we have only one OTLP gRPC service running
 	// at any time, and instead aggregate metrics from consumers that are
@@ -74,49 +76,68 @@ func RegisterGRPCServices(
 	consumer := otlp.NewConsumer(otlp.ConsumerConfig{
 		Processor: processor,
 		Logger:    logger,
+		Semaphore: semaphore,
 	})
 	gRPCMonitoredConsumer.set(consumer)
 
-	ptraceotlp.RegisterGRPCServer(grpcServer, tracesService{consumer})
-	pmetricotlp.RegisterGRPCServer(grpcServer, metricsService{consumer})
-	plogotlp.RegisterGRPCServer(grpcServer, logsService{consumer})
+	ptraceotlp.RegisterGRPCServer(grpcServer, &tracesService{consumer: consumer})
+	pmetricotlp.RegisterGRPCServer(grpcServer, &metricsService{consumer: consumer})
+	plogotlp.RegisterGRPCServer(grpcServer, &logsService{consumer: consumer})
 }
 
 type tracesService struct {
+	ptraceotlp.UnimplementedGRPCServer
 	consumer *otlp.Consumer
 }
 
-func (s tracesService) Export(ctx context.Context, req ptraceotlp.ExportRequest) (ptraceotlp.ExportResponse, error) {
+func (s *tracesService) Export(ctx context.Context, req ptraceotlp.ExportRequest) (ptraceotlp.ExportResponse, error) {
 	td := req.Traces()
 	if td.SpanCount() == 0 {
 		return ptraceotlp.NewExportResponse(), nil
 	}
-	err := s.consumer.ConsumeTraces(ctx, td)
-	return ptraceotlp.NewExportResponse(), err
+	resp := ptraceotlp.NewExportResponse()
+	result, err := s.consumer.ConsumeTracesWithResult(ctx, td)
+	if err == nil && result.RejectedSpans > 0 {
+		resp.PartialSuccess().SetRejectedSpans(result.RejectedSpans)
+		resp.PartialSuccess().SetErrorMessage(result.ErrorMessage)
+	}
+	return resp, err
 }
 
 type metricsService struct {
+	pmetricotlp.UnimplementedGRPCServer
 	consumer *otlp.Consumer
 }
 
-func (s metricsService) Export(ctx context.Context, req pmetricotlp.ExportRequest) (pmetricotlp.ExportResponse, error) {
+func (s *metricsService) Export(ctx context.Context, req pmetricotlp.ExportRequest) (pmetricotlp.ExportResponse, error) {
 	md := req.Metrics()
 	if md.DataPointCount() == 0 {
 		return pmetricotlp.NewExportResponse(), nil
 	}
-	err := s.consumer.ConsumeMetrics(ctx, md)
-	return pmetricotlp.NewExportResponse(), err
+	resp := pmetricotlp.NewExportResponse()
+	result, err := s.consumer.ConsumeMetricsWithResult(ctx, md)
+	if err == nil && result.RejectedDataPoints > 0 {
+		resp.PartialSuccess().SetRejectedDataPoints(result.RejectedDataPoints)
+		resp.PartialSuccess().SetErrorMessage(result.ErrorMessage)
+	}
+	return resp, err
 }
 
 type logsService struct {
+	plogotlp.UnimplementedGRPCServer
 	consumer *otlp.Consumer
 }
 
-func (s logsService) Export(ctx context.Context, req plogotlp.ExportRequest) (plogotlp.ExportResponse, error) {
+func (s *logsService) Export(ctx context.Context, req plogotlp.ExportRequest) (plogotlp.ExportResponse, error) {
 	ld := req.Logs()
 	if ld.LogRecordCount() == 0 {
 		return plogotlp.NewExportResponse(), nil
 	}
-	err := s.consumer.ConsumeLogs(ctx, ld)
-	return plogotlp.NewExportResponse(), err
+	resp := plogotlp.NewExportResponse()
+	result, err := s.consumer.ConsumeLogsWithResult(ctx, ld)
+	if err == nil && result.RejectedLogRecords > 0 {
+		resp.PartialSuccess().SetRejectedLogRecords(result.RejectedLogRecords)
+		resp.PartialSuccess().SetErrorMessage(result.ErrorMessage)
+	}
+	return resp, err
 }

@@ -17,53 +17,29 @@
 
 package config
 
-const (
-	defaultTransactionAggregationHDRHistogramSignificantFigures = 2
-
-	defaultServiceDestinationAggregationMaxGroups = 10000
-
-	defaultServiceAggregationHDRHistogramSignificantFigures = 5
-)
-
 // AggregationConfig holds configuration related to various metrics aggregations.
 type AggregationConfig struct {
+	MaxServices         int                                 `config:"max_services"` // if <= 0 then will be set based on memory limits
 	Transactions        TransactionAggregationConfig        `config:"transactions"`
 	ServiceDestinations ServiceDestinationAggregationConfig `config:"service_destinations"`
-	Service             ServiceAggregationConfig            `config:"service"`
+	ServiceTransactions ServiceTransactionAggregationConfig `config:"service_transactions"`
 }
 
 // TransactionAggregationConfig holds configuration related to transaction metrics aggregation.
 type TransactionAggregationConfig struct {
-	MaxTransactionGroups           int `config:"max_groups"` // if <= 0 then will be set based on memory limits
-	HDRHistogramSignificantFigures int `config:"hdrhistogram_significant_figures" validate:"min=1, max=5"`
+	MaxGroups int `config:"max_groups"` // if <= 0 then will be set based on memory limits
 }
 
 // ServiceDestinationAggregationConfig holds configuration related to span metrics aggregation for service maps.
 type ServiceDestinationAggregationConfig struct {
-	MaxGroups int `config:"max_groups" validate:"min=1"`
+	MaxGroups int `config:"max_groups"` // if <= 0 then will be set based on memory limits
 }
 
-// ServiceAggregationConfig holds configuration related to service metrics aggregation.
-type ServiceAggregationConfig struct {
-	Enabled                        bool `config:"enabled"`
-	MaxGroups                      int  `config:"max_groups"` // if <= 0 then will be set based on memory limits
-	HDRHistogramSignificantFigures int  `config:"hdrhistogram_significant_figures" validate:"min=1, max=5"`
+// ServiceTransactionAggregationConfig holds configuration related to service transaction metrics aggregation.
+type ServiceTransactionAggregationConfig struct {
+	MaxGroups int `config:"max_groups"` // if <= 0 then will be set based on memory limits
 }
 
 func defaultAggregationConfig() AggregationConfig {
-	return AggregationConfig{
-		Transactions: TransactionAggregationConfig{
-			HDRHistogramSignificantFigures: defaultTransactionAggregationHDRHistogramSignificantFigures,
-		},
-		ServiceDestinations: ServiceDestinationAggregationConfig{
-			MaxGroups: defaultServiceDestinationAggregationMaxGroups,
-		},
-		Service: ServiceAggregationConfig{
-			// NOTE(axw) service metrics are in technical preview,
-			// disabled by default. Once proven, they may be always
-			// enabled in a future release, without configuration.
-			Enabled:                        false,
-			HDRHistogramSignificantFigures: defaultServiceAggregationHDRHistogramSignificantFigures,
-		},
-	}
+	return AggregationConfig{}
 }

@@ -28,6 +28,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofrs/uuid"
@@ -101,6 +102,10 @@ func NewBeat(args BeatParams) (*Beat, error) {
 		return nil, err
 	}
 
+	beatName := cfg.Name
+	if beatName == "" {
+		beatName = hostname
+	}
 	b := &Beat{
 		Beat: beat.Beat{
 			Info: beat.Info{
@@ -108,7 +113,7 @@ func NewBeat(args BeatParams) (*Beat, error) {
 				ElasticLicensed: args.ElasticLicensed,
 				IndexPrefix:     "apm-server",
 				Version:         version.Version,
-				Name:            hostname,
+				Name:            beatName,
 				Hostname:        hostname,
 				StartTime:       time.Now(),
 				EphemeralID:     metricreport.EphemeralID(),
@@ -145,7 +150,7 @@ func (b *Beat) init() error {
 	logp.Info("Beat ID: %v", b.Info.ID)
 
 	// Initialize central config manager.
-	manager, err := management.Factory(b.Config.Management)(b.Config.Management, reload.RegisterV2, b.Beat.Info.ID)
+	manager, err := management.NewManager(b.Config.Management, reload.RegisterV2)
 	if err != nil {
 		return err
 	}
@@ -259,11 +264,14 @@ func (b *Beat) Run(ctx context.Context) error {
 	defer logp.Info("%s stopped.", b.Info.Beat)
 
 	logger := logp.NewLogger("")
-	if runtime.GOARCH == "386" {
-		logger.Warn("" +
-			"deprecation notice: support for 32-bit system target " +
-			"architecture will be removed in an upcoming version",
-		)
+
+	if runtime.GOOS == "darwin" {
+		if host, err := sysinfo.Host(); err != nil {
+			logger.Warnf("failed to retrieve kernel version, ignoring potential deprecation warning: %v", err)
+		} else if strings.HasPrefix(host.Info().KernelVersion, "19.") {
+			// macOS 10.15.x (catalina) means darwin kernel 19.y
+			logger.Warn("deprecation notice: support for macOS 10.15 will be removed in an upcoming version")
+		}
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -432,7 +440,7 @@ func (b *Beat) registerMetrics() {
 	monitoring.NewString(beatRegistry, "name").Set(b.Info.Name)
 
 	// state.host
-	monitoring.NewFunc(stateRegistry, "host", host.ReportInfo, monitoring.Report)
+	monitoring.NewFunc(stateRegistry, "host", host.ReportInfo("" /* don't use FQDN */), monitoring.Report)
 
 	// state.management
 	managementRegistry := stateRegistry.NewRegistry("management")

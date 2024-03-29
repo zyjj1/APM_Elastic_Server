@@ -26,7 +26,7 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/elastic/apm-server/systemtest/loadgen"
+	"github.com/elastic/apm-perf/loadgen"
 )
 
 // Run runs APM-Server and CatBulk server followed by sending
@@ -84,8 +84,12 @@ func Run(rootCtx context.Context) error {
 }
 
 func generateLoad(ctx context.Context, serverURL string, replayCount int) error {
-	inf := loadgen.GetNewLimiter(0)
-	handler, err := loadgen.NewEventHandler(`*.ndjson`, serverURL, "", inf)
+	inf := loadgen.GetNewLimiter(0, 0)
+	handler, err := loadgen.NewEventHandler(loadgen.EventHandlerParams{
+		Path:    `*.ndjson`,
+		URL:     serverURL,
+		Limiter: inf,
+	})
 	if err != nil {
 		return err
 	}

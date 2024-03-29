@@ -1,7 +1,11 @@
 queue_rules:
   - name: default
     conditions:
-      - check-success=apm-ci/pr-merge
+      - check-success=test (macos-latest)
+      - check-success=test (windows-latest)
+      - check-success=system-test
+      - check-success=lint
+      - check-success=CLA
 pull_request_rules:
   - name: ask to resolve conflict
     conditions:
@@ -28,7 +32,7 @@ pull_request_rules:
           - "{{ author }}"
         branches:
           - "8.4"
-        title: "[{{ destination_branch }}] {{ title }} (backport #{{ number }})" 
+        title: "[{{ destination_branch }}] {{ title }} (backport #{{ number }})"
   - name: backport patches to 8.3 branch
     conditions:
       - merged
@@ -40,7 +44,7 @@ pull_request_rules:
           - "{{ author }}"
         branches:
           - "8.3"
-        title: "[{{ destination_branch }}] {{ title }} (backport #{{ number }})"          
+        title: "[{{ destination_branch }}] {{ title }} (backport #{{ number }})"
   - name: backport patches to 8.2 branch
     conditions:
       - merged
@@ -88,6 +92,8 @@ pull_request_rules:
           - "{{ author }}"
         branches:
           - "7.17"
+        labels:
+          - "backport"
         title: "[{{ destination_branch }}] {{ title }} (backport #{{ number }})"
   - name: backport patches to 7.16 branch
     conditions:
@@ -137,44 +143,23 @@ pull_request_rules:
         branches:
           - "7.13"
         title: "[{{ destination_branch }}] {{ title }} (backport #{{ number }})"
-  - name: Automatic squash and merge with success checks and the file docker-compose.yml is modified.
+  - name: squash and merge updatecli PRs after CI passes
     conditions:
-      - check-success=apm-ci/pr-merge
       - label=automation
-      - files=docker-compose.yml
+      - head~=^updatecli
+      - -conflict
     actions:
       queue:
         method: squash
         name: default
-  - name: delete upstream branch with changes on docker-compose.yml after merging/closing it
+  - name: delete updatecli branch after merging/closing it
     conditions:
       - or:
         - merged
         - closed
       - and:
         - label=automation
-        - head~=^update-.*-version
-        - files=docker-compose.yml
-    actions:
-      delete_head_branch:
-  - name: automatic merge when CI passes for the make update-beats
-    conditions:
-      - check-success=apm-ci/pr-merge
-      - label=automation
-      - head~=^update-beats
-      - files~=^(go.mod|go.sum|NOTICE.txt)
-    actions:
-      queue:
-        method: squash
-        name: default
-  - name: delete upstream branch after merging changes for the make update-beats
-    conditions:
-      - or:
-        - merged
-        - closed
-      - and:
-        - label=automation
-        - head~=^update-beats
+        - head~=^updatecli
     actions:
       delete_head_branch:
   - name: notify the backport policy
@@ -187,8 +172,8 @@ pull_request_rules:
           This pull request does not have a backport label. Could you fix it @{{author}}? 🙏
           To fixup this pull request, you need to add the backport labels for the needed
           branches, such as:
-          * `backport-7.x` is the label to automatically backport to the `7.x` branch.
-          * `backport-7./d` is the label to automatically backport to the `7./d` branch. `/d` is the digit
+          * `backport-7.17` is the label to automatically backport to the 7.17 branch.
+          * `backport-8./d` is the label to automatically backport to the `8./d` branch. `/d` is the digit.
 
           **NOTE**: `backport-skip` has been added to this pull request.
       label:
@@ -212,6 +197,15 @@ pull_request_rules:
       comment:
         message: |
           This pull request has not been merged yet. Could you please review and merge it @{{ assignee | join(', @') }}? 🙏
+  - name: squash and merge backport PRs after CI passes
+    conditions:
+      - label=backport
+      - author=mergify[bot]
+      - -conflict
+    actions:
+      queue:
+        method: squash
+        name: default
   - name: backport patches to 8.5 branch
     conditions:
       - merged
@@ -237,6 +231,104 @@ pull_request_rules:
           - "{{ author }}"
         branches:
           - "8.6"
+        labels:
+          - "backport"
+        title: "[{{ destination_branch }}] {{ title }} (backport #{{ number }})"
+  - name: backport patches to 8.7 branch
+    conditions:
+      - merged
+      - base=main
+      - label=backport-8.7
+    actions:
+      backport:
+        assignees:
+          - "{{ author }}"
+        branches:
+          - "8.7"
+        labels:
+          - "backport"
+        title: "[{{ destination_branch }}] {{ title }} (backport #{{ number }})"
+  - name: backport patches to 8.8 branch
+    conditions:
+      - merged
+      - base=main
+      - label=backport-8.8
+    actions:
+      backport:
+        assignees:
+          - "{{ author }}"
+        branches:
+          - "8.8"
+        labels:
+          - "backport"
+        title: "[{{ destination_branch }}] {{ title }} (backport #{{ number }})"
+  - name: backport patches to 8.9 branch
+    conditions:
+      - merged
+      - base=main
+      - label=backport-8.9
+    actions:
+      backport:
+        assignees:
+          - "{{ author }}"
+        branches:
+          - "8.9"
+        labels:
+          - "backport"
+        title: "[{{ destination_branch }}] {{ title }} (backport #{{ number }})"
+  - name: backport patches to 8.10 branch
+    conditions:
+      - merged
+      - base=main
+      - label=backport-8.10
+    actions:
+      backport:
+        assignees:
+          - "{{ author }}"
+        branches:
+          - "8.10"
+        labels:
+          - "backport"
+        title: "[{{ destination_branch }}] {{ title }} (backport #{{ number }})"
+  - name: backport patches to 8.11 branch
+    conditions:
+      - merged
+      - base=main
+      - label=backport-8.11
+    actions:
+      backport:
+        assignees:
+          - "{{ author }}"
+        branches:
+          - "8.11"
+        labels:
+          - "backport"
+        title: "[{{ destination_branch }}] {{ title }} (backport #{{ number }})"
+  - name: backport patches to 8.12 branch
+    conditions:
+      - merged
+      - base=main
+      - label=backport-8.12
+    actions:
+      backport:
+        assignees:
+          - "{{ author }}"
+        branches:
+          - "8.12"
+        labels:
+          - "backport"
+        title: "[{{ destination_branch }}] {{ title }} (backport #{{ number }})"
+  - name: backport patches to 8.13 branch
+    conditions:
+      - merged
+      - base=main
+      - label=backport-8.13
+    actions:
+      backport:
+        assignees:
+          - "{{ author }}"
+        branches:
+          - "8.13"
         labels:
           - "backport"
         title: "[{{ destination_branch }}] {{ title }} (backport #{{ number }})"

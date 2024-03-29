@@ -33,6 +33,7 @@ import (
 	"github.com/elastic/apm-server/systemtest"
 	"github.com/elastic/apm-server/systemtest/apmservertest"
 	"github.com/elastic/apm-server/systemtest/estest"
+	"github.com/elastic/apm-tools/pkg/espoll"
 )
 
 func TestAPMServerInstrumentation(t *testing.T) {
@@ -48,23 +49,23 @@ func TestAPMServerInstrumentation(t *testing.T) {
 	tracer.StartTransaction("name", "type").End()
 	tracer.Flush(nil)
 
-	result := systemtest.Elasticsearch.ExpectDocs(t, "traces-apm*", estest.BoolQuery{
+	result := estest.ExpectDocs(t, systemtest.Elasticsearch, "traces-apm*", espoll.BoolQuery{
 		Filter: []interface{}{
-			estest.TermQuery{
+			espoll.TermQuery{
 				Field: "processor.event",
 				Value: "transaction",
 			},
-			estest.TermQuery{
+			espoll.TermQuery{
 				Field: "service.name",
 				Value: "apm-server",
 			},
-			estest.TermQuery{
+			espoll.TermQuery{
 				Field: "transaction.type",
 				Value: "request",
 			},
 			// Only look for the request made by the agent for sending events.
 			// There may be other requests, such as for central config.
-			estest.TermQuery{
+			espoll.TermQuery{
 				Field: "transaction.name",
 				Value: "POST /intake/v2/events",
 			},
@@ -89,8 +90,10 @@ func TestAPMServerInstrumentation(t *testing.T) {
 		if !ok {
 			continue
 		}
-		assert.Equal(t, transactionDoc.Trace.ID, traceID)
-		assert.Equal(t, transactionDoc.Transaction.ID, entry.Fields["transaction.id"])
+		assert.Equalf(t, transactionDoc.Trace.ID, traceID,
+			"expecting log with trace id %s; got trace id %s and message \"%s\" instead", transactionDoc.Trace.ID, traceID, entry.Message)
+		assert.Equalf(t, transactionDoc.Transaction.ID, entry.Fields["transaction.id"],
+			"expecting log with transaction id %s; got transaction id %s and message \"%s\" instead", transactionDoc.Transaction.ID, entry.Fields["transaction.id"], entry.Message)
 		return
 	}
 	t.Fatal("failed to identify log message with matching trace IDs")
@@ -152,17 +155,17 @@ func TestAPMServerInstrumentationAuth(t *testing.T) {
 		tracer.StartTransaction("name", "type").End()
 		tracer.Flush(nil)
 
-		systemtest.Elasticsearch.ExpectDocs(t, "traces-apm*", estest.BoolQuery{
+		estest.ExpectDocs(t, systemtest.Elasticsearch, "traces-apm*", espoll.BoolQuery{
 			Filter: []interface{}{
-				estest.TermQuery{
+				espoll.TermQuery{
 					Field: "processor.event",
 					Value: "transaction",
 				},
-				estest.TermQuery{
+				espoll.TermQuery{
 					Field: "service.name",
 					Value: "apm-server",
 				},
-				estest.TermQuery{
+				espoll.TermQuery{
 					Field: "transaction.type",
 					Value: "request",
 				},

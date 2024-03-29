@@ -23,36 +23,98 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/pkg/errors"
+
+	"github.com/elastic/apm-server/internal/elasticsearch"
+	"github.com/elastic/elastic-agent-libs/config"
+	"github.com/elastic/elastic-agent-libs/logp"
+	"github.com/elastic/go-ucfg"
 )
 
-// KibanaAgentConfig holds remote agent config information
-type KibanaAgentConfig struct {
-	Cache Cache `config:"cache"`
+const msgInvalidConfigAgentCfg = "invalid value for `apm-server.agent.config.cache.expiration`, only accepting full seconds"
+
+// AgentConfig configuration for dynamically querying agent configuration
+// via Elasticsearch or Kibana.
+type AgentConfig struct {
+	ESConfig *elasticsearch.Config
+	Cache    Cache `config:"cache"`
+
+	ESOverrideConfigured bool
+	es                   *config.C
+}
+
+func (c *AgentConfig) Unpack(in *config.C) error {
+	type agentConfig AgentConfig
+	cfg := agentConfig(defaultAgentConfig())
+	if err := in.Unpack(&cfg); err != nil {
+		return errors.Wrap(err, "error unpacking agent config")
+	}
+	*c = AgentConfig(cfg)
+
+	var err error
+	c.es, err = in.Child("elasticsearch", -1)
+
+	var ucfgError ucfg.Error
+	if !errors.As(err, &ucfgError) || ucfgError.Reason() != ucfg.ErrMissing {
+		return errors.Wrap(err, "error unpacking agent elasticsearch config")
+	}
+	return nil
+}
+
+func (c *AgentConfig) setup(log *logp.Logger, outputESCfg *config.C) error {
+	if float64(int(c.Cache.Expiration.Seconds())) != c.Cache.Expiration.Seconds() {
+		return errors.New(msgInvalidConfigAgentCfg)
+	}
+	if outputESCfg != nil {
+		log.Info("using output.elasticsearch for fetching agent config")
+		if err := outputESCfg.Unpack(&c.ESConfig); err != nil {
+			return errors.Wrap(err, "error unpacking output.elasticsearch for fetching agent config")
+		}
+	}
+	if c.es != nil {
+		log.Info("using apm-server.agent.config.elasticsearch for fetching agent config")
+		c.ESOverrideConfigured = true
+
+		// Empty out credential fields before merging if credentials are provided in agentcfg ES config
+		if c.es.HasField("api_key") || c.es.HasField("username") {
+			c.ESConfig.APIKey = ""
+			c.ESConfig.Username = ""
+			c.ESConfig.Password = ""
+		}
+
+		if err := c.es.Unpack(c.ESConfig); err != nil {
+			return errors.Wrap(err, "error unpacking apm-server.agent.config.elasticsearch for fetching agent config")
+		}
+		c.es = nil
+	}
+	return nil
 }
 
 // Cache holds config information about cache expiration
 type Cache struct {
-	Expiration time.Duration `config:"expiration"`
+	Expiration time.Duration `config:"expiration" validate:"min=1s"`
 }
 
-// defaultKibanaAgentConfig holds the default KibanaAgentConfig
-func defaultKibanaAgentConfig() KibanaAgentConfig {
-	return KibanaAgentConfig{
+// defaultAgentConfig holds the default AgentConfig
+func defaultAgentConfig() AgentConfig {
+	return AgentConfig{
+		ESConfig: elasticsearch.DefaultConfig(),
 		Cache: Cache{
 			Expiration: 30 * time.Second,
 		},
 	}
 }
 
-// AgentConfig defines configuration for agents.
-type AgentConfig struct {
+// FleetAgentConfig defines configuration for agents.
+type FleetAgentConfig struct {
 	Service   Service `config:"service"`
 	AgentName string  `config:"agent.name"`
 	Etag      string  `config:"etag"`
 	Config    map[string]string
 }
 
-func (s *AgentConfig) setup() error {
+func (s *FleetAgentConfig) setup() error {
 	if s.Config == nil {
 		// Config may be passed to APM Server as `null` when no attributes
 		// are defined in an APM Agent central configuration entry.

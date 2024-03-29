@@ -23,14 +23,16 @@ import (
 
 	"github.com/elastic/elastic-agent-libs/logp"
 
-	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-data/input"
+	"github.com/elastic/apm-data/model/modelpb"
+	"github.com/elastic/apm-server/internal/agentcfg"
 	"github.com/elastic/apm-server/internal/beater/api"
 	"github.com/elastic/apm-server/internal/beater/auth"
 	"github.com/elastic/apm-server/internal/beater/config"
 	"github.com/elastic/apm-server/internal/beater/ratelimit"
 )
 
-func newTracerServer(cfg *config.Config, listener net.Listener, logger *logp.Logger, batchProcessor model.BatchProcessor) (*http.Server, error) {
+func newTracerServer(cfg *config.Config, listener net.Listener, logger *logp.Logger, batchProcessor modelpb.BatchProcessor, semaphore input.Semaphore) (*http.Server, error) {
 	ratelimitStore, err := ratelimit.NewStore(1, 1, 1) // unused, arbitrary params
 	if err != nil {
 		return nil, err
@@ -39,15 +41,16 @@ func newTracerServer(cfg *config.Config, listener net.Listener, logger *logp.Log
 	if err != nil {
 		return nil, err
 	}
+	agentConfigFetcher := agentcfg.SanitizingFetcher{Fetcher: agentcfg.NewDirectFetcher(agentcfg.ConvertAgentConfigs(cfg.FleetAgentConfigs))}
 	mux, err := api.NewMux(
 		cfg,
 		batchProcessor,
 		authenticator,
-		newAgentConfigFetcher(cfg, nil /* kibana client */),
+		agentConfigFetcher,
 		ratelimitStore,
 		nil,                         // no sourcemap store
-		false,                       // not managed
 		func() bool { return true }, // ready for publishing
+		semaphore,
 	)
 	if err != nil {
 		return nil, err

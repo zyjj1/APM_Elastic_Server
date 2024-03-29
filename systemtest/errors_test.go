@@ -19,6 +19,8 @@ package systemtest_test
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"testing"
@@ -29,6 +31,8 @@ import (
 	"github.com/elastic/apm-server/systemtest"
 	"github.com/elastic/apm-server/systemtest/apmservertest"
 	"github.com/elastic/apm-server/systemtest/estest"
+	"github.com/elastic/apm-tools/pkg/approvaltest"
+	"github.com/elastic/apm-tools/pkg/espoll"
 )
 
 func TestErrorIngest(t *testing.T) {
@@ -46,8 +50,38 @@ func TestErrorIngest(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 
-	result := systemtest.Elasticsearch.ExpectDocs(t, "logs-apm.error*", estest.ExistsQuery{
+	result := estest.ExpectDocs(t, systemtest.Elasticsearch, "logs-apm.error*", espoll.ExistsQuery{
 		Field: "transaction.name",
 	})
-	systemtest.ApproveEvents(t, t.Name(), result.Hits.Hits)
+	approvaltest.ApproveFields(t, t.Name(), result.Hits.Hits)
+}
+
+// TestErrorExceptionCause tests hierarchical exception causes,
+// which must be obtained from _source due to how the exception
+// tree is structured as an array of objects.
+func TestErrorExceptionCause(t *testing.T) {
+	systemtest.CleanupElasticsearch(t)
+	srv := apmservertest.NewServerTB(t)
+
+	tracer := srv.Tracer()
+	tracer.NewError(fmt.Errorf(
+		"parent: %w %w",
+		fmt.Errorf("child1: %w", errors.New("grandchild")),
+		errors.New("child2"),
+	)).Send()
+	tracer.Flush(nil)
+
+	result := estest.ExpectDocs(t, systemtest.Elasticsearch, "logs-apm.error*", nil)
+	errorObj := result.Hits.Hits[0].Source["error"].(map[string]any)
+	exceptions := errorObj["exception"].([]any)
+
+	require.Len(t, exceptions, 4)
+	assert.Equal(t, "parent: child1: grandchild child2", exceptions[0].(map[string]any)["message"])
+	assert.Equal(t, "child1: grandchild", exceptions[1].(map[string]any)["message"])
+	assert.Equal(t, "grandchild", exceptions[2].(map[string]any)["message"])
+	assert.Equal(t, "child2", exceptions[3].(map[string]any)["message"])
+	assert.NotContains(t, exceptions[0], "parent")
+	assert.NotContains(t, exceptions[1], "parent")
+	assert.NotContains(t, exceptions[2], "parent")
+	assert.Equal(t, float64(0), exceptions[3].(map[string]any)["parent"])
 }

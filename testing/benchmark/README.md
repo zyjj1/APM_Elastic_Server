@@ -57,6 +57,7 @@ The main commands are:
 
 - `all` (default): runs `auth`, `apmbench`, creates the config files and runs terraform apply.
 - `auth`: Re-generate AWS credentials, they will expire after 4h.
+- `run-benchmark-autotuned`: Run the benchmarks with a computed `BENCHMARK_AGENTS`.
 - `run-benchmark`: Run the benchmarks, can configured by tweaking:
   - `BENCHMARK_WARMUP_TIME`: Set the amount of time to warm the APM Server for. Defaults to `5m`.
   - `BENCHMARK_AGENTS`: Set the number of agents to send data to the APM Server. Defaults to `64`.
@@ -78,18 +79,27 @@ Helper commands
 - `terraform.tfvars`: Copies the examples tfvars and sets the `user_name` var with to `$USER`.
 - `apmbench`: Compiles the `apmbench` binary from the provided location (`APMBENCH_PATH`).
 
-### Override the docker image tag
+### Override the docker image  and image tag
+
+Running `make docker-override-committed-version` will create new docker images for `kibana` and `elastic-agent`
+with local `apm` package and `apm-server` and a Terraform variable file. The file named 
+`docker_image.auto.tfvars` contains Terraform Docker image Terraform variables overrides. This file is not 
+overridden automatically, you need to remove it manually if present.
+
+#### Override docker image tag
 
 It is possible to override the tag of the docker image that is run in the remote ESS deployment. You can
 specify any of the avilable tags (such as `8.3.0-SNAPSHOT` or a more specific tag `8.3.0-c655cda8-SNAPSHOT`).
-Alternatively, you can run evaluate the output of `make docker-override-committed-version` in your shell,
-to have use the committed tags in the `docker-compose.yml` file: `eval $(make docker-override-committed-version)`.
+Alternatively, you can run `make docker-override-committed-version` in your shell, to have use the committed
+tags in the `docker-compose.yml` file in the repository root.
 
-### Override the docker image
+#### Override the docker image
 
 It is also possible to override the docker image to one that is allowed to run in ESS. For more information
 on which repositories can be used, please refer to our internal docs. To override the docker image, you'll need
 to specify the full object of images that is defined in `variables.tf`: `docker_image_override`.
+Alternatively, you can run `make docker-override-committed-version` in your shell, to have use the committed
+tags in the `docker-compose.yml` file in the repository root.
 
 ### Set APM index shards
 
@@ -106,4 +116,4 @@ the benchmarks without destroying the deployment.
 Reporting data is taken from the https://`<replace-with-kibana-benchmark-url>`/app/dashboards#/view/a5bc8390-2f8e-11ed-a369-052d8245fa04?_g=(filters:!(),refreshInterval:(pause:!t,value:0),time:(from:now-30d,to:now))
 It's possible to add or modify any metric.
 
-Naming convention for mertics: `[metic_name]_(1w|2w|3w)`. The slack message contains an image and metric details (when CSV reporting is back in Kibana)
+Naming convention for metrics: `[metric_name]_(1w|2w|3w)`. The slack message contains an image and metric details (when CSV reporting is back in Kibana)

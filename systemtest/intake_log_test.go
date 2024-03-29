@@ -18,11 +18,14 @@
 package systemtest_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/elastic/apm-server/systemtest"
 	"github.com/elastic/apm-server/systemtest/apmservertest"
 	"github.com/elastic/apm-server/systemtest/estest"
+	"github.com/elastic/apm-tools/pkg/approvaltest"
+	"github.com/elastic/apm-tools/pkg/espoll"
 )
 
 func TestIntakeLog(t *testing.T) {
@@ -33,56 +36,62 @@ func TestIntakeLog(t *testing.T) {
 	tests := []struct {
 		Name            string
 		Message         string
+		ServiceName     string
 		ExpectedMinDocs int
 		DynamicFields   []string
 	}{
 		{
 			Name:            "without_timestamp",
 			Message:         "test log message without timestamp",
+			ServiceName:     "1234_service_12a3",
 			ExpectedMinDocs: 1,
 			DynamicFields:   []string{"@timestamp"},
 		},
 		{
 			Name:            "with_timestamp",
 			Message:         "test log message with timestamp",
+			ServiceName:     "1234_service_12a3",
 			ExpectedMinDocs: 1,
 		},
 		{
 			Name:            "with_timestamp_as_str",
 			Message:         "test log message with string timestamp",
+			ServiceName:     "1234_service_12a3",
 			ExpectedMinDocs: 1,
 		},
 		{
 			Name:            "with_faas",
 			Message:         "test log message with faas",
+			ServiceName:     "1234_service_12a3",
 			ExpectedMinDocs: 1,
 		},
 		{
 			Name:            "with_flat_ecs_fields",
 			Message:         "test log message with ecs fields",
+			ServiceName:     "testsvc",
 			ExpectedMinDocs: 1,
 		},
 		{
 			Name:            "with_nested_ecs_fields",
 			Message:         "test log message with nested ecs fields",
+			ServiceName:     "testsvc",
 			ExpectedMinDocs: 1,
 		},
 		{
 			Name:            "with_nested_ecs_fields_overrides_flat_fields",
 			Message:         "test log message with override of flat ecs fields by nested ecs fields",
+			ServiceName:     "testsvc",
 			ExpectedMinDocs: 1,
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
-			result := systemtest.Elasticsearch.ExpectMinDocs(t, test.ExpectedMinDocs, "logs-apm.app-*", estest.BoolQuery{
-				Filter: []interface{}{
-					estest.TermQuery{Field: "processor.event", Value: "log"},
-					estest.MatchPhraseQuery{Field: "message", Value: test.Message},
-				},
-			})
-			systemtest.ApproveEvents(t, t.Name(), result.Hits.Hits, test.DynamicFields...)
+			result := estest.ExpectMinDocs(t, systemtest.Elasticsearch, test.ExpectedMinDocs,
+				fmt.Sprintf("logs-apm.app.%s-*", test.ServiceName),
+				espoll.MatchPhraseQuery{Field: "message", Value: test.Message},
+			)
+			approvaltest.ApproveFields(t, t.Name(), result.Hits.Hits, test.DynamicFields...)
 		})
 	}
 }

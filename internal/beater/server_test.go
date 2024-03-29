@@ -33,7 +33,6 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -42,7 +41,6 @@ import (
 	"github.com/jaegertracing/jaeger/proto-gen/api_v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -54,7 +52,7 @@ import (
 	agentconfig "github.com/elastic/elastic-agent-libs/config"
 	"github.com/elastic/elastic-agent-libs/monitoring"
 
-	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-data/model/modelpb"
 	"github.com/elastic/apm-server/internal/beater"
 	"github.com/elastic/apm-server/internal/beater/api"
 	"github.com/elastic/apm-server/internal/beater/beatertest"
@@ -116,6 +114,7 @@ func TestServerRoot(t *testing.T) {
 		if testCase.assertions != nil {
 			testCase.assertions(t, res)
 		}
+		assert.NoError(t, res.Body.Close())
 	}
 }
 
@@ -386,10 +385,9 @@ func TestServerWaitForIntegrationKibana(t *testing.T) {
 }
 
 func TestServerWaitForIntegrationElasticsearch(t *testing.T) {
-	var mu sync.Mutex
-	var tracesRequests int
-	tracesRequestsCh := make(chan int)
-	bulkCh := make(chan struct{}, 1)
+	var tracesRequests atomic.Int64
+	tracesRequestsCh := make(chan int, 2)
+	bulkCh := make(chan struct{}, 2)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Elastic-Product", "Elasticsearch")
@@ -398,15 +396,13 @@ func TestServerWaitForIntegrationElasticsearch(t *testing.T) {
 		fmt.Fprintln(w, `{"version":{"number":"1.2.3"}}`)
 	})
 	mux.HandleFunc("/_index_template/", func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
 		template := path.Base(r.URL.Path)
 		if template == "traces-apm" {
-			tracesRequests++
-			if tracesRequests == 1 {
+			count := tracesRequests.Add(1)
+			if count == 1 {
 				w.WriteHeader(404)
 			}
-			tracesRequestsCh <- tracesRequests
+			tracesRequestsCh <- int(count)
 		}
 	})
 	mux.HandleFunc("/_bulk", func(w http.ResponseWriter, r *http.Request) {
@@ -424,9 +420,10 @@ func TestServerWaitForIntegrationElasticsearch(t *testing.T) {
 			"data_streams.wait_for_integration": true,
 		},
 		"output.elasticsearch": map[string]interface{}{
-			"hosts":       []string{elasticsearchServer.URL},
-			"backoff":     map[string]interface{}{"init": "10ms", "max": "10ms"},
-			"max_retries": 1000,
+			"hosts":          []string{elasticsearchServer.URL},
+			"backoff":        map[string]interface{}{"init": "10ms", "max": "10ms"},
+			"max_retries":    1000,
+			"flush_interval": "1ms",
 		},
 	})))
 
@@ -638,11 +635,11 @@ func TestServerElasticsearchOutput(t *testing.T) {
 
 	srv := beatertest.NewServer(t, beatertest.WithConfig(agentconfig.MustNewConfigFrom(map[string]interface{}{
 		"output.elasticsearch": map[string]interface{}{
-			"hosts":        []string{elasticsearchServer.URL},
-			"flush_bytes":  "1kb", // test data is >1kb
-			"backoff":      map[string]interface{}{"init": "1ms", "max": "1ms"},
-			"max_retries":  0,
-			"max_requests": 10,
+			"hosts":          []string{elasticsearchServer.URL},
+			"flush_interval": "1ms",
+			"backoff":        map[string]interface{}{"init": "1ms", "max": "1ms"},
+			"max_retries":    0,
+			"max_requests":   10,
 		},
 	})))
 
@@ -721,18 +718,18 @@ func TestWrapServer(t *testing.T) {
 	srv := beatertest.NewServer(t, beatertest.WithConfig(escfg), beatertest.WithWrapServer(
 		func(args beater.ServerParams, runServer beater.RunServerFunc) (beater.ServerParams, beater.RunServerFunc, error) {
 			origBatchProcessor := args.BatchProcessor
-			args.BatchProcessor = model.ProcessBatchFunc(func(ctx context.Context, batch *model.Batch) error {
+			args.BatchProcessor = modelpb.ProcessBatchFunc(func(ctx context.Context, batch *modelpb.Batch) error {
 				for i := range *batch {
-					event := &(*batch)[i]
-					if event.Processor != model.TransactionProcessor {
+					event := (*batch)[i]
+					if event.Type() != modelpb.TransactionEventType {
 						continue
 					}
 					// Add a label to test that everything
 					// goes through the wrapped reporter.
 					if event.Labels == nil {
-						event.Labels = make(model.Labels)
+						event.Labels = make(modelpb.Labels)
 					}
-					event.Labels.Set("wrapped_reporter", "true")
+					modelpb.Labels(event.Labels).Set("wrapped_reporter", "true")
 				}
 				return origBatchProcessor.ProcessBatch(ctx, batch)
 			})
@@ -743,13 +740,15 @@ func TestWrapServer(t *testing.T) {
 	req := makeTransactionRequest(t, srv.URL)
 	req.Header.Add("Content-Type", "application/x-ndjson")
 	res, err := srv.Client.Do(req)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	res.Body.Close()
 
 	doc := <-docs
-	field := gjson.GetBytes(doc, "labels.wrapped_reporter")
-	assert.True(t, field.Exists())
-	assert.Equal(t, "true", field.String())
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(doc, &out))
+	require.Contains(t, out, "labels")
+	require.Contains(t, out["labels"], "wrapped_reporter")
+	require.Equal(t, "true", out["labels"].(map[string]any)["wrapped_reporter"])
 }
 
 var testData = func() []byte {

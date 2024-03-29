@@ -3,44 +3,42 @@ terraform {
   required_providers {
     ec = {
       source  = "elastic/ec"
-      version = ">=0.5.0"
+      version = "0.5.1"
     }
     aws = {
       source  = "hashicorp/aws"
-      version = ">=4.17.1"
+      version = "~>4.17"
+    }
+    time = {
+      source  = "hashicorp/time"
+      version = ">=0.9.1"
     }
   }
 }
 
+resource "time_static" "created_date" {}
+
 locals {
   ci_tags = {
-    environment  = coalesce(var.ENVIRONMENT, "dev")
-    repo         = coalesce(var.REPO, "apm-server")
+    environment  = var.ENVIRONMENT
+    repo         = var.REPO
     branch       = var.BRANCH
     build        = var.BUILD_ID
-    created_date = var.CREATED_DATE
-  }
-
-  mandatory_tags = {
-    division  = "engineering"
-    org       = "obs"
-    team      = "apm-server"
-    project   = "benchmarks"
+    created_date = coalesce(var.CREATED_DATE, time_static.created_date.unix)
   }
 }
 
 module "tags" {
-  source  = "../infra/terraform/modules/tags"
-  project = "benchmarks"
+  source = "../infra/terraform/modules/tags"
+  # use the convention for team/shared owned resources if we are running in CI.
+  # assume this is an individually owned resource otherwise.
+  project = startswith(var.user_name, "benchci") ? "benchmarks" : var.user_name
 }
 
 provider "ec" {}
 
 provider "aws" {
   region = var.worker_region
-  default_tags {
-    tags = merge(local.ci_tags, module.tags.tags)
-  }
 }
 
 locals {
@@ -70,7 +68,7 @@ module "ec_deployment" {
   docker_image              = var.docker_image_override
   docker_image_tag_override = var.docker_image_tag_override
 
-  tags = merge(local.ci_tags, module.tags.tags, local.mandatory_tags)
+  tags = merge(local.ci_tags, module.tags.tags)
 }
 
 module "benchmark_worker" {
@@ -87,4 +85,6 @@ module "benchmark_worker" {
 
   public_key  = var.public_key
   private_key = var.private_key
+
+  tags = merge(local.ci_tags, module.tags.tags)
 }

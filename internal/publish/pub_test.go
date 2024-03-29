@@ -19,6 +19,7 @@ package publish_test
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"net/http"
@@ -39,23 +40,19 @@ import (
 	"github.com/elastic/beats/v7/libbeat/publisher"
 	"github.com/elastic/beats/v7/libbeat/publisher/pipeline"
 	"github.com/elastic/beats/v7/libbeat/publisher/pipetool"
-	"github.com/elastic/beats/v7/libbeat/publisher/queue"
-	"github.com/elastic/beats/v7/libbeat/publisher/queue/memqueue"
 	"github.com/elastic/elastic-agent-libs/config"
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/mapstr"
 
-	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-data/model/modelpb"
 	"github.com/elastic/apm-server/internal/publish"
 )
 
 func TestPublisherStop(t *testing.T) {
 	// Create a pipeline with a limited queue size and no outputs,
 	// so we can simulate a pipeline that blocks indefinitely.
-	pipeline := newBlockingPipeline(t)
-	publisher, err := publish.NewPublisher(
-		pipeline, apmtest.DiscardTracer,
-	)
+	pipeline, client := newBlockingPipeline(t)
+	publisher, err := publish.NewPublisher(pipeline, apmtest.DiscardTracer)
 	require.NoError(t, err)
 	defer func() {
 		cancelledContext, cancel := context.WithCancel(context.Background())
@@ -82,22 +79,16 @@ func TestPublisherStop(t *testing.T) {
 	defer cancel()
 	assert.Equal(t, context.DeadlineExceeded, publisher.Stop(ctx))
 
-	// Set an output which acknowledges events immediately, unblocking publisher.Stop.
-	assert.NoError(t, pipeline.OutputReloader().Reload(nil,
-		func(outputs.Observer, config.Namespace) (outputs.Group, error) {
-			return outputs.Group{Clients: []outputs.Client{&mockClient{}}}, nil
-		},
-	))
+	// Unblock the output, which should unblock publisher.Stop.
+	close(client.unblock)
 	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	assert.NoError(t, publisher.Stop(ctx))
 }
 
 func TestPublisherStopShutdownInactive(t *testing.T) {
-	publisher, err := publish.NewPublisher(
-		newBlockingPipeline(t),
-		apmtest.DiscardTracer,
-	)
+	pipeline, _ := newBlockingPipeline(t)
+	publisher, err := publish.NewPublisher(pipeline, apmtest.DiscardTracer)
 	require.NoError(t, err)
 
 	// There are no active events, so the publisher should stop immediately
@@ -112,16 +103,21 @@ func BenchmarkPublisher(b *testing.B) {
 		fmt.Fprintln(w, `{"version":{"number":"1.2.3"}}`)
 	})
 
-	var indexed int64
+	var indexed atomic.Int64
 	mux.HandleFunc("/_bulk", func(w http.ResponseWriter, r *http.Request) {
-		scanner := bufio.NewScanner(r.Body)
+		gzr, err := gzip.NewReader(r.Body)
+		assert.NoError(b, err)
+		defer gzr.Close()
+
+		scanner := bufio.NewScanner(gzr)
 		var n int64
-		for scanner.Scan() {
-			if scanner.Scan() {
+		for scanner.Scan() { // index
+			if scanner.Scan() { // actual event
 				n++
 			}
 		}
-		atomic.AddInt64(&indexed, n)
+		assert.NoError(b, scanner.Err())
+		indexed.Add(n)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -132,17 +128,19 @@ func BenchmarkPublisher(b *testing.B) {
 		"hosts": []interface{}{srv.URL},
 	}))
 	require.NoError(b, err)
+	conf, err := config.NewConfigFrom(map[string]interface{}{
+		"mem.events":           4096,
+		"mem.flush.min_events": 2048,
+		"mem.flush.timeout":    "1s",
+	})
+	require.NoError(b, err)
+	namespace := config.Namespace{}
+	err = conf.Unpack(&namespace)
+	require.NoError(b, err)
 	pipeline, err := pipeline.New(
 		beat.Info{},
 		pipeline.Monitors{},
-		func(lis queue.ACKListener) (queue.Queue, error) {
-			return memqueue.NewQueue(nil, memqueue.Settings{
-				ACKListener:    lis,
-				FlushMinEvents: 2048,
-				FlushTimeout:   time.Second,
-				Events:         4096,
-			}), nil
-		},
+		namespace,
 		outputGroup,
 		pipeline.Settings{
 			WaitCloseMode:  pipeline.WaitOnPipelineClose,
@@ -159,10 +157,9 @@ func BenchmarkPublisher(b *testing.B) {
 	)
 	require.NoError(b, err)
 
-	batch := model.Batch{
-		model.APMEvent{
-			Processor: model.TransactionProcessor,
-			Timestamp: time.Now(),
+	batch := modelpb.Batch{
+		&modelpb.APMEvent{
+			Timestamp: modelpb.FromTime(time.Now()),
 		},
 	}
 	ctx := context.Background()
@@ -178,24 +175,32 @@ func BenchmarkPublisher(b *testing.B) {
 	assert.NoError(b, publisher.Stop(context.Background()))
 	assert.NoError(b, acker.Wait(context.Background()))
 	assert.NoError(b, pipeline.Close())
-	assert.Equal(b, int64(b.N), indexed)
+	assert.Equal(b, int64(b.N), indexed.Load())
 }
 
-func newBlockingPipeline(t testing.TB) *pipeline.Pipeline {
+func newBlockingPipeline(t testing.TB) (*pipeline.Pipeline, *mockClient) {
+	client := &mockClient{unblock: make(chan struct{})}
+	conf, err := config.NewConfigFrom(map[string]interface{}{
+		"mem.events":           32,
+		"mem.flush.min_events": 1,
+	})
+	require.NoError(t, err)
+	namespace := config.Namespace{}
+	err = conf.Unpack(&namespace)
+	require.NoError(t, err)
+
 	pipeline, err := pipeline.New(
 		beat.Info{},
 		pipeline.Monitors{},
-		func(lis queue.ACKListener) (queue.Queue, error) {
-			return memqueue.NewQueue(nil, memqueue.Settings{
-				ACKListener: lis,
-				Events:      1,
-			}), nil
-		},
-		outputs.Group{},
+		namespace,
+		outputs.Group{Clients: []outputs.Client{client}},
 		pipeline.Settings{},
 	)
 	require.NoError(t, err)
-	return pipeline
+	t.Cleanup(func() {
+		require.NoError(t, pipeline.Close())
+	})
+	return pipeline, client
 }
 
 func makeTransformable(events ...beat.Event) publish.Transformer {
@@ -210,11 +215,18 @@ func (f transformableFunc) Transform(ctx context.Context) []beat.Event {
 	return f(ctx)
 }
 
-type mockClient struct{}
+type mockClient struct {
+	unblock chan struct{}
+}
 
-func (*mockClient) String() string { return "mock_client" }
-func (*mockClient) Close() error   { return nil }
-func (*mockClient) Publish(_ context.Context, batch publisher.Batch) error {
+func (c *mockClient) String() string { return "mock_client" }
+func (c *mockClient) Close() error   { return nil }
+func (c *mockClient) Publish(ctx context.Context, batch publisher.Batch) error {
+	select {
+	case <-c.unblock:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	batch.ACK()
 	return nil
 }

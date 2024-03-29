@@ -18,20 +18,15 @@
 package intake
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"strconv"
 	"strings"
-
-	"go.elastic.co/apm/v2"
 
 	"github.com/elastic/elastic-agent-libs/monitoring"
 
 	"github.com/elastic/apm-data/input/elasticapm"
-	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-data/model/modelpb"
 	"github.com/elastic/apm-server/internal/beater/auth"
 	"github.com/elastic/apm-server/internal/beater/headers"
 	"github.com/elastic/apm-server/internal/beater/ratelimit"
@@ -58,52 +53,17 @@ var (
 	errInvalidContentType = errors.New("invalid content type")
 )
 
-// StreamHandler is an interface for handling an Elastic APM agent ND-JSON event
-// stream, implemented by processor/stream.
-type StreamHandler interface {
-	HandleStream(
-		ctx context.Context,
-		async bool,
-		base model.APMEvent,
-		stream io.Reader,
-		batchSize int,
-		processor model.BatchProcessor,
-		out *elasticapm.Result,
-	) error
-}
-
 // RequestMetadataFunc is a function type supplied to Handler for extracting
 // metadata from the request. This is used for conditionally injecting the
 // source IP address as `client.ip` for RUM.
-type RequestMetadataFunc func(*request.Context) model.APMEvent
+type RequestMetadataFunc func(*request.Context) *modelpb.APMEvent
 
 // Handler returns a request.Handler for managing intake requests for backend and rum events.
-func Handler(handler StreamHandler, requestMetadataFunc RequestMetadataFunc, batchProcessor model.BatchProcessor) request.Handler {
+func Handler(handler elasticapm.StreamHandler, requestMetadataFunc RequestMetadataFunc, batchProcessor modelpb.BatchProcessor) request.Handler {
 	return func(c *request.Context) {
 		if err := validateRequest(c); err != nil {
 			writeError(c, err)
 			return
-		}
-
-		// Async can be set by clients to request non-blocking event processing,
-		// returning immediately with an error `elasticapm.ErrQueueFull` when it
-		// can't be serviced.
-		//
-		// Async processing has weaker guarantees for the client since any
-		// errors while processing the batch cannot be communicated back to the
-		// client.
-		//
-		// Instead, errors are logged by the APM Server.
-		async := asyncRequest(c.Request)
-
-		// Create a new detached context when asynchronous processing is set,
-		// decoupling the context from its deadline, which will finish when
-		// the request is handled. The batch will probably be processed after
-		// the request has finished, and it would cause an error if the context
-		// is done.
-		ctx := c.Request.Context()
-		if async {
-			ctx = apm.DetachedContext(ctx)
 		}
 
 		// If there was an error decoding the body, then it Result.Err
@@ -115,8 +75,7 @@ func Handler(handler StreamHandler, requestMetadataFunc RequestMetadataFunc, bat
 
 		var result elasticapm.Result
 		err := handler.HandleStream(
-			ctx,
-			async,
+			c.Request.Context(),
 			requestMetadataFunc(c),
 			c.Request.Body,
 			batchSize,
@@ -210,8 +169,6 @@ func processStreamError(err error) (request.ResultID, jsonError) {
 			err = errServerShuttingDown
 		case errors.Is(err, publish.ErrFull):
 			errID = request.IDResponseErrorsFullQueue
-		case errors.Is(err, elasticapm.ErrQueueFull):
-			errID = request.IDResponseErrorsFullQueue
 		case errors.Is(err, errMethodNotAllowed):
 			errID = request.IDResponseErrorsMethodNotAllowed
 		case errors.Is(err, errInvalidContentType):
@@ -265,12 +222,4 @@ type jsonResult struct {
 type jsonError struct {
 	Message  string `json:"message"`
 	Document string `json:"document,omitempty"`
-}
-
-func asyncRequest(req *http.Request) bool {
-	var async bool
-	if asyncStr := req.URL.Query().Get("async"); asyncStr != "" {
-		async, _ = strconv.ParseBool(asyncStr)
-	}
-	return async
 }

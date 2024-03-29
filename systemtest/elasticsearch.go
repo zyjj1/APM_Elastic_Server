@@ -25,12 +25,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/elastic/apm-tools/pkg/espoll"
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 	"github.com/elastic/go-elasticsearch/v8/esutil"
 
 	"github.com/elastic/apm-server/systemtest/apmservertest"
-	"github.com/elastic/apm-server/systemtest/estest"
 )
 
 const (
@@ -41,7 +41,7 @@ const (
 
 var (
 	// Elasticsearch is an Elasticsearch client for use in tests.
-	Elasticsearch *estest.Client
+	Elasticsearch *espoll.Client
 )
 
 func init() {
@@ -52,19 +52,19 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
-	Elasticsearch = &estest.Client{Client: client}
+	Elasticsearch = &espoll.Client{Client: client}
 }
 
-// NewElasticsearchClientWithAPIKey returns a new estest.Client,
+// NewElasticsearchClientWithAPIKey returns a new espoll.Client,
 // configured to use apiKey for authentication.
-func NewElasticsearchClientWithAPIKey(apiKey string) *estest.Client {
+func NewElasticsearchClientWithAPIKey(apiKey string) *espoll.Client {
 	cfg := newElasticsearchConfig()
 	cfg.APIKey = apiKey
 	client, err := elasticsearch.NewClient(cfg)
 	if err != nil {
 		panic(err)
 	}
-	return &estest.Client{Client: client}
+	return &espoll.Client{Client: client}
 }
 
 func newElasticsearchConfig() elasticsearch.Config {
@@ -93,11 +93,14 @@ func CleanupElasticsearch(t testing.TB) {
 }
 
 func cleanupElasticsearch() error {
-	_, err := Elasticsearch.Do(context.Background(), &esapi.IndicesDeleteDataStreamRequest{Name: []string{
-		"traces-apm*",
-		"metrics-apm*",
-		"logs-apm*",
-	}}, nil)
+	_, err := Elasticsearch.Do(context.Background(), &esapi.IndicesDeleteDataStreamRequest{
+		Name: []string{
+			"traces-apm*",
+			"metrics-apm*",
+			"logs-apm*",
+		},
+		ExpandWildcards: "all",
+	}, nil)
 	return err
 }
 
@@ -128,6 +131,16 @@ func InvalidateAPIKeys(t testing.TB) {
 func InvalidateAPIKey(t testing.TB, id string) {
 	req := esapi.SecurityInvalidateAPIKeyRequest{
 		Body: esutil.NewJSONReader(map[string]interface{}{"id": id}),
+	}
+	if _, err := Elasticsearch.Do(context.Background(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// InvalidateAPIKeyByName invalidates the API Key with the given name.
+func InvalidateAPIKeyByName(t testing.TB, name string) {
+	req := esapi.SecurityInvalidateAPIKeyRequest{
+		Body: esutil.NewJSONReader(map[string]interface{}{"name": name}),
 	}
 	if _, err := Elasticsearch.Do(context.Background(), req, nil); err != nil {
 		t.Fatal(err)

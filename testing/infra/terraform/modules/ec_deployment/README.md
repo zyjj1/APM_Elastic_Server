@@ -9,23 +9,23 @@ used to configure the module, please refer to the [EC Provider docs](https://reg
 
 | Name | Version |
 |------|---------|
-| <a name="requirement_ec"></a> [ec](#requirement\_ec) | >=0.5.0 |
+| <a name="requirement_ec"></a> [ec](#requirement\_ec) | 0.5.1 |
 
 ## Providers
 
 | Name | Version |
 |------|---------|
-| <a name="provider_ec"></a> [ec](#provider\_ec) | 0.5.0 |
-| <a name="provider_external"></a> [external](#provider\_external) | 2.2.3 |
-| <a name="provider_local"></a> [local](#provider\_local) | 2.2.3 |
-| <a name="provider_null"></a> [null](#provider\_null) | 3.2.1 |
+| <a name="provider_ec"></a> [ec](#provider\_ec) | 0.5.1 |
+| <a name="provider_external"></a> [external](#provider\_external) | n/a |
+| <a name="provider_local"></a> [local](#provider\_local) | n/a |
+| <a name="provider_null"></a> [null](#provider\_null) | n/a |
 
 ## Resources
 
 | Name | Type |
 |------|------|
-| [ec_deployment.dedicated_observability_deployment](https://registry.terraform.io/providers/elastic/ec/latest/docs/resources/deployment) | resource |
-| [ec_deployment.deployment](https://registry.terraform.io/providers/elastic/ec/latest/docs/resources/deployment) | resource |
+| [ec_deployment.dedicated_observability_deployment](https://registry.terraform.io/providers/elastic/ec/0.5.1/docs/resources/deployment) | resource |
+| [ec_deployment.deployment](https://registry.terraform.io/providers/elastic/ec/0.5.1/docs/resources/deployment) | resource |
 | [local_file.custom_apm_integration_pkg](https://registry.terraform.io/providers/hashicorp/local/latest/docs/resources/file) | resource |
 | [local_file.drop_pipeline](https://registry.terraform.io/providers/hashicorp/local/latest/docs/resources/file) | resource |
 | [local_file.enable_expvar](https://registry.terraform.io/providers/hashicorp/local/latest/docs/resources/file) | resource |
@@ -36,7 +36,7 @@ used to configure the module, please refer to the [EC Provider docs](https://reg
 | [null_resource.enable_expvar](https://registry.terraform.io/providers/hashicorp/null/latest/docs/resources/resource) | resource |
 | [null_resource.secret_token](https://registry.terraform.io/providers/hashicorp/null/latest/docs/resources/resource) | resource |
 | [null_resource.shard_settings](https://registry.terraform.io/providers/hashicorp/null/latest/docs/resources/resource) | resource |
-| [ec_stack.deployment_version](https://registry.terraform.io/providers/elastic/ec/latest/docs/data-sources/stack) | data source |
+| [ec_stack.deployment_version](https://registry.terraform.io/providers/elastic/ec/0.5.1/docs/data-sources/stack) | data source |
 | [external_external.secret_token](https://registry.terraform.io/providers/hashicorp/external/latest/docs/data-sources/external) | data source |
 
 ## Inputs
@@ -50,7 +50,7 @@ used to configure the module, please refer to the [EC Provider docs](https://reg
 | <a name="input_apm_server_zone_count"></a> [apm\_server\_zone\_count](#input\_apm\_server\_zone\_count) | Optional apm server zone count | `number` | `1` | no |
 | <a name="input_custom_apm_integration_pkg_path"></a> [custom\_apm\_integration\_pkg\_path](#input\_custom\_apm\_integration\_pkg\_path) | Path to the zipped custom APM integration package, if empty custom apm integration pkg is not installed | `string` | `""` | no |
 | <a name="input_deployment_name_prefix"></a> [deployment\_name\_prefix](#input\_deployment\_name\_prefix) | Optional ESS or ECE region. Defaults to GCP US West 2 (Los Angeles) | `string` | `"apmserver"` | no |
-| <a name="input_deployment_template"></a> [deployment\_template](#input\_deployment\_template) | Optional deployment template. Defaults to the CPU optimized template for GCP | `string` | `"gcp-compute-optimized-v2"` | no |
+| <a name="input_deployment_template"></a> [deployment\_template](#input\_deployment\_template) | Optional deployment template. Defaults to the CPU optimized template for GCP | `string` | `"gcp-compute-optimized-v3"` | no |
 | <a name="input_docker_image"></a> [docker\_image](#input\_docker\_image) | Optional docker image overrides. The full map needs to be specified | `map(string)` | <pre>{<br>  "apm": "docker.elastic.co/cloud-release/elastic-agent-cloud",<br>  "elasticsearch": "docker.elastic.co/cloud-release/elasticsearch-cloud-ess",<br>  "kibana": "docker.elastic.co/cloud-release/kibana-cloud"<br>}</pre> | no |
 | <a name="input_docker_image_tag_override"></a> [docker\_image\_tag\_override](#input\_docker\_image\_tag\_override) | Optional docker image tag overrides, The full map needs to be specified | `map(string)` | <pre>{<br>  "apm": "",<br>  "elasticsearch": "",<br>  "kibana": ""<br>}</pre> | no |
 | <a name="input_drop_pipeline"></a> [drop\_pipeline](#input\_drop\_pipeline) | Whether or not to install an Elasticsearch ingest pipeline to drop all incoming APM documents. Defaults to false | `bool` | `false` | no |

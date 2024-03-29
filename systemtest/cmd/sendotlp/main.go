@@ -28,32 +28,27 @@ import (
 	"os"
 	"time"
 
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric"
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/sdk/instrumentation"
-	"go.opentelemetry.io/otel/sdk/metric/aggregator/histogram"
-	controller "go.opentelemetry.io/otel/sdk/metric/controller/basic"
-	"go.opentelemetry.io/otel/sdk/metric/export"
-	"go.opentelemetry.io/otel/sdk/metric/export/aggregation"
-	processor "go.opentelemetry.io/otel/sdk/metric/processor/basic"
-	"go.opentelemetry.io/otel/sdk/metric/sdkapi"
-	"go.opentelemetry.io/otel/sdk/metric/selector/simple"
-	"go.opentelemetry.io/otel/sdk/resource"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.8.0"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zapgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
+	grpcinsecure "google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/grpclog"
+	"google.golang.org/grpc/metadata"
 )
 
 var (
@@ -66,7 +61,13 @@ var (
 	secretToken = flag.String(
 		"secret-token",
 		"",
-		"Elastic APM secret token. Note: setting this overrides $OTEL_EXPORTER_OTLP_HEADERS",
+		"Elastic APM secret token. Recommended over $OTEL_EXPORTER_OTLP_HEADERS as logs exporter does not respect $OTEL_EXPORTER_OTLP_HEADERS. Note: setting this overrides $OTEL_EXPORTER_OTLP_HEADERS",
+	)
+
+	apiKey = flag.String(
+		"api-key",
+		"",
+		"Elastic APM API key. Recommended over $OTEL_EXPORTER_OTLP_HEADERS as logs exporter does not respect $OTEL_EXPORTER_OTLP_HEADERS. Note: setting this overrides $OTEL_EXPORTER_OTLP_HEADERS and -secretToken",
 	)
 
 	logLevel = zap.LevelFlag(
@@ -78,6 +79,12 @@ var (
 		"protocol",
 		getenvDefault("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
 		"set transport protocol to one of: grpc (default), http/protobuf",
+	)
+
+	insecure = flag.Bool(
+		"insecure",
+		false,
+		"skip the server's TLS certificate verification",
 	)
 )
 
@@ -108,7 +115,7 @@ func main() {
 	}
 }
 
-func Main(ctx context.Context, logger *zap.SugaredLogger) error {
+func Main(ctx context.Context, logger *zap.SugaredLogger) (result error) {
 	endpointURL, err := url.Parse(*endpoint)
 	if err != nil {
 		return fmt.Errorf("failed to parse endpoint: %w", err)
@@ -130,49 +137,51 @@ func Main(ctx context.Context, logger *zap.SugaredLogger) error {
 	if err != nil {
 		return err
 	}
-	defer otlpExporters.cleanup(ctx)
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(otlpExporters.trace))
+	defer func() {
+		if err := tracerProvider.Shutdown(ctx); err != nil {
+			result = errors.Join(result,
+				fmt.Errorf("error shutting down tracer provider: %w", err),
+			)
+		}
+	}()
+
+	meterProvider := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
+			otlpExporters.metric,
+			sdkmetric.WithInterval(time.Hour),
+		)),
+		sdkmetric.WithView(sdkmetric.NewView(
+			sdkmetric.Instrument{Name: "*"},
+			sdkmetric.Stream{
+				Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+					Boundaries: []float64{1, 10, 100, 1000, 10000},
+				},
+			},
+		)),
+	)
+	defer func() {
+		if err := meterProvider.Shutdown(ctx); err != nil {
+			result = errors.Join(result,
+				fmt.Errorf("error shutting down meter provider: %w", err),
+			)
+		}
+	}()
 
 	logger.Infof("sending OTLP data to %s (%s)", endpointURL.String(), *protocol)
 
-	tracerProvider := sdktrace.NewTracerProvider(
-		sdktrace.WithSyncer(loggingExporter{logger.Desugar()}),
-		sdktrace.WithSyncer(otlpExporters.trace),
-	)
-	metricExporter := chainMetricExporter{loggingExporter{logger.Desugar()}, otlpExporters.metric}
-
-	metricsController := controller.New(
-		processor.NewFactory(
-			simple.NewWithHistogramDistribution(
-				histogram.WithExplicitBoundaries([]float64{1, 10, 100, 1000, 10000}),
-			),
-			aggregation.CumulativeTemporalitySelector(),
-		),
-		controller.WithExporter(metricExporter),
-		controller.WithCollectPeriod(time.Hour),
-	)
-	if err := metricsController.Start(ctx); err != nil {
-		return err
-	}
-
-	// Generate some data. Metrics are sent when the controller is stopped, traces
+	// Generate some data. Metrics are sent when the controller is stopped, traces and logs
 	// are sent immediately.
-	//
-	// TODO(axw) generate logs when opentelemetry-go has support.
-	if err := generateMetrics(ctx, metricsController.Meter("sendotlp")); err != nil {
-		return err
-	}
-	if err := metricsController.Stop(ctx); err != nil {
+	if err := generateMetrics(ctx, meterProvider.Meter("sendotlp")); err != nil {
 		return err
 	}
 	if err := generateSpans(ctx, tracerProvider.Tracer("sendotlp")); err != nil {
 		return err
 	}
-
-	// Shutdown, flushing all data to the server.
-	if err := tracerProvider.Shutdown(ctx); err != nil {
+	if err := generateLogs(ctx, otlpExporters.log); err != nil {
 		return err
 	}
-	return otlpExporters.cleanup(ctx)
+	return nil
 }
 
 func generateSpans(ctx context.Context, tracer trace.Tracer) error {
@@ -193,13 +202,13 @@ func generateSpans(ctx context.Context, tracer trace.Tracer) error {
 }
 
 func generateMetrics(ctx context.Context, meter metric.Meter) error {
-	counter, err := meter.SyncFloat64().Counter("float64_counter")
+	counter, err := meter.Float64Counter("float64_counter")
 	if err != nil {
 		return err
 	}
 	counter.Add(ctx, 1)
 
-	hist, err := meter.SyncInt64().Histogram("int64_histogram")
+	hist, err := meter.Int64Histogram("int64_histogram")
 	if err != nil {
 		return err
 	}
@@ -213,10 +222,30 @@ func generateMetrics(ctx context.Context, meter metric.Meter) error {
 	return nil
 }
 
+func generateLogs(ctx context.Context, logger otlplogExporter) error {
+	logs := plog.NewLogs()
+
+	rl := logs.ResourceLogs().AppendEmpty()
+	attribs := rl.Resource().Attributes()
+	attribs.PutStr(
+		string(semconv.ServiceNameKey),
+		getenvDefault("OTEL_SERVICE_NAME", "unknown_service"),
+	)
+	sl := rl.ScopeLogs().AppendEmpty().LogRecords()
+	record := sl.AppendEmpty()
+	record.Body().SetStr("test record")
+	record.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
+	record.SetSeverityNumber(plog.SeverityNumberFatal)
+	record.SetSeverityText("fatal")
+
+	return logger.Export(ctx, logs)
+}
+
 type otlpExporters struct {
 	cleanup func(context.Context) error
 	trace   *otlptrace.Exporter
-	metric  *otlpmetric.Exporter
+	metric  sdkmetric.Exporter
+	log     otlplogExporter
 }
 
 func newOTLPExporters(ctx context.Context, endpointURL *url.URL) (*otlpExporters, error) {
@@ -232,12 +261,13 @@ func newOTLPExporters(ctx context.Context, endpointURL *url.URL) (*otlpExporters
 
 func newOTLPGRPCExporters(ctx context.Context, endpointURL *url.URL) (*otlpExporters, error) {
 	var transportCredentials credentials.TransportCredentials
+
 	switch endpointURL.Scheme {
 	case "http":
 		// If http:// is specified, then use insecure (plaintext).
-		transportCredentials = insecure.NewCredentials()
+		transportCredentials = grpcinsecure.NewCredentials()
 	case "https":
-		transportCredentials = credentials.NewClientTLSFromCert(nil, "")
+		transportCredentials = credentials.NewTLS(&tls.Config{InsecureSkipVerify: *insecure})
 	}
 
 	grpcConn, err := grpc.DialContext(ctx, endpointURL.Host, grpc.WithTransportCredentials(transportCredentials))
@@ -250,10 +280,18 @@ func newOTLPGRPCExporters(ctx context.Context, endpointURL *url.URL) (*otlpExpor
 
 	traceOptions := []otlptracegrpc.Option{otlptracegrpc.WithGRPCConn(grpcConn)}
 	metricOptions := []otlpmetricgrpc.Option{otlpmetricgrpc.WithGRPCConn(grpcConn)}
-	if *secretToken != "" {
+	var headers map[string]string
+	if *apiKey != "" {
+		// If -api-key is specified then we set headers explicitly,
+		// overriding anything set in $OTEL_EXPORTER_OTLP_HEADERS and -secret-token.
+		headers = map[string]string{"Authorization": "ApiKey " + *apiKey}
+	} else if *secretToken != "" {
 		// If -secret-token is specified then we set headers explicitly,
 		// overriding anything set in $OTEL_EXPORTER_OTLP_HEADERS.
-		headers := map[string]string{"Authorization": "Bearer " + *secretToken}
+		headers = map[string]string{"Authorization": "Bearer " + *secretToken}
+	}
+
+	if headers != nil {
 		traceOptions = append(traceOptions, otlptracegrpc.WithHeaders(headers))
 		metricOptions = append(metricOptions, otlpmetricgrpc.WithHeaders(headers))
 	}
@@ -263,24 +301,26 @@ func newOTLPGRPCExporters(ctx context.Context, endpointURL *url.URL) (*otlpExpor
 		cleanup(ctx)
 		return nil, err
 	}
-	cleanup = combineCleanup(otlpTraceExporter.Shutdown, cleanup)
 
 	otlpMetricExporter, err := otlpmetricgrpc.New(ctx, metricOptions...)
 	if err != nil {
 		cleanup(ctx)
 		return nil, err
 	}
-	cleanup = combineCleanup(otlpMetricExporter.Shutdown, cleanup)
 
 	return &otlpExporters{
 		cleanup: cleanup,
 		trace:   otlpTraceExporter,
 		metric:  otlpMetricExporter,
+		log: &otlploggrpcExporter{
+			client:  plogotlp.NewGRPCClient(grpcConn),
+			headers: headers, // logs exporter does not respect OTEL_EXPORTER_OTLP_HEADERS
+		},
 	}, nil
 }
 
 func newOTLPHTTPExporters(ctx context.Context, endpointURL *url.URL) (*otlpExporters, error) {
-	tlsConfig := &tls.Config{InsecureSkipVerify: true}
+	tlsConfig := &tls.Config{InsecureSkipVerify: *insecure}
 	traceOptions := []otlptracehttp.Option{
 		otlptracehttp.WithEndpoint(endpointURL.Host),
 		otlptracehttp.WithTLSClientConfig(tlsConfig),
@@ -308,109 +348,50 @@ func newOTLPHTTPExporters(ctx context.Context, endpointURL *url.URL) (*otlpExpor
 		cleanup(ctx)
 		return nil, err
 	}
-	cleanup = combineCleanup(otlpTraceExporter.Shutdown, cleanup)
 
 	otlpMetricExporter, err := otlpmetrichttp.New(ctx, metricOptions...)
 	if err != nil {
 		cleanup(ctx)
 		return nil, err
 	}
-	cleanup = combineCleanup(otlpMetricExporter.Shutdown, cleanup)
 
 	return &otlpExporters{
 		cleanup: cleanup,
 		trace:   otlpTraceExporter,
 		metric:  otlpMetricExporter,
+		log:     &otlploghttpExporter{},
 	}, nil
 }
 
-func combineCleanup(a, b func(context.Context) error) func(context.Context) error {
-	return func(ctx context.Context) error {
-		if err := a(ctx); err != nil {
-			return err
-		}
-		return b(ctx)
-	}
+type otlplogExporter interface {
+	Export(ctx context.Context, logs plog.Logs) error
 }
 
-type chainMetricExporter []export.Exporter
+// otlploggrpcExporter is a simple synchronous log exporter using GRPC
+type otlploggrpcExporter struct {
+	client  plogotlp.GRPCClient
+	headers map[string]string
+}
 
-func (c chainMetricExporter) Export(ctx context.Context, resource *resource.Resource, r export.InstrumentationLibraryReader) error {
-	for _, exporter := range c {
-		if err := exporter.Export(ctx, resource, r); err != nil {
-			return err
-		}
+func (e *otlploggrpcExporter) Export(ctx context.Context, logs plog.Logs) error {
+	req := plogotlp.NewExportRequestFromLogs(logs)
+	md := metadata.New(e.headers)
+	ctx = metadata.NewOutgoingContext(ctx, md)
+
+	_, err := e.client.Export(ctx, req)
+	if err != nil {
+		return err
 	}
+
+	// TODO: parse response for error
 	return nil
 }
 
-func (chainMetricExporter) TemporalityFor(desc *sdkapi.Descriptor, kind aggregation.Kind) aggregation.Temporality {
-	return aggregation.StatelessTemporalitySelector().TemporalityFor(desc, kind)
+// otlploghttpExporter is a simple synchronous log exporter using protobuf over HTTP
+type otlploghttpExporter struct {
 }
 
-type loggingExporter struct {
-	logger *zap.Logger
-}
-
-func (loggingExporter) Shutdown(ctx context.Context) error {
+func (e *otlploghttpExporter) Export(ctx context.Context, logs plog.Logs) error {
+	// TODO: implement
 	return nil
-}
-
-func (loggingExporter) MarshalLog() interface{} {
-	return "loggingExporter"
-}
-
-func (e loggingExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
-	for _, span := range tracetest.SpanStubsFromReadOnlySpans(spans) {
-		e.logger.Info("exporting span", zap.Any("span", span))
-	}
-	return nil
-}
-
-func (e loggingExporter) Export(ctx context.Context, resource *resource.Resource, r export.InstrumentationLibraryReader) error {
-	return r.ForEach(func(_ instrumentation.Library, mr export.Reader) error {
-		return mr.ForEach(e, func(record export.Record) error {
-			fields := []zap.Field{zap.Namespace("metric")}
-
-			desc := record.Descriptor()
-			fields = append(fields, zap.String("name", desc.Name()))
-			fields = append(fields, zap.String("kind", desc.InstrumentKind().String()))
-			if unit := desc.Unit(); unit != "" {
-				fields = append(fields, zap.String("unit", string(unit)))
-			}
-			fields = append(fields, zap.Time("start_time", record.StartTime()))
-			fields = append(fields, zap.Time("end_time", record.EndTime()))
-
-			agg := record.Aggregation()
-			if agg, ok := agg.(aggregation.Histogram); ok {
-				buckets, err := agg.Histogram()
-				if err != nil {
-					return err
-				}
-				fields = append(fields, zap.Float64s("boundaries", buckets.Boundaries))
-				fields = append(fields, zap.Uint64s("counts", buckets.Counts))
-			}
-			if agg, ok := agg.(aggregation.Sum); ok {
-				sum, err := agg.Sum()
-				if err != nil {
-					return err
-				}
-				fields = append(fields, zap.Float64("sum", sum.CoerceToFloat64(desc.NumberKind())))
-			}
-			if agg, ok := agg.(aggregation.Count); ok {
-				count, err := agg.Count()
-				if err != nil {
-					return err
-				}
-				fields = append(fields, zap.Uint64("count", count))
-			}
-
-			e.logger.Info("exporting metric", fields...)
-			return nil
-		})
-	})
-}
-
-func (loggingExporter) TemporalityFor(desc *sdkapi.Descriptor, kind aggregation.Kind) aggregation.Temporality {
-	return aggregation.StatelessTemporalitySelector().TemporalityFor(desc, kind)
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
+	"go.elastic.co/fastjson"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
@@ -24,7 +25,8 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 	"github.com/elastic/go-elasticsearch/v8/esutil"
 
-	"github.com/elastic/apm-data/model"
+	"github.com/elastic/apm-data/model/modeljson"
+	"github.com/elastic/apm-data/model/modelpb"
 	"github.com/elastic/apm-server/internal/logs"
 )
 
@@ -96,24 +98,30 @@ func (p *Pubsub) indexSampledTraceIDs(ctx context.Context, traceIDs <-chan strin
 			if !ok {
 				return nil
 			}
-			doc := model.APMEvent{
-				Timestamp:  time.Now(),
-				DataStream: model.DataStream(p.config.DataStream),
-				Agent:      model.Agent{EphemeralID: p.config.ServerID},
-				Trace:      model.Trace{ID: id},
+			var w fastjson.Writer
+			doc := modelpb.APMEvent{
+				Timestamp: modelpb.FromTime(time.Now()),
+				DataStream: &modelpb.DataStream{
+					Type:      p.config.DataStream.Type,
+					Dataset:   p.config.DataStream.Dataset,
+					Namespace: p.config.DataStream.Namespace,
+				},
+				Agent: &modelpb.Agent{EphemeralId: p.config.ServerID},
+				Trace: &modelpb.Trace{Id: id},
 			}
-			data, err := doc.MarshalJSON()
+			err := modeljson.MarshalAPMEvent(&doc, &w)
 			if err != nil {
 				p.config.Logger.With(
 					logp.Error(err),
-					logp.Reflect("event", doc),
+					logp.Reflect("event", &doc),
 				).Debug("failed to encode sampled trace document")
 				return err
 			}
+			data := w.Bytes()
 			if err := appender.Add(ctx, index, bytes.NewReader(data)); err != nil {
 				p.config.Logger.With(
 					logp.Error(err),
-					logp.Reflect("event", doc),
+					logp.Reflect("event", &doc),
 				).Debug("failed to index sampled trace document")
 				return err
 			}

@@ -85,8 +85,7 @@ be set to `true` if any of `-blockprofile`, `-cpuprofile`, `-memprofile` or `-mu
 
 The default behavior of `apmbench` is to send the captured events to the target APM Server as fast as possible
 with the configured number of `-agents`. The `-agents` flag determines how many concurrent goroutines will be used
-to send the events to the APM Server in parallel. The `-max-rate` can be used to specify rate of events, as `eps`
-or `epm` to send to the APM server instead of the default behaviour. To benchmark the APM Server in setup similar
+to send the events to the APM Server in parallel. The `-event-rate` can be used to specify rate of events, as `{events}/{interval}` format to send to the APM server instead of the default behaviour. For example, `1000/1s` or `10000/5s`. To benchmark the APM Server in setup similar
 to what we'd see in production, the number of agents should be high (>`500`).
 
 By default, `apmbench` will warm up the APM Server by sending events for N duration to the APM Server before any of the
@@ -112,8 +111,8 @@ $ go run main.go -h
 Usage of /var/folders/k9/z1yw8fsn0sjbl5yy7z2rsdpr0000gn/T/go-build4164012609/b001/exe/main:
   -agents-replicas int
     	Number of agents replicas to use, each replica launches 4 agents, one for each type (default 1)
-  -max-rate value
-    	Max event rate as epm or eps with burst size=max(1000, 2*eps), <= 0 values evaluate to Inf (default 0epm)
+  -event-rate value
+    	Event rate in format of {burst}/{interval}, 0/s evaluates to Inf (default 0/s)
   -secret-token string
     	secret token for APM Server
   -secure
@@ -146,8 +145,8 @@ be configured to use an ECE installation) with some light bash scripting which i
 and upgrades, but ensures there aren't any major problems with APM Server accepting and indexing events where
 it should.
 
-The smoke tests can be found under [`testing/smoke`](./../testing/smoke) and the latest CI runs can be found in
-the [APM CI dashboard](https://ela.st/apm-server-smoke-tests).
+The smoke tests can be found under [`testing/smoke`](./../testing/smoke) and the latest CI runs can be found on 
+[Github Actions](https://github.com/elastic/apm-server/actions/workflows/smoke-tests-schedule.yml).
 
 ### Debugging Failures
 
@@ -166,8 +165,8 @@ For local development and testing you can use [Tilt](https://tilt.dev) with a Ku
 
 We provide Kustomize manifests in [`testing/infra/k8s`](../testing/infra/k8s) for setting up
 the Elastic Stack using [ECK](https://www.elastic.co/guide/en/cloud-on-k8s/current/index.html),
-including Fleet Server and an Elastic Agent for running the APM integration. Tilt will watch
-for source code changes and build and inject a customized elastic-agent Docker image; it will
+including standalone APM Server.
+Tilt will watch for source code changes and build and inject a customized apm-server Docker image; it will
 also watch for changes to the APM integration package source, and rebuild and upload the
 package to Kibana on changes.
 

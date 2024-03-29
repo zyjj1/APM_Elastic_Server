@@ -14,7 +14,7 @@ variable "ess_region" {
 }
 
 variable "deployment_template" {
-  default     = "gcp-compute-optimized-v2"
+  default     = "gcp-compute-optimized-v3"
   description = "Optional deployment template. Defaults to the CPU optimized template for GCP"
   type        = string
 }
@@ -129,7 +129,7 @@ variable "BUILD_ID" {
 
 variable "CREATED_DATE" {
   description = "Creation date in epoch time for tagging purposes"
-  default     = "unknown-date"
+  default     = ""
 }
 
 variable "ENVIRONMENT" {
